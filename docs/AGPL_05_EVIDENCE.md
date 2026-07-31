@@ -2,7 +2,7 @@
 
 > **Phase:** AGPL-05 — Postgres durable store, Docker Postgres stack, final deployment package
 > **Date:** 2026-07-31
-> **Commit SHA:** `(filled at commit time)`
+> **Commit SHA:** `a41ef8f`
 
 ---
 

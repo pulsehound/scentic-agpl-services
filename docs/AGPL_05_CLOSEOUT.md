@@ -2,7 +2,7 @@
 
 > **Phase:** AGPL-05 — Postgres durable store, Docker Postgres stack, mock Scentic receiver, final deployment package
 > **Status:** AGPL SERVICES LOCAL DEPLOYMENT PACKAGE COMPLETE / PRODUCTION DEPLOYMENT NOT EXECUTED / SCENTIC CORE INTEGRATION NOT APPLIED
-> **Commit SHA:** `(filled at commit time)`
+> **Commit SHA:** `a41ef8f`
 > **Date:** 2026-07-31
 
 ---
