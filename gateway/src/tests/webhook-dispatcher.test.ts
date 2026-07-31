@@ -12,8 +12,8 @@ const USER1 = 'user-uuuuuuuu';
 /**
  * Helper: publish a representative event into the outbox and return it.
  */
-function publishKimaiEvent(t: TestApp, firmId: string): OutboxEvent {
-  return t.outbox.publish({
+async function publishKimaiEvent(t: TestApp, firmId: string): Promise<OutboxEvent> {
+  return await t.outbox.publish({
     eventType: 'KIMAI_TIME_ENTRY_CREATED',
     scenticFirmId: firmId,
     correlationId: 'corr-test',
@@ -39,7 +39,7 @@ describe('Webhook dispatcher (signing, dispatch, retry, idempotency, payload saf
 
   // E. Event signed with webhook secret
   it('E: dispatched event request carries X-Gateway-Signature with sha256= prefix', async () => {
-    const event = publishKimaiEvent(t, FIRM1);
+    const event = await publishKimaiEvent(t, FIRM1);
 
     let capturedHeaders: Record<string, string> | undefined;
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url: string | URL | Request, init?: RequestInit) => {
@@ -67,7 +67,7 @@ describe('Webhook dispatcher (signing, dispatch, retry, idempotency, payload saf
 
     expect(dispatcher.isEnabled()).toBe(false);
 
-    const event = publishKimaiEvent(t, FIRM1);
+    const event = await publishKimaiEvent(t, FIRM1);
     const result = await dispatcher.dispatchEvent(event);
 
     expect(result.status).toBe('PENDING');
@@ -77,7 +77,7 @@ describe('Webhook dispatcher (signing, dispatch, retry, idempotency, payload saf
 
   // G. Webhook target down creates retryable failure
   it('G: network error against target produces FAILED_RETRYABLE', async () => {
-    const event = publishKimaiEvent(t, FIRM1);
+    const event = await publishKimaiEvent(t, FIRM1);
 
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'));
 
@@ -90,7 +90,7 @@ describe('Webhook dispatcher (signing, dispatch, retry, idempotency, payload saf
 
   // H. Delivered event marked delivered
   it('H: 200 response marks event DELIVERED and outbox event SENT', async () => {
-    const event = publishKimaiEvent(t, FIRM1);
+    const event = await publishKimaiEvent(t, FIRM1);
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
       new Response('ok', { status: 200 }),
@@ -101,14 +101,14 @@ describe('Webhook dispatcher (signing, dispatch, retry, idempotency, payload saf
     expect(result.status).toBe('DELIVERED');
     expect(result.httpStatus).toBe(200);
 
-    const outboxEvent = t.outbox.getAll().find(e => e.eventId === event.eventId);
+    const outboxEvent = (await t.outbox.getAll()).find(e => e.eventId === event.eventId);
     expect(outboxEvent).toBeDefined();
     expect(outboxEvent!.status).toBe('SENT');
   });
 
   // I. Failed event retries with backoff
   it('I: 5xx response sets FAILED_RETRYABLE, increments retryCount, sets nextRetryAt', async () => {
-    const event = publishKimaiEvent(t, FIRM1);
+    const event = await publishKimaiEvent(t, FIRM1);
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
       new Response('error', { status: 503 }),
@@ -124,14 +124,14 @@ describe('Webhook dispatcher (signing, dispatch, retry, idempotency, payload saf
     const retryAt = new Date(result.nextRetryAt!);
     expect(retryAt.getTime()).toBeGreaterThan(Date.now());
 
-    const outboxEvent = t.outbox.getAll().find(e => e.eventId === event.eventId);
+    const outboxEvent = (await t.outbox.getAll()).find(e => e.eventId === event.eventId);
     expect(outboxEvent).toBeDefined();
     expect(outboxEvent!.retryCount).toBeGreaterThanOrEqual(1);
   });
 
   // J. Duplicate event dispatch uses same idempotency key
   it('J: dispatching the same event twice sends the same Idempotency-Key header', async () => {
-    const event = publishKimaiEvent(t, FIRM1);
+    const event = await publishKimaiEvent(t, FIRM1);
 
     const capturedKeys: string[] = [];
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url: string | URL | Request, init?: RequestInit) => {
@@ -146,7 +146,7 @@ describe('Webhook dispatcher (signing, dispatch, retry, idempotency, payload saf
     // the same event must produce the same key.
     await t.webhookDispatcher!.dispatchEvent(event);
     // Reset the outbox event back to PENDING so it can be dispatched again.
-    const outboxEvent = t.outbox.getAll().find(e => e.eventId === event.eventId);
+    const outboxEvent = (await t.outbox.getAll()).find(e => e.eventId === event.eventId);
     if (outboxEvent) outboxEvent.status = 'PENDING';
     await t.webhookDispatcher!.dispatchEvent(event);
 
@@ -187,7 +187,7 @@ describe('Webhook dispatcher (signing, dispatch, retry, idempotency, payload saf
     );
     expect(createRes.success).toBe(true);
 
-    const wfEvent = app.outbox.getAll().find(e => e.eventType === 'OPENSIGN_WORKFLOW_CREATED');
+    const wfEvent = (await app.outbox.getAll()).find(e => e.eventType === 'OPENSIGN_WORKFLOW_CREATED');
     expect(wfEvent).toBeDefined();
 
     let capturedBody: string | undefined;

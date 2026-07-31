@@ -72,7 +72,7 @@ describe('OpenSign polling (status change, dedup, failure, safe refs) — tests 
       expect(r.data.status).toBe('COMPLETED');
     }
 
-    const events = app.outbox.getAll();
+    const events = await app.outbox.getAll();
     const statusChanged = events.filter(e => e.eventType === 'OPENSIGN_WORKFLOW_STATUS_CHANGED');
     const completed = events.filter(e => e.eventType === 'OPENSIGN_WORKFLOW_COMPLETED');
     expect(statusChanged.length).toBeGreaterThanOrEqual(1);
@@ -86,7 +86,7 @@ describe('OpenSign polling (status change, dedup, failure, safe refs) — tests 
     await setupCompletedWorkflow(app);
 
     await app.opensignService!.pollWorkflow(FIRM1, 'wf-poll', 'corr');
-    const completedAfterFirst = app.outbox.getAll().filter(e => e.eventType === 'OPENSIGN_WORKFLOW_COMPLETED').length;
+    const completedAfterFirst = (await app.outbox.getAll()).filter(e => e.eventType === 'OPENSIGN_WORKFLOW_COMPLETED').length;
     expect(completedAfterFirst).toBe(1);
 
     // Second poll — workflow is now COMPLETED (terminal), so it skips.
@@ -96,7 +96,7 @@ describe('OpenSign polling (status change, dedup, failure, safe refs) — tests 
       expect(r2.data.changed).toBe(false);
     }
 
-    const completedAfterSecond = app.outbox.getAll().filter(e => e.eventType === 'OPENSIGN_WORKFLOW_COMPLETED').length;
+    const completedAfterSecond = (await app.outbox.getAll()).filter(e => e.eventType === 'OPENSIGN_WORKFLOW_COMPLETED').length;
     expect(completedAfterSecond).toBe(1);
   });
 
@@ -117,7 +117,7 @@ describe('OpenSign polling (status change, dedup, failure, safe refs) — tests 
       expect(r.error.code).toBe('UPSTREAM_UNAVAILABLE');
     }
 
-    const healthEvents = app.outbox.getAll().filter(e => e.eventType === 'OPENSIGN_CONNECTION_HEALTH_CHANGED');
+    const healthEvents = (await app.outbox.getAll()).filter(e => e.eventType === 'OPENSIGN_CONNECTION_HEALTH_CHANGED');
     expect(healthEvents.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -129,7 +129,7 @@ describe('OpenSign polling (status change, dedup, failure, safe refs) — tests 
 
     await app.opensignService!.pollWorkflow(FIRM1, 'wf-poll', 'corr');
 
-    const events = app.outbox.getAll();
+    const events = await app.outbox.getAll();
     expect(events.length).toBeGreaterThan(0);
 
     for (const e of events) {

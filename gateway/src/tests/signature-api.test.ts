@@ -112,7 +112,7 @@ describe('Signature API (firm filtering, idempotency, events) — tests O–X', 
     });
     expect(res.status).toBe(200);
 
-    const sentEvents = t.outbox.getAll().filter(e => e.eventType === 'OPENSIGN_WORKFLOW_SENT');
+    const sentEvents = (await t.outbox.getAll()).filter(e => e.eventType === 'OPENSIGN_WORKFLOW_SENT');
     expect(sentEvents.length).toBeGreaterThanOrEqual(1);
     expect(sentEvents.some(e => e.payload['scenticSignatureWorkflowId'] === 'wf-send')).toBe(true);
   });

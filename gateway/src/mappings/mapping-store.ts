@@ -23,55 +23,55 @@ import type {
 
 export interface MappingStore {
   // Firm
-  getFirmMapping(scenticFirmId: string): FirmMapping | null;
-  upsertFirmMapping(params: SyncFirmParams, kimaiTeamId: number, kimaiTeamName: string): FirmMapping;
-  disableFirmMapping(scenticFirmId: string): void;
+  getFirmMapping(scenticFirmId: string): Promise<FirmMapping | null>;
+  upsertFirmMapping(params: SyncFirmParams, kimaiTeamId: number, kimaiTeamName: string): Promise<FirmMapping>;
+  disableFirmMapping(scenticFirmId: string): Promise<void>;
 
   // User
-  getUserMapping(scenticFirmId: string, scenticUserId: string): UserMapping | null;
-  upsertUserMapping(params: SyncUserParams, kimaiUserId: number, kimaiUsername: string, kimaiApiToken: string): UserMapping;
-  disableUserMapping(scenticFirmId: string, scenticUserId: string): void;
+  getUserMapping(scenticFirmId: string, scenticUserId: string): Promise<UserMapping | null>;
+  upsertUserMapping(params: SyncUserParams, kimaiUserId: number, kimaiUsername: string, kimaiApiToken: string): Promise<UserMapping>;
+  disableUserMapping(scenticFirmId: string, scenticUserId: string): Promise<void>;
 
   // Client
-  getClientMapping(scenticFirmId: string, scenticClientId: string): ClientMapping | null;
-  upsertClientMapping(params: SyncClientParams, kimaiCustomerId: number, displayLabel: string): ClientMapping;
+  getClientMapping(scenticFirmId: string, scenticClientId: string): Promise<ClientMapping | null>;
+  upsertClientMapping(params: SyncClientParams, kimaiCustomerId: number, displayLabel: string): Promise<ClientMapping>;
 
   // Matter
-  getMatterMapping(scenticFirmId: string, scenticMatterId: string): MatterMapping | null;
-  upsertMatterMapping(params: SyncMatterParams, kimaiProjectId: number, displayLabel: string): MatterMapping;
+  getMatterMapping(scenticFirmId: string, scenticMatterId: string): Promise<MatterMapping | null>;
+  upsertMatterMapping(params: SyncMatterParams, kimaiProjectId: number, displayLabel: string): Promise<MatterMapping>;
 
   // Activity
-  getActivityMapping(scenticFirmId: string, scenticActivityCode: string): ActivityMapping | null;
-  upsertActivityMapping(params: SyncActivityParams, kimaiActivityId: number): ActivityMapping;
+  getActivityMapping(scenticFirmId: string, scenticActivityCode: string): Promise<ActivityMapping | null>;
+  upsertActivityMapping(params: SyncActivityParams, kimaiActivityId: number): Promise<ActivityMapping>;
 
   // TimeEntry
-  getTimeEntryMapping(scenticFirmId: string, scenticTimeEntryId: string): TimeEntryMapping | null;
-  upsertTimeEntryMapping(params: CreateTimeEntryParams, kimaiTimesheetId: number): TimeEntryMapping;
-  updateTimeEntryMapping(scenticFirmId: string, scenticTimeEntryId: string): void;
-  deleteTimeEntryMapping(scenticFirmId: string, scenticTimeEntryId: string): void;
-  listTimeEntryMappings(params: ListTimeEntriesParams): TimeEntryMapping[];
+  getTimeEntryMapping(scenticFirmId: string, scenticTimeEntryId: string): Promise<TimeEntryMapping | null>;
+  upsertTimeEntryMapping(params: CreateTimeEntryParams, kimaiTimesheetId: number): Promise<TimeEntryMapping>;
+  updateTimeEntryMapping(scenticFirmId: string, scenticTimeEntryId: string): Promise<void>;
+  deleteTimeEntryMapping(scenticFirmId: string, scenticTimeEntryId: string): Promise<void>;
+  listTimeEntryMappings(params: ListTimeEntriesParams): Promise<TimeEntryMapping[]>;
 
   // Utility
-  clear(): void;
+  clear(): Promise<void>;
 
   // OpenSign Firm
-  getOpenSignFirmMapping(scenticFirmId: string): OpenSignFirmMapping | null;
-  upsertOpenSignFirmMapping(params: SyncOpenSignFirmParams, opensignTenantId: string, opensignTenantName: string): OpenSignFirmMapping;
-  disableOpenSignFirmMapping(scenticFirmId: string): void;
+  getOpenSignFirmMapping(scenticFirmId: string): Promise<OpenSignFirmMapping | null>;
+  upsertOpenSignFirmMapping(params: SyncOpenSignFirmParams, opensignTenantId: string, opensignTenantName: string): Promise<OpenSignFirmMapping>;
+  disableOpenSignFirmMapping(scenticFirmId: string): Promise<void>;
 
   // OpenSign User
-  getOpenSignUserMapping(scenticFirmId: string, scenticUserId: string): OpenSignUserMapping | null;
-  upsertOpenSignUserMapping(params: SyncOpenSignUserParams, opensignUserId: string, opensignSessionToken: string): OpenSignUserMapping;
+  getOpenSignUserMapping(scenticFirmId: string, scenticUserId: string): Promise<OpenSignUserMapping | null>;
+  upsertOpenSignUserMapping(params: SyncOpenSignUserParams, opensignUserId: string, opensignSessionToken: string): Promise<OpenSignUserMapping>;
 
   // OpenSign Workflow
-  getOpenSignWorkflowMapping(scenticFirmId: string, scenticSignatureWorkflowId: string): OpenSignWorkflowMapping | null;
-  upsertOpenSignWorkflowMapping(params: CreateOpenSignWorkflowParams, opensignDocumentId: string, opensignWorkflowId: string, opensignStatus: string): OpenSignWorkflowMapping;
-  updateOpenSignWorkflowStatus(scenticFirmId: string, scenticSignatureWorkflowId: string, opensignStatus: string): void;
-  listOpenSignWorkflowMappings(scenticFirmId: string): OpenSignWorkflowMapping[];
+  getOpenSignWorkflowMapping(scenticFirmId: string, scenticSignatureWorkflowId: string): Promise<OpenSignWorkflowMapping | null>;
+  upsertOpenSignWorkflowMapping(params: CreateOpenSignWorkflowParams, opensignDocumentId: string, opensignWorkflowId: string, opensignStatus: string): Promise<OpenSignWorkflowMapping>;
+  updateOpenSignWorkflowStatus(scenticFirmId: string, scenticSignatureWorkflowId: string, opensignStatus: string): Promise<void>;
+  listOpenSignWorkflowMappings(scenticFirmId: string): Promise<OpenSignWorkflowMapping[]>;
 
   // OpenSign Signer
-  getOpenSignSignerMapping(scenticFirmId: string, scenticSignatureWorkflowId: string, scenticSignerId: string): OpenSignSignerMapping | null;
-  upsertOpenSignSignerMapping(scenticFirmId: string, scenticSignatureWorkflowId: string, scenticSignerId: string, opensignSignerId: string, signerEmailHash: string): OpenSignSignerMapping;
+  getOpenSignSignerMapping(scenticFirmId: string, scenticSignatureWorkflowId: string, scenticSignerId: string): Promise<OpenSignSignerMapping | null>;
+  upsertOpenSignSignerMapping(scenticFirmId: string, scenticSignatureWorkflowId: string, scenticSignerId: string, opensignSignerId: string, signerEmailHash: string): Promise<OpenSignSignerMapping>;
 }
 
 export class InMemoryMappingStore implements MappingStore {
@@ -96,11 +96,11 @@ export class InMemoryMappingStore implements MappingStore {
   private now(): string { return new Date().toISOString(); }
 
   // ── Firm ──────────────────────────────────────────────────────────────
-  getFirmMapping(scenticFirmId: string): FirmMapping | null {
+  async getFirmMapping(scenticFirmId: string): Promise<FirmMapping | null> {
     return this.firms.get(scenticFirmId) ?? null;
   }
 
-  upsertFirmMapping(params: SyncFirmParams, kimaiTeamId: number, kimaiTeamName: string): FirmMapping {
+  async upsertFirmMapping(params: SyncFirmParams, kimaiTeamId: number, kimaiTeamName: string): Promise<FirmMapping> {
     const existing = this.firms.get(params.scenticFirmId);
     const now = this.now();
     const mapping: FirmMapping = existing
@@ -118,7 +118,7 @@ export class InMemoryMappingStore implements MappingStore {
     return mapping;
   }
 
-  disableFirmMapping(scenticFirmId: string): void {
+  async disableFirmMapping(scenticFirmId: string): Promise<void> {
     const mapping = this.firms.get(scenticFirmId);
     if (mapping) {
       mapping.status = 'DISABLED';
@@ -127,11 +127,11 @@ export class InMemoryMappingStore implements MappingStore {
   }
 
   // ── User ──────────────────────────────────────────────────────────────
-  getUserMapping(scenticFirmId: string, scenticUserId: string): UserMapping | null {
+  async getUserMapping(scenticFirmId: string, scenticUserId: string): Promise<UserMapping | null> {
     return this.users.get(this.userKey(scenticFirmId, scenticUserId)) ?? null;
   }
 
-  upsertUserMapping(params: SyncUserParams, kimaiUserId: number, kimaiUsername: string, kimaiApiToken: string): UserMapping {
+  async upsertUserMapping(params: SyncUserParams, kimaiUserId: number, kimaiUsername: string, kimaiApiToken: string): Promise<UserMapping> {
     const key = this.userKey(params.scenticFirmId, params.scenticUserId);
     const existing = this.users.get(key);
     const now = this.now();
@@ -152,7 +152,7 @@ export class InMemoryMappingStore implements MappingStore {
     return mapping;
   }
 
-  disableUserMapping(scenticFirmId: string, scenticUserId: string): void {
+  async disableUserMapping(scenticFirmId: string, scenticUserId: string): Promise<void> {
     const mapping = this.users.get(this.userKey(scenticFirmId, scenticUserId));
     if (mapping) {
       mapping.status = 'DISABLED';
@@ -161,11 +161,11 @@ export class InMemoryMappingStore implements MappingStore {
   }
 
   // ── Client ────────────────────────────────────────────────────────────
-  getClientMapping(scenticFirmId: string, scenticClientId: string): ClientMapping | null {
+  async getClientMapping(scenticFirmId: string, scenticClientId: string): Promise<ClientMapping | null> {
     return this.clients.get(this.clientKey(scenticFirmId, scenticClientId)) ?? null;
   }
 
-  upsertClientMapping(params: SyncClientParams, kimaiCustomerId: number, displayLabel: string): ClientMapping {
+  async upsertClientMapping(params: SyncClientParams, kimaiCustomerId: number, displayLabel: string): Promise<ClientMapping> {
     const key = this.clientKey(params.scenticFirmId, params.scenticClientId);
     const existing = this.clients.get(key);
     const now = this.now();
@@ -186,11 +186,11 @@ export class InMemoryMappingStore implements MappingStore {
   }
 
   // ── Matter ────────────────────────────────────────────────────────────
-  getMatterMapping(scenticFirmId: string, scenticMatterId: string): MatterMapping | null {
+  async getMatterMapping(scenticFirmId: string, scenticMatterId: string): Promise<MatterMapping | null> {
     return this.matters.get(this.matterKey(scenticFirmId, scenticMatterId)) ?? null;
   }
 
-  upsertMatterMapping(params: SyncMatterParams, kimaiProjectId: number, displayLabel: string): MatterMapping {
+  async upsertMatterMapping(params: SyncMatterParams, kimaiProjectId: number, displayLabel: string): Promise<MatterMapping> {
     const key = this.matterKey(params.scenticFirmId, params.scenticMatterId);
     const existing = this.matters.get(key);
     const now = this.now();
@@ -212,11 +212,11 @@ export class InMemoryMappingStore implements MappingStore {
   }
 
   // ── Activity ──────────────────────────────────────────────────────────
-  getActivityMapping(scenticFirmId: string, scenticActivityCode: string): ActivityMapping | null {
+  async getActivityMapping(scenticFirmId: string, scenticActivityCode: string): Promise<ActivityMapping | null> {
     return this.activities.get(this.activityKey(scenticFirmId, scenticActivityCode)) ?? null;
   }
 
-  upsertActivityMapping(params: SyncActivityParams, kimaiActivityId: number): ActivityMapping {
+  async upsertActivityMapping(params: SyncActivityParams, kimaiActivityId: number): Promise<ActivityMapping> {
     const key = this.activityKey(params.scenticFirmId, params.scenticActivityCode);
     const existing = this.activities.get(key);
     const now = this.now();
@@ -236,11 +236,11 @@ export class InMemoryMappingStore implements MappingStore {
   }
 
   // ── TimeEntry ─────────────────────────────────────────────────────────
-  getTimeEntryMapping(scenticFirmId: string, scenticTimeEntryId: string): TimeEntryMapping | null {
+  async getTimeEntryMapping(scenticFirmId: string, scenticTimeEntryId: string): Promise<TimeEntryMapping | null> {
     return this.timeEntries.get(this.timeEntryKey(scenticFirmId, scenticTimeEntryId)) ?? null;
   }
 
-  upsertTimeEntryMapping(params: CreateTimeEntryParams, kimaiTimesheetId: number): TimeEntryMapping {
+  async upsertTimeEntryMapping(params: CreateTimeEntryParams, kimaiTimesheetId: number): Promise<TimeEntryMapping> {
     const key = this.timeEntryKey(params.scenticFirmId, params.scenticTimeEntryId);
     const existing = this.timeEntries.get(key);
     const now = this.now();
@@ -261,14 +261,14 @@ export class InMemoryMappingStore implements MappingStore {
     return mapping;
   }
 
-  updateTimeEntryMapping(scenticFirmId: string, scenticTimeEntryId: string): void {
+  async updateTimeEntryMapping(scenticFirmId: string, scenticTimeEntryId: string): Promise<void> {
     const mapping = this.timeEntries.get(this.timeEntryKey(scenticFirmId, scenticTimeEntryId));
     if (mapping) {
       mapping.updatedAt = this.now();
     }
   }
 
-  deleteTimeEntryMapping(scenticFirmId: string, scenticTimeEntryId: string): void {
+  async deleteTimeEntryMapping(scenticFirmId: string, scenticTimeEntryId: string): Promise<void> {
     const mapping = this.timeEntries.get(this.timeEntryKey(scenticFirmId, scenticTimeEntryId));
     if (mapping) {
       mapping.status = 'DISABLED';
@@ -276,7 +276,7 @@ export class InMemoryMappingStore implements MappingStore {
     }
   }
 
-  listTimeEntryMappings(params: ListTimeEntriesParams): TimeEntryMapping[] {
+  async listTimeEntryMappings(params: ListTimeEntriesParams): Promise<TimeEntryMapping[]> {
     const all = Array.from(this.timeEntries.values()).filter(m =>
       m.scenticFirmId === params.scenticFirmId &&
       m.status === 'ACTIVE'
@@ -291,7 +291,7 @@ export class InMemoryMappingStore implements MappingStore {
     return filtered;
   }
 
-  clear(): void {
+  async clear(): Promise<void> {
     this.firms.clear();
     this.users.clear();
     this.clients.clear();
@@ -305,11 +305,11 @@ export class InMemoryMappingStore implements MappingStore {
   }
 
   // ── OpenSign Firm ─────────────────────────────────────────────────────
-  getOpenSignFirmMapping(scenticFirmId: string): OpenSignFirmMapping | null {
+  async getOpenSignFirmMapping(scenticFirmId: string): Promise<OpenSignFirmMapping | null> {
     return this.osFirms.get(scenticFirmId) ?? null;
   }
 
-  upsertOpenSignFirmMapping(params: SyncOpenSignFirmParams, opensignTenantId: string, opensignTenantName: string): OpenSignFirmMapping {
+  async upsertOpenSignFirmMapping(params: SyncOpenSignFirmParams, opensignTenantId: string, opensignTenantName: string): Promise<OpenSignFirmMapping> {
     const existing = this.osFirms.get(params.scenticFirmId);
     const now = this.now();
     const mapping: OpenSignFirmMapping = existing
@@ -327,7 +327,7 @@ export class InMemoryMappingStore implements MappingStore {
     return mapping;
   }
 
-  disableOpenSignFirmMapping(scenticFirmId: string): void {
+  async disableOpenSignFirmMapping(scenticFirmId: string): Promise<void> {
     const mapping = this.osFirms.get(scenticFirmId);
     if (mapping) {
       mapping.status = 'DISABLED';
@@ -336,11 +336,11 @@ export class InMemoryMappingStore implements MappingStore {
   }
 
   // ── OpenSign User ─────────────────────────────────────────────────────
-  getOpenSignUserMapping(scenticFirmId: string, scenticUserId: string): OpenSignUserMapping | null {
+  async getOpenSignUserMapping(scenticFirmId: string, scenticUserId: string): Promise<OpenSignUserMapping | null> {
     return this.osUsers.get(this.userKey(scenticFirmId, scenticUserId)) ?? null;
   }
 
-  upsertOpenSignUserMapping(params: SyncOpenSignUserParams, opensignUserId: string, opensignSessionToken: string): OpenSignUserMapping {
+  async upsertOpenSignUserMapping(params: SyncOpenSignUserParams, opensignUserId: string, opensignSessionToken: string): Promise<OpenSignUserMapping> {
     const key = this.userKey(params.scenticFirmId, params.scenticUserId);
     const existing = this.osUsers.get(key);
     const now = this.now();
@@ -362,11 +362,11 @@ export class InMemoryMappingStore implements MappingStore {
   }
 
   // ── OpenSign Workflow ─────────────────────────────────────────────────
-  getOpenSignWorkflowMapping(scenticFirmId: string, scenticSignatureWorkflowId: string): OpenSignWorkflowMapping | null {
+  async getOpenSignWorkflowMapping(scenticFirmId: string, scenticSignatureWorkflowId: string): Promise<OpenSignWorkflowMapping | null> {
     return this.osWorkflows.get(this.matterKey(scenticFirmId, scenticSignatureWorkflowId)) ?? null;
   }
 
-  upsertOpenSignWorkflowMapping(params: CreateOpenSignWorkflowParams, opensignDocumentId: string, opensignWorkflowId: string, opensignStatus: string): OpenSignWorkflowMapping {
+  async upsertOpenSignWorkflowMapping(params: CreateOpenSignWorkflowParams, opensignDocumentId: string, opensignWorkflowId: string, opensignStatus: string): Promise<OpenSignWorkflowMapping> {
     const key = this.matterKey(params.scenticFirmId, params.scenticSignatureWorkflowId);
     const existing = this.osWorkflows.get(key);
     const now = this.now();
@@ -390,7 +390,7 @@ export class InMemoryMappingStore implements MappingStore {
     return mapping;
   }
 
-  updateOpenSignWorkflowStatus(scenticFirmId: string, scenticSignatureWorkflowId: string, opensignStatus: string): void {
+  async updateOpenSignWorkflowStatus(scenticFirmId: string, scenticSignatureWorkflowId: string, opensignStatus: string): Promise<void> {
     const mapping = this.osWorkflows.get(this.matterKey(scenticFirmId, scenticSignatureWorkflowId));
     if (mapping) {
       mapping.opensignStatus = opensignStatus;
@@ -398,18 +398,18 @@ export class InMemoryMappingStore implements MappingStore {
     }
   }
 
-  listOpenSignWorkflowMappings(scenticFirmId: string): OpenSignWorkflowMapping[] {
+  async listOpenSignWorkflowMappings(scenticFirmId: string): Promise<OpenSignWorkflowMapping[]> {
     return Array.from(this.osWorkflows.values()).filter(
       m => m.scenticFirmId === scenticFirmId && m.status === 'ACTIVE',
     );
   }
 
   // ── OpenSign Signer ───────────────────────────────────────────────────
-  getOpenSignSignerMapping(scenticFirmId: string, scenticSignatureWorkflowId: string, scenticSignerId: string): OpenSignSignerMapping | null {
+  async getOpenSignSignerMapping(scenticFirmId: string, scenticSignatureWorkflowId: string, scenticSignerId: string): Promise<OpenSignSignerMapping | null> {
     return this.osSigners.get(`${scenticFirmId}:${scenticSignatureWorkflowId}:${scenticSignerId}`) ?? null;
   }
 
-  upsertOpenSignSignerMapping(scenticFirmId: string, scenticSignatureWorkflowId: string, scenticSignerId: string, opensignSignerId: string, signerEmailHash: string): OpenSignSignerMapping {
+  async upsertOpenSignSignerMapping(scenticFirmId: string, scenticSignatureWorkflowId: string, scenticSignerId: string, opensignSignerId: string, signerEmailHash: string): Promise<OpenSignSignerMapping> {
     const key = `${scenticFirmId}:${scenticSignatureWorkflowId}:${scenticSignerId}`;
     const existing = this.osSigners.get(key);
     const now = this.now();

@@ -71,8 +71,8 @@ describe('Mappings (firm scoping, idempotency) — tests H–M', () => {
     await initFirm(FIRM1, 'Acme Law');
     await syncUser(FIRM1, USER1);
 
-    expect(t.store.getUserMapping(FIRM1, USER1)).not.toBeNull();
-    expect(t.store.getUserMapping(FIRM2, USER1)).toBeNull();
+    expect(await t.store.getUserMapping(FIRM1, USER1)).not.toBeNull();
+    expect(await t.store.getUserMapping(FIRM2, USER1)).toBeNull();
   });
 
   // J. Same user can map separately in two Firms
@@ -82,8 +82,8 @@ describe('Mappings (firm scoping, idempotency) — tests H–M', () => {
     await syncUser(FIRM1, USER1);
     await syncUser(FIRM2, USER1);
 
-    const m1 = t.store.getUserMapping(FIRM1, USER1);
-    const m2 = t.store.getUserMapping(FIRM2, USER1);
+    const m1 = await t.store.getUserMapping(FIRM1, USER1);
+    const m2 = await t.store.getUserMapping(FIRM2, USER1);
 
     expect(m1).not.toBeNull();
     expect(m2).not.toBeNull();
@@ -100,7 +100,7 @@ describe('Mappings (firm scoping, idempotency) — tests H–M', () => {
     await syncUser(FIRM1, USER1);
     await syncClient(FIRM1, CLIENT1, 'Acme Client');
     await syncMatter(FIRM1, MATTER1, CLIENT1, 'Acme Matter');
-    expect(t.store.getMatterMapping(FIRM1, MATTER1)).not.toBeNull();
+    expect(await t.store.getMatterMapping(FIRM1, MATTER1)).not.toBeNull();
 
     await initFirm(FIRM2, 'Beta Law');
     await syncUser(FIRM2, USER1);
@@ -138,7 +138,7 @@ describe('Mappings (firm scoping, idempotency) — tests H–M', () => {
     if (!r.success) {
       expect(r.error.code).toBe('INVALID_INPUT');
       // firm2 has no client mapping for CLIENT1
-      expect(t.store.getClientMapping(FIRM2, CLIENT1)).toBeNull();
+      expect(await t.store.getClientMapping(FIRM2, CLIENT1)).toBeNull();
     }
   });
 

@@ -122,7 +122,7 @@ describe('Time API (firm filtering, idempotency) — tests R–X', () => {
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('NOT_FOUND');
     // firm2 has no such mapping
-    expect(t.store.getTimeEntryMapping(FIRM2, 'te-cross')).toBeNull();
+    expect(await t.store.getTimeEntryMapping(FIRM2, 'te-cross')).toBeNull();
   });
 
   // V. Delete time entry cannot cross Firm
@@ -134,7 +134,7 @@ describe('Time API (firm filtering, idempotency) — tests R–X', () => {
       { scenticFirmId: FIRM1, scenticUserId: USER1, scenticMatterId: MATTER1, scenticActivityCode: ACT, scenticTimeEntryId: 'te-del', startAt: '2026-01-01T10:00:00' },
       'corr',
     );
-    expect(t.store.getTimeEntryMapping(FIRM1, 'te-del')).not.toBeNull();
+    expect(await t.store.getTimeEntryMapping(FIRM1, 'te-del')).not.toBeNull();
 
     const res = await signedRequest(t.app, {
       method: 'DELETE',
@@ -145,7 +145,7 @@ describe('Time API (firm filtering, idempotency) — tests R–X', () => {
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('NOT_FOUND');
     // firm1 entry is untouched
-    expect(t.store.getTimeEntryMapping(FIRM1, 'te-del')?.status).toBe('ACTIVE');
+    expect((await t.store.getTimeEntryMapping(FIRM1, 'te-del'))?.status).toBe('ACTIVE');
   });
 
   // W. Export time entries Firm-filtered
@@ -179,8 +179,8 @@ describe('Time API (firm filtering, idempotency) — tests R–X', () => {
       'corr',
     );
 
-    const firm1ProjectId = app.store.getMatterMapping(FIRM1, MATTER1)!.kimaiProjectId;
-    const firm2ProjectId = app.store.getMatterMapping(FIRM2, 'matter-beta')!.kimaiProjectId;
+    const firm1ProjectId = (await app.store.getMatterMapping(FIRM1, MATTER1))!.kimaiProjectId;
+    const firm2ProjectId = (await app.store.getMatterMapping(FIRM2, 'matter-beta'))!.kimaiProjectId;
     expect(firm1ProjectId).not.toBe(firm2ProjectId);
 
     client.exportTimesheets.mockClear();

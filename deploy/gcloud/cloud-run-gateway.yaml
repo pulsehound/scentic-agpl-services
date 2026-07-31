@@ -40,6 +40,12 @@ spec:
         run.googleapis.com/vpc-access-connector: projects/PROJECT_ID/regions/REGION/connectors/CONNECTOR_NAME
         # Route all egress through the VPC connector (private networking only).
         run.googleapis.com/vpc-access-egress: private-ip-only
+        # Cloud SQL Postgres instance for the gateway durable store.
+        # Uncomment to use the Cloud SQL proxy (Unix socket) connection mode
+        # instead of the private-IP GATEWAY_DATABASE_URL. When using the proxy,
+        # set GATEWAY_DATABASE_URL to a unix-socket URL (see the env comment
+        # below) and grant the runtime SA roles/cloudsql.client.
+        # run.googleapis.com/cloudsql-instances: projects/PROJECT_ID/regions/REGION/instances/scentic-agpl-gateway-db
         # Use the gateway runtime service account (least privilege — see service-accounts.md).
         # Replace PROJECT_ID and GATEWAY_SA before applying.
         run.googleapis.com/execution-environment: gen1
@@ -84,22 +90,43 @@ spec:
               value: "3101"
             # Durable store. Production uses Postgres (Cloud SQL). SQLite is
             # rejected in production unless GATEWAY_ALLOW_SQLITE_IN_PRODUCTION=true
-            # (NOT recommended; single-instance only). See docs/AGPL_04_CLOSEOUT.md
-            # and gateway/src/storage/store-factory.ts.
+            # (NOT recommended; single-instance only). The Postgres adapter
+            # (gateway/src/storage/postgres-store.ts, pure-JS pg driver) was
+            # delivered in AGPL-05. See docs/SCENTIC_AGPL_CONNECTION_MANUAL.md
+            # §13 and gateway/src/storage/store-factory.ts.
             - name: GATEWAY_STORE_TYPE
               value: "postgres"
             - name: GATEWAY_ALLOW_SQLITE_IN_PRODUCTION
               value: "false"
-            # Cloud SQL Postgres connection (private IP). The value below is a
-            # plain env reference; the password/secret components come from
-            # Secret Manager in the secret volume mounts section.
+            # Cloud SQL Postgres connection (private IP). The full connection
+            # string (including password) is sourced from Secret Manager below
+            # as GATEWAY_DATABASE_URL. Production must use a private-IP Cloud SQL
+            # instance (--no-assign-ip) reachable over the VPC connector.
+            # Two connection modes are supported:
+            #   1. Private IP (default here): GATEWAY_DATABASE_URL points at the
+            #      Cloud SQL private IP over the VPC connector. Requires
+            #      run.googleapis.com/vpc-access-egress=private-ip-only (set above).
+            #   2. Cloud SQL proxy (Unix socket): set the
+            #      run.googleapis.com/cloudsql-instances annotation on the
+            #      template (see commented annotation in template.metadata
+            #      below) and use a unix-socket URL like
+            #      postgres://gateway@/cloudsql/PROJECT_ID:REGION:INSTANCE/gateway
+            #      in the GATEWAY_DATABASE_URL secret.
             - name: GATEWAY_DATABASE_URL
-              # Replace with the real Cloud SQL private-IP connection string.
-              # Format: postgres://USER:PASSWORD@PRIVATE_IP:5432/gateway
-              # Password should be injected from Secret Manager, not baked in.
-              value: "postgres://gateway@CLOUD_SQL_PRIVATE_IP:5432/gateway"
-            # Redis URL for the nonce/idempotency store (AGPL-05 production path).
-            # Left empty here; populated from Secret Manager when Redis is provisioned.
+              valueFrom:
+                secretKeyRef:
+                  name: GATEWAY_DATABASE_URL
+                  key: latest
+            # Postgres SSL mode. "disable" is acceptable ONLY for private-IP /
+            # VPC-internal connections. Use "require" or stricter for any
+            # non-private hop. See gateway/src/config.ts.
+            - name: GATEWAY_POSTGRES_SSL_MODE
+              value: "disable"
+            # Optional Redis URL for the nonce/idempotency store. NOT required —
+            # Postgres provides atomic nonce/idempotency via ON CONFLICT and
+            # safe outbox processing via FOR UPDATE SKIP LOCKED (AGPL-05).
+            # Left empty here; populate from Secret Manager only if a separate
+            # Redis tier is desired.
             - name: GATEWAY_REDIS_URL
               value: ""
             # Kimai / OpenSign base URLs (private network URLs only).
@@ -149,5 +176,8 @@ spec:
           # Cloud SQL connection volume (optional — Cloud Run supports the
           # Cloud SQL proxy via the run.googleapis.com/cloudsql-instances
           # annotation when using a Unix socket. Here we use a private-IP
-          # connection string in GATEWAY_DATABASE_URL instead.)
+          # connection string in GATEWAY_DATABASE_URL instead. The Postgres
+          # adapter was delivered in AGPL-05; see
+          # gateway/src/storage/postgres-store.ts and
+          # gateway/src/storage/postgres-schema.sql.)
           volumes: []

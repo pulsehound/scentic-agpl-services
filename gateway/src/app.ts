@@ -28,7 +28,7 @@ export interface AppDeps {
   mappingStore: MappingStore;
   upstreamSources: { kimaiSha: string; opensignSha: string };
   storeType?: 'memory' | 'sqlite' | 'postgres';
-  nonceStoreType?: 'memory' | 'sqlite' | 'redis';
+  nonceStoreType?: 'memory' | 'sqlite' | 'redis' | 'postgres';
   outboxStoreType?: 'memory' | 'sqlite' | 'postgres';
   nonceStore?: NonceStore;
 }

@@ -2,7 +2,7 @@
 # LOCAL DEVELOPMENT ONLY — NOT FOR PRODUCTION.
 #
 # Env var names below match gateway/src/config.ts strict validation.
-# Production deployment: see docs/DEPLOYMENT.md
+# Production deployment: see docs/DEPLOYMENT.md and deploy/gcloud/
 #
 # Usage:
 #   scripts/local-up.sh        # start the stack
@@ -11,6 +11,50 @@
 #   scripts/local-reset.sh     # DESTRUCTIVE: deletes volumes
 
 services:
+  # ── Gateway Postgres (durable store) ───────────────────────────────────
+  # AGPL-05: Postgres replaces SQLite for Docker durability.
+  # pg is pure JS (no native modules), solving the better-sqlite3 segfault.
+  gateway-postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5433:5432"
+    environment:
+      - POSTGRES_DB=gateway
+      - POSTGRES_USER=gateway
+      - POSTGRES_PASSWORD=dev-gateway-pg-pass
+    volumes:
+      - gateway-pg-data:/var/lib/postgresql/data
+    networks:
+      - agpl-internal
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "gateway"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ── Mock Scentic Webhook Receiver ──────────────────────────────────────
+  # Lightweight Node.js service that receives gateway webhook events.
+  # Verifies HMAC signature, logs events, responds 200.
+  # LOCAL DEVELOPMENT ONLY — do not use in production.
+  mock-scentic:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.mock-scentic
+    ports:
+      - "3199:3199"
+    environment:
+      - MOCK_SCENTIC_PORT=3199
+      - SCENTIC_WEBHOOK_HMAC_SECRET=${SCENTIC_WEBHOOK_HMAC_SECRET:-dev-webhook-hmac-secret}
+    networks:
+      - agpl-internal
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3199/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
   # ── Gateway ────────────────────────────────────────────────────────────
   # Bridges Scentic core with Kimai and OpenSign.
   # Env var names must match gateway/src/config.ts exactly.
@@ -26,12 +70,10 @@ services:
       - GATEWAY_PORT=3101
       - LOG_LEVEL=${LOG_LEVEL:-info}
       # ── HMAC secrets (shared with Scentic core) ──
-      # Scentic → Gateway request signing
       - SCENTIC_SHARED_HMAC_SECRET=${SCENTIC_SHARED_HMAC_SECRET:-dev-shared-hmac-secret}
-      # Gateway → Scentic webhook signing
       - SCENTIC_WEBHOOK_HMAC_SECRET=${SCENTIC_WEBHOOK_HMAC_SECRET:-dev-webhook-hmac-secret}
-      # ── Webhook dispatch target (Scentic core) ──
-      - SCENTIC_WEBHOOK_TARGET_URL=${SCENTIC_WEBHOOK_TARGET_URL:-http://host.docker.internal:3100/api/agpl/webhooks}
+      # ── Webhook dispatch target (mock Scentic receiver) ──
+      - SCENTIC_WEBHOOK_TARGET_URL=http://mock-scentic:3199/webhook
       # ── Gateway base URLs ──
       - SCENTIC_GATEWAY_PUBLIC_BASE_URL=http://localhost:3101
       - SCENTIC_GATEWAY_INTERNAL_BASE_URL=http://gateway:3101
@@ -41,13 +83,11 @@ services:
       - KIMAI_ADMIN_API_TOKEN=${KIMAI_ADMIN_API_TOKEN:-dev-api-token}
       - KIMAI_DEFAULT_ACTIVITY_NAME=${KIMAI_DEFAULT_ACTIVITY_NAME:-General}
       - KIMAI_USE_CONFIDENTIAL_LABELS=${KIMAI_USE_CONFIDENTIAL_LABELS:-false}
-      # ── Gateway database (optional; null disables persistence) ──
-      - GATEWAY_DATABASE_URL=${GATEWAY_DATABASE_URL:-}
-      # ── Durable storage (AGPL-04) ──
-      # NOTE: SQLite (better-sqlite3) segfaults in Docker on this host.
-      # Using memory store for Docker local stack. SQLite works on bare-metal.
-      # See docs/AGPL_04_CLOSEOUT.md for details. AGPL-05 will use Postgres.
-      - GATEWAY_STORE_TYPE=${GATEWAY_STORE_TYPE:-memory}
+      # ── Durable storage (AGPL-05: Postgres) ──
+      - GATEWAY_STORE_TYPE=postgres
+      - GATEWAY_DATABASE_URL=postgres://gateway:dev-gateway-pg-pass@gateway-postgres:5432/gateway
+      - GATEWAY_POSTGRES_SSL_MODE=${GATEWAY_POSTGRES_SSL_MODE:-disable}
+      # SQLite fallback (local bare-metal only, not used in Docker)
       - GATEWAY_SQLITE_PATH=/data/gateway-state.db
       - GATEWAY_ALLOW_SQLITE_IN_PRODUCTION=${GATEWAY_ALLOW_SQLITE_IN_PRODUCTION:-false}
       # ── OpenSign integration ──
@@ -60,13 +100,16 @@ services:
       - OPENSIGN_POLL_INTERVAL_SECONDS=${OPENSIGN_POLL_INTERVAL_SECONDS:-30}
       - OPENSIGN_COMPLETION_TIMEOUT_SECONDS=${OPENSIGN_COMPLETION_TIMEOUT_SECONDS:-86400}
     depends_on:
+      gateway-postgres:
+        condition: service_healthy
+      mock-scentic:
+        condition: service_started
       kimai:
         condition: service_started
       opensign-server:
         condition: service_started
     volumes:
       - gateway-logs:/app/logs
-      - gateway-data:/data
     networks:
       - agpl-internal
     healthcheck:
@@ -74,7 +117,7 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 20s
+      start_period: 30s
 
   # ── Kimai database (MariaDB) ───────────────────────────────────────────
   kimai-db:
@@ -82,8 +125,8 @@ services:
     environment:
       - MYSQL_DATABASE=kimai
       - MYSQL_USER=kimai
-      - MYSQL_PASSWORD=${KIMAI_DB_PASSWORD:-dev-kimai-db-password}
-      - MYSQL_ROOT_PASSWORD=${KIMAI_DB_ROOT_PASSWORD:-dev-root-password}
+      - MYSQL_PASSWORD=*******************************************
+      - MYSQL_ROOT_PASSWORD=********************************************
     volumes:
       - kimai-db-data:/var/lib/mysql
     networks:
@@ -187,4 +230,4 @@ volumes:
   kimai-db-data:
   opensign-mongo-data:
   gateway-logs:
-  gateway-data:
+  gateway-pg-data:

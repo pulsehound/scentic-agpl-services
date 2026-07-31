@@ -19,6 +19,7 @@ import { InMemoryMappingStore } from '../mappings/mapping-store.js';
 import { InMemoryNonceStore } from '../auth/hmac.js';
 import { InMemoryEventOutbox } from '../events/outbox.js';
 import { SqliteMappingStore } from './sqlite-store.js';
+import { PostgresMappingStore } from './postgres-store.js';
 
 export type StoreType = 'memory' | 'sqlite' | 'postgres';
 
@@ -27,9 +28,9 @@ export interface StoreBundle {
   nonceStore: NonceStore;
   outbox: EventOutbox;
   storeType: StoreType;
-  nonceStoreType: 'memory' | 'sqlite' | 'redis';
+  nonceStoreType: 'memory' | 'sqlite' | 'redis' | 'postgres';
   outboxStoreType: 'memory' | 'sqlite' | 'postgres';
-  close?: () => void;
+  close?: () => void | Promise<void>;
 }
 
 export interface StoreFactoryConfig {
@@ -38,9 +39,11 @@ export interface StoreFactoryConfig {
   isProduction: boolean;
   allowSqliteInProduction: boolean;
   redisUrl?: string;
+  databaseUrl?: string;
+  postgresSslMode?: string;
 }
 
-export function createStoreBundle(config: StoreFactoryConfig): StoreBundle {
+export async function createStoreBundle(config: StoreFactoryConfig): Promise<StoreBundle> {
   if (config.isProduction) {
     if (config.storeType === 'memory') {
       throw new Error('GATEWAY_STORE_TYPE=memory is not allowed in production. Use sqlite or postgres.');
@@ -78,8 +81,21 @@ export function createStoreBundle(config: StoreFactoryConfig): StoreBundle {
     };
   }
 
-  // postgres — not yet implemented
-  throw new Error('GATEWAY_STORE_TYPE=postgres is not yet implemented. Use sqlite for local/dev or memory for tests.');
+  // postgres — production durable store backed by pg.Pool
+  if (!config.databaseUrl) {
+    throw new Error('GATEWAY_STORE_TYPE=postgres requires GATEWAY_DATABASE_URL to be set.');
+  }
+  const store = new PostgresMappingStore(config.databaseUrl, config.postgresSslMode ?? 'disable');
+  await store.initSchema();
+  return {
+    mappingStore: store,
+    nonceStore: store,
+    outbox: store,
+    storeType: 'postgres',
+    nonceStoreType: 'postgres',
+    outboxStoreType: 'postgres',
+    close: async () => store.close(),
+  };
 }
 
 export function createStoreConfigFromEnv(env: Record<string, string | undefined>): StoreFactoryConfig {
@@ -94,5 +110,7 @@ export function createStoreConfigFromEnv(env: Record<string, string | undefined>
     isProduction,
     allowSqliteInProduction,
     redisUrl: env['GATEWAY_REDIS_URL'],
+    databaseUrl: env['GATEWAY_DATABASE_URL'],
+    postgresSslMode: env['GATEWAY_POSTGRES_SSL_MODE'],
   };
 }

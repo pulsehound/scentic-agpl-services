@@ -5,7 +5,7 @@
 
 > **Status:** REFERENCE ONLY. No GCP project provisioned. **Do not execute these commands without project-owner authorization.** Running them will create billable cloud resources and may expose internal services if networking is misconfigured.
 >
-> This document is a command reference, not an execution runbook. It exists so that the deployment path is reviewable end-to-end before any real provisioning. Real deployment + health evidence is AGPL-05 scope.
+> This document is a command reference, not an execution runbook. It exists so that the deployment path is reviewable end-to-end before any real provisioning. Real deployment + health evidence is pending GCP project provisioning (see `docs/PRODUCTION_BLOCKERS.md`).
 
 ---
 
@@ -48,7 +48,7 @@ gcloud auth configure-docker REGION-docker.pkg.dev
 # docker push REGION-docker.pkg.dev/PROJECT_ID/scentic-agpl/gateway:TAG
 ```
 
-> The Dockerfile at `deploy/Dockerfile.gateway` is tagged **LOCAL DEVELOPMENT ONLY**. A production build must use a hardened multi-stage Dockerfile that does not ship devDependencies or build toolchains. AGPL-05 scope.
+> The Dockerfile at `deploy/Dockerfile.gateway` is tagged **LOCAL DEVELOPMENT ONLY** (it was simplified in AGPL-05 to drop native build tooling since `pg` is pure JS, but it is not a hardened multi-stage production build). A production build must use a hardened multi-stage Dockerfile that does not ship devDependencies or build toolchains. Pending production hardening (see `docs/PRODUCTION_BLOCKERS.md`).
 
 ## 3. Service accounts (reference)
 
@@ -108,7 +108,7 @@ Firewall rules: see `vpc-networking.md` §4.
 
 ## 5. Cloud SQL Postgres (reference)
 
-The Cloud SQL Postgres instance is the **gateway durable store** in production (mapping/nonce/outbox tables). The schema is defined in `gateway/src/storage/schema.sql` (SQLite DDL; the Postgres production schema is a carried AGPL-05 deliverable — the SQLite DDL is portable with minor type changes).
+The Cloud SQL Postgres instance is the **gateway durable store** in production (mapping/nonce/idempotency/outbox tables). The schema is defined in `gateway/src/storage/postgres-schema.sql` (13 tables, `TIMESTAMPTZ`, `JSONB` outbox payload) and is auto-created on gateway boot by `gateway/src/storage/postgres-store.ts` (delivered in AGPL-05).
 
 ```bash
 # Replace PROJECT_ID, REGION, DB_PASSWORD (from Secret Manager).
@@ -119,7 +119,6 @@ gcloud sql instances create scentic-agpl-gateway-db \
   --network=projects/PROJECT_ID/global/networks/scentic-agpl-vpc \
   --no-assign-ip \
   --availability-type=REGIONAL \
-  --enable-bin-log \
   --backup-start-time=03:00 \
   --project=PROJECT_ID
 
@@ -131,7 +130,7 @@ gcloud sql users create gateway \
   --project=PROJECT_ID
 ```
 
-> The Postgres production store implementation (`GATEWAY_STORE_TYPE=postgres`) is a **carried AGPL-05 deliverable**. The store factory (`gateway/src/storage/store-factory.ts`) currently throws for `postgres` until the Postgres adapter is implemented. The manifest in `cloud-run-gateway.yaml` is written assuming the Postgres adapter will exist; until it does, the gateway cannot start with `GATEWAY_STORE_TYPE=postgres`. See `docs/AGPL_04_CLOSEOUT.md` §9–§10 and §13.
+> The Postgres production store (`GATEWAY_STORE_TYPE=postgres`) was **delivered in AGPL-05**. The store factory (`gateway/src/storage/store-factory.ts`) is async and creates the `PostgresMappingStore` (backed by `pg.Pool`, pure-JS driver) when `GATEWAY_DATABASE_URL` is set. Multi-instance safety is provided by `ON CONFLICT DO NOTHING` (nonces), `ON CONFLICT` (idempotency), and `FOR UPDATE SKIP LOCKED` (outbox). Redis is optional. See `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` §13 and `docs/SECURITY_THREAT_MODEL.md` T-17. The manifest in `cloud-run-gateway.yaml` references `GATEWAY_DATABASE_URL` from Secret Manager and supports both private-IP and Cloud SQL proxy (Unix socket) connection modes.
 
 ## 6. Secret Manager secrets (reference)
 
@@ -152,6 +151,13 @@ printf '%s' "$(openssl rand -hex 32)" | \
 
 printf '%s' "<strong-opensign-admin-password>" | \
   gcloud secrets create OPENSIGN_ADMIN_PASSWORD --replication-policy=automatic --data-file=-
+
+# Gateway durable store — Cloud SQL Postgres connection string (AGPL-05).
+# Replace the connection string with the real private-IP Cloud SQL URL
+# (including the gateway DB user password). Use a unix-socket URL if using
+# the Cloud SQL proxy connection mode (see cloud-run-gateway.yaml).
+printf '%s' "postgres://gateway:<DB_PASSWORD>@<CLOUD_SQL_PRIVATE_IP>:5432/gateway" | \
+  gcloud secrets create GATEWAY_DATABASE_URL --replication-policy=automatic --data-file=-
 ```
 
 ## 7. Cloud Run deploy (reference)
@@ -178,8 +184,8 @@ gcloud run services replace deploy/gcloud/cloud-run-gateway.yaml \
 #   --vpc-connector=projects/PROJECT_ID/regions/REGION/connectors/scentic-agpl-connector \
 #   --vpc-egress=private-ip-only \
 #   --service-account=gateway-runtime@PROJECT_ID.iam.gserviceaccount.com \
-#   --set-env-vars="NODE_ENV=production,PORT=3101,GATEWAY_STORE_TYPE=postgres,GATEWAY_ALLOW_SQLITE_IN_PRODUCTION=false" \
-#   --set-secrets="SCENTIC_SHARED_HMAC_SECRET=SCENTIC_SHARED_HMAC_SECRET:latest,SCENTIC_WEBHOOK_HMAC_SECRET=SCENTIC_WEBHOOK_HMAC_SECRET:latest,KIMAI_ADMIN_API_TOKEN=KIMAI_ADMIN_API_TOKEN:latest,OPENSIGN_MASTER_KEY=OPENSIGN_MASTER_KEY:latest,OPENSIGN_ADMIN_PASSWORD=OPENSIGN_ADMIN_PASSWORD:latest" \
+#   --set-env-vars="NODE_ENV=production,PORT=3101,GATEWAY_STORE_TYPE=postgres,GATEWAY_ALLOW_SQLITE_IN_PRODUCTION=false,GATEWAY_POSTGRES_SSL_MODE=disable" \
+#   --set-secrets="SCENTIC_SHARED_HMAC_SECRET=SCENTIC_SHARED_HMAC_SECRET:latest,SCENTIC_WEBHOOK_HMAC_SECRET=SCENTIC_WEBHOOK_HMAC_SECRET:latest,KIMAI_ADMIN_API_TOKEN=KIMAI_ADMIN_API_TOKEN:latest,OPENSIGN_MASTER_KEY=OPENSIGN_MASTER_KEY:latest,OPENSIGN_ADMIN_PASSWORD=OPENSIGN_ADMIN_PASSWORD:latest,GATEWAY_DATABASE_URL=GATEWAY_DATABASE_URL:latest" \
 #   --project=PROJECT_ID
 ```
 
@@ -231,7 +237,7 @@ gcloud secrets versions enable PREV_VERSION --secret=SCENTIC_SHARED_HMAC_SECRET 
 
 ### 9.3 Roll back a Cloud SQL migration
 
-The Postgres production store is AGPL-05 scope. Every migration must have forward + rollback SQL. Rollback is performed by applying the reverse migration against the `gateway` database. Backups (daily + before-migration) are restored via:
+The Postgres production store was delivered in AGPL-05. Every migration must have forward + rollback SQL. Rollback is performed by applying the reverse migration against the `gateway` database. Backups (daily + before-migration) are restored via:
 
 ```bash
 gcloud sql backups list --instance=scentic-agpl-gateway-db --project=PROJECT_ID
@@ -244,7 +250,7 @@ gcloud sql backups restore BACKUP_ID \
 
 - These commands are **not executed**. No project is provisioned.
 - The placeholder values (`PROJECT_ID`, `REGION`, `TAG`, `CLOUD_SQL_PRIVATE_IP`, `CONNECTOR_NAME`, `GATEWAY_SA`, `<DB_PASSWORD>`, `<strong-...>`) MUST be replaced before any real run.
-- The Postgres production store adapter is **not yet implemented** (AGPL-05). The `GATEWAY_STORE_TYPE=postgres` path in `store-factory.ts` currently throws. The manifest is written assuming the adapter will exist.
+- The Postgres production store adapter **is implemented** (AGPL-05; `gateway/src/storage/postgres-store.ts`), so `GATEWAY_STORE_TYPE=postgres` is a working path. Production deployment itself is still not executed — it is blocked on GCP project provisioning (see `docs/PRODUCTION_BLOCKERS.md`).
 
 ## 11. Related files
 
@@ -252,5 +258,8 @@ gcloud sql backups restore BACKUP_ID \
 - `deploy/gcloud/secret-manager.md` — secret inventory + creation.
 - `deploy/gcloud/service-accounts.md` — least-privilege SAs.
 - `deploy/gcloud/vpc-networking.md` — VPC + connector + firewall.
-- `docs/DEPLOYMENT.md` — full deployment plan (architecture, rollout order, monitoring, cost).
-- `docs/AGPL_04_CLOSEOUT.md` — AGPL-04 closeout (GCloud manifests only, not deployed).
+- `docs/DEPLOYMENT.md` — full deployment plan (architecture, rollout order, monitoring, cost, §3.5 Postgres durable store).
+- `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` §13 — Postgres durable store operator guide.
+- `docs/SECURITY_THREAT_MODEL.md` T-17 — Postgres durable store security.
+- `docs/PRODUCTION_BLOCKERS.md` — production blockers.
+- `docs/AGPL_04_CLOSEOUT.md` — AGPL-04 closeout (GCloud manifests + SQLite store).

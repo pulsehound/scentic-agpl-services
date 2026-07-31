@@ -35,7 +35,7 @@ export interface AuthConfig {
 const PUBLIC_ROUTES = new Set(['/health', '/source', '/api/v1/status']);
 
 export function createScenticAuthMiddleware(authConfig: AuthConfig) {
-  return (req: Request, res: Response, next: NextFunction) => {
+  return async (req: Request, res: Response, next: NextFunction) => {
     // Skip auth for public routes
     if (PUBLIC_ROUTES.has(req.path)) {
       const correlationId = req.headers['x-scentic-correlation-id'] as string | undefined;
@@ -71,7 +71,7 @@ export function createScenticAuthMiddleware(authConfig: AuthConfig) {
 
     // Check nonce replay
     const tsNum = parseInt(timestamp, 10);
-    if (authConfig.nonceStore.seen(nonce, tsNum)) {
+    if (await authConfig.nonceStore.seen(nonce, tsNum)) {
       return next(unauthorized('Request nonce has already been used'));
     }
 

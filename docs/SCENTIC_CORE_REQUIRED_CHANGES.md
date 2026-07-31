@@ -1,6 +1,6 @@
 # Scentic Core Required Changes — Documentation Only
 
-> **Status:** No changes applied. This document describes what Scentic core would need if Yair decides to integrate.
+> **Status:** No changes applied. This document describes what Scentic core would need if Yair decides to integrate. Updated for AGPL-05: the gateway now persists webhook events in a **Postgres durable outbox** (replacing the in-memory/SQLite outbox), so events survive gateway restarts and are safe to process across multiple gateway instances. Scentic core still needs to implement the webhook receiver to consume those events.
 >
 > **Scope:** This is a documentation-only specification of the Scentic proprietary core (`scentic.ai`) changes that would be required to consume the AGPL gateway implemented in this repository. **No Scentic core file was modified.** All code references below are proposed targets, not applied edits. The Scentic core repository was inspected read-only.
 >
@@ -404,3 +404,17 @@ To be explicit (per the Scentic `AGENTS.md` "no false integration claims" rule):
 - No Prisma migration was created.
 
 All of the above are described here so Yair can decide whether and when to land them. The AGPL gateway in this repository is independently complete for AGPL-03 (local deployment + connection interface documented); the Scentic-side bridge is the consumer-side work that would follow Yair's approval.
+
+---
+
+## 13. AGPL-05 note: Postgres durable outbox
+
+AGPL-05 replaced the gateway's in-memory/SQLite outbox with a **Postgres durable outbox** (`outbox_events` table, `gateway/src/storage/postgres-store.ts`). This is a gateway-internal change and does **not** alter the Scentic-facing webhook contract (the same 21 event types, the same HMAC headers, the same payload schema documented in `docs/SCENTIC_INTERFACE_SPEC.md` §2). However, it changes the delivery guarantees Scentic core can rely on:
+
+- **Events survive gateway restarts.** Webhook events are persisted in Postgres before dispatch; a gateway crash/restart does not lose pending events. The dispatcher resumes from the outbox on boot.
+- **Multi-instance safe.** Multiple gateway instances can process the outbox concurrently via `SELECT ... FOR UPDATE SKIP LOCKED`; each event is delivered by exactly one instance. Scentic core may receive a given event from any gateway instance (the `X-Gateway-*` headers and HMAC are identical regardless of which instance dispatched).
+- **At-least-once delivery still holds.** The durable outbox does not change the at-least-once delivery model. Scentic core's webhook receiver must still deduplicate by `Idempotency-Key` (§3 of this doc) — this requirement is unchanged by AGPL-05 and is now more important because events may be retried across a longer time window after a gateway restart.
+
+**What Scentic core still needs to do (unchanged):** implement the webhook receiver route (`apps/web/src/app/api/agpl/webhooks/route.ts`, §3) to consume events from the durable outbox. The receiver spec — HMAC verification against the raw body, timestamp/nonce replay protection, `Idempotency-Key` deduplication, firm-scope enforcement — is identical to §3 above. AGPL-05 did not add any new Scentic-side requirement beyond what AGPL-03 already documented; it only strengthened the gateway-side delivery guarantees the receiver can assume.
+
+**What Scentic core does NOT need to do:** Scentic core does not connect to Postgres, does not read the outbox table directly, and does not manage the gateway's durable store. The Postgres store is gateway-internal; Scentic core continues to consume events exclusively via the HMAC-signed webhook HTTP delivery.

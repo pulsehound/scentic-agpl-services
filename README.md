@@ -76,18 +76,21 @@ See `docs/SOURCE_OFFER.md` for full details.
 
 ## Status
 
-**Phase AGPL-04: DURABLE STORAGE + STORE FACTORY + DOCKER HARDENING + GCLOUD MANIFESTS**
+**Phase AGPL-05: POSTGRES DURABLE STORE + FINAL DEPLOYMENT PACKAGE**
 
-AGPL-01 (Kimai integration), AGPL-02 (OpenSign integration), AGPL-03 (local deployment + connection interface), and AGPL-04 (durable storage + GCloud manifests) are delivered. AGPL-04 adds a durable SQLite store (`gateway/src/storage/sqlite-store.ts`) implementing MappingStore + NonceStore + EventOutbox with Firm-scoped tables; a store factory (`gateway/src/storage/store-factory.ts`) with production validation (memory rejected in production, SQLite requires explicit allow flag, Postgres not yet implemented); Docker deployment hardening (`.dockerignore`, `Dockerfile.gateway` with native module compilation); and GCloud deployment manifests (`deploy/gcloud/` — Cloud Run, Secret Manager, service accounts, VPC, deploy commands — manifests only, not deployed).
+AGPL-01 through AGPL-05 are delivered. AGPL-05 replaces the Docker SQLite fallback with Postgres (pg, pure JS, no native modules), adds a mock Scentic webhook receiver for local testing, and produces the final operator handoff and connection manual.
 
-**Scentic core was NOT modified.** AGPL-04 is gateway + docs only.
+**Scentic core was NOT modified.** All phases are gateway + docs only.
 
-Carried gaps (to resolve before production readiness): Postgres production store adapter (AGPL-05), Redis nonce/idempotency store for multi-instance (AGPL-05), real GCloud deployment (AGPL-05, gated on authorization), real-Kimai/OpenSign container contract tests (AGPL-05), Scentic-core-side implementation of `docs/SCENTIC_CORE_REQUIRED_CHANGES.md` (lands on Yair's approval).
+**Final classification:** AGPL SERVICES LOCAL DEPLOYMENT PACKAGE COMPLETE / PRODUCTION DEPLOYMENT NOT EXECUTED / SCENTIC CORE INTEGRATION NOT APPLIED
 
+See `docs/AGPL_DEPLOYMENT_HANDOFF.md` for the final deployment handoff.
+See `docs/FINAL_OPERATOR_CHECKLIST.md` for the operator checklist.
+See `docs/PRODUCTION_BLOCKERS.md` for production blockers.
+See `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` for the operator-facing connection manual.
+See `docs/AGPL_05_CLOSEOUT.md` for the AGPL-05 closeout.
 See `docs/AGPL_04_CLOSEOUT.md` for the AGPL-04 closeout.
-See `docs/AGPL_04_EVIDENCE.md` for executed evidence.
 See `docs/AGPL_03_CLOSEOUT.md` for the AGPL-03 closeout.
 See `docs/AGPL_02_CLOSEOUT.md` for the AGPL-02 closeout.
 See `docs/AGPL_01_CLOSEOUT.md` for the AGPL-01 closeout.
 See `docs/SCENTIC_AGPL_INTEGRATION_PLAN.md` for the complete plan.
-See `docs/NEXT_STEPS.md` for implementation roadmap (AGPL-05 is next).

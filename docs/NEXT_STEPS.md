@@ -1,8 +1,8 @@
 # AGPL Services — Next Steps & Implementation Roadmap
 
-> **Status:** Planning document. Tracks the phased implementation of the Scentic AGPL services stack (gateway + Kimai + OpenSign) and the required Scentic core changes.
+> **Status:** All phases COMPLETE. AGPL-05 (Postgres durable store + final deployment package) was the final phase. This document is now a historical roadmap. Scentic core integration and production deployment remain pending external action by Yair / cloud admin (see §9 and `docs/PRODUCTION_BLOCKERS.md`).
 >
-> **Current phase:** AGPL-03 COMPLETE — AGPL-04 (Deployment and production readiness) is next.
+> **Current phase:** AGPL-05 COMPLETE — no further AGPL phases are planned. Remaining work is Scentic-core-side (by Yair) and production GCP provisioning (by cloud admin).
 
 ---
 
@@ -191,47 +191,63 @@ All described in `docs/SCENTIC_CORE_REQUIRED_CHANGES.md`:
 
 ---
 
-## 5. AGPL-04 — Deployment and production readiness  ← NEXT
+## 5. AGPL-04 — Deployment and production readiness
 
-> **Depends on AGPL-03** (see §7).
+**STATUS: COMPLETE** — GCloud deployment manifests + SQLite durable store delivered (local-only; SQLite rejected in production). See `docs/AGPL_04_CLOSEOUT.md` and `docs/AGPL_04_EVIDENCE.md`.
 
 ### Deliverables
 
 - **Docker Compose for local dev** — finalize the compose file in `docs/DEPLOYMENT.md` §6 at the repo root; verify full-stack local bring-up.
-- **GCloud deployment** — provision `scentic-agpl-prod` per `docs/DEPLOYMENT.md`: Cloud Run / GCE for gateway, Kimai, OpenSign; Cloud SQL for Kimai MySQL; MongoDB Atlas for OpenSign; GCS bucket for OpenSign files; VPC peering with the Scentic core project; Internal Load Balancer for the gateway.
-- **Secret Manager integration** — all secrets in GCloud Secret Manager, mounted per service; no secrets in env files or images.
-- **Health checks and monitoring** — uptime checks, alerts, dashboards per `docs/DEPLOYMENT.md` §7.
-- **End-to-end integration tests** — production-like environment tests covering Scentic → gateway → Kimai/OpenSign → webhook → Scentic.
-- **Security audit** — auth boundary review, cross-firm leakage tests, secret scan, dependency/license scan, network exposure review (internal-only gateway, public only signing pages).
+- **GCloud deployment manifests** — provision `scentic-agpl-prod` per `docs/DEPLOYMENT.md`: Cloud Run / GCE for gateway, Kimai, OpenSign; Cloud SQL for Kimai MySQL; MongoDB Atlas for OpenSign; GCS bucket for OpenSign files; VPC peering with the Scentic core project; Internal Load Balancer for the gateway. **Manifests only — no GCP project provisioned, no gcloud command executed.**
+- **Secret Manager integration** — all secrets in GCloud Secret Manager, mounted per service; no secrets in env files or images. Documented in `deploy/gcloud/secret-manager.md`.
+- **Health checks and monitoring** — uptime checks, alerts, dashboards per `docs/DEPLOYMENT.md` §7 (documented, not provisioned).
+- **End-to-end integration tests** — production-like environment tests covering Scentic → gateway → Kimai/OpenSign → webhook → Scentic. **Carried gap** (mock-only upstream tests; see `docs/PRODUCTION_BLOCKERS.md`).
+- **Security audit** — auth boundary review, cross-firm leakage tests, secret scan, dependency/license scan, network exposure review (internal-only gateway, public only signing pages). **Carried gap** (pending production deployment).
 
-### Exit criteria
+### Exit criteria (revised)
 
-- AGPL stack deployed and healthy in `scentic-agpl-prod`.
-- Scentic core successfully calls the gateway over the internal route.
-- E2E integration tests pass against the deployed environment.
-- Security audit returns no open critical/high findings.
+- ✅ GCloud manifests reviewed and committed (`deploy/gcloud/`).
+- ✅ SQLite durable store + async store factory delivered (AGPL-04).
+- ⏳ AGPL stack deployed and healthy in `scentic-agpl-prod` — **blocked on GCP project provisioning** (external action).
+- ⏳ Scentic core successfully calls the gateway over the internal route — **blocked on Scentic-core-side implementation** (by Yair).
+- ⏳ E2E integration tests pass against the deployed environment — **blocked on deployment + real upstream containers**.
+- ⏳ Security audit returns no open critical/high findings — **blocked on deployment**.
+
+> AGPL-04 delivered manifests + the SQLite store but did not deploy to GCP. The SQLite store is local-only (better-sqlite3 native module segfaults in the Alpine Docker container); the Docker/production Postgres durable store landed in AGPL-05.
 
 ---
 
-## 6. AGPL-05 — Source offer and license compliance verification
+## 6. AGPL-05 — Postgres durable store + final deployment package  ← FINAL PHASE (COMPLETE)
 
-> **Depends on AGPL-04** (see §7).
+**STATUS: COMPLETE** — Postgres durable store delivered; Docker stack uses Postgres by default; mock Scentic webhook receiver added; final operator handoff docs produced. See `docs/AGPL_05_CLOSEOUT.md` (when written) and `docs/AGPL_DEPLOYMENT_HANDOFF.md`.
+
+> **Depends on AGPL-04** (see §7). AGPL-05 is the **final planned AGPL phase**.
 
 ### Deliverables
 
-- **Source offer endpoint** — implement `GET /source-offer` per `docs/SOURCE_OFFER.md` §4.
-- **Docker image labels** — add `org.opencontainers.image.license=AGPL-3.0` and `org.opencontainers.image.source` labels to every image (gateway, derived Kimai/OpenSign images).
-- **License scan** — CI step that verifies all dependencies are AGPL-3.0-compatible and all required files carry license headers.
-- **No proprietary code leakage verification** — CI step (per `docs/SOURCE_OFFER.md` §9) that fails on any `@scentic/*` import, proprietary path, internal hostname, or `.env` value in tracked files.
-- **README and UI notices** — per `docs/SOURCE_OFFER.md` §10.
-- **Modification log** — populate `docs/SOURCE_OFFER.md` §8 with any patches applied to Kimai/OpenSign.
+- **Postgres durable store** (`gateway/src/storage/postgres-store.ts`, `gateway/src/storage/postgres-schema.sql`): 13-table schema (`TIMESTAMPTZ`, `JSONB` outbox payload), `pg.Pool`, pure-JS driver (no native build tools). Replaces the SQLite Docker fallback.
+- **Async store factory** (`gateway/src/storage/store-factory.ts`): `createStoreBundle` is now async; supports `memory` / `sqlite` / `postgres`. All store interfaces (`MappingStore`, `NonceStore`, `EventOutbox`) are async (`Promise<T>`).
+- **Docker stack on Postgres** (`deploy/docker-compose.yml`): `gateway-postgres` service (Postgres 16), `GATEWAY_STORE_TYPE=postgres` default, `mock-scentic` service (mock webhook receiver). Gateway waits for `gateway-postgres` healthy.
+- **Simplified gateway Dockerfile** (`deploy/Dockerfile.gateway`): no native module build tools (pg is pure JS).
+- **Mock Scentic webhook receiver** (`deploy/Dockerfile.mock-scentic` + `deploy/mock-scentic.js`): verifies HMAC, logs events, responds 200. **Local dev only.**
+- **Status endpoint** (`gateway/src/routes/status.ts`): reports `stores.durable` + `stores.productionSuitable` (true only for `postgres`).
+- **Config** (`gateway/src/config.ts`): adds `postgresSslMode`.
+- **GCloud manifest updated** (`deploy/gcloud/cloud-run-gateway.yaml`): `GATEWAY_STORE_TYPE=postgres`, Cloud SQL Postgres connection env vars.
+- **Final operator docs**: `docs/PRODUCTION_BLOCKERS.md`, `docs/FINAL_OPERATOR_CHECKLIST.md`, `docs/AGPL_DEPLOYMENT_HANDOFF.md`; README updated.
+- **Scripts updated**: `scripts/local-up.sh`, `scripts/local-healthcheck.sh`, `scripts/local-reset.sh`.
 
 ### Exit criteria
 
-- `GET /source-offer` returns accurate, repo-matching metadata.
-- All images carry the required OCI labels.
-- License scan and proprietary-leak scan are green in CI.
-- README and runtime notices present and reviewed.
+- ✅ Postgres durable store implemented and unit-tested.
+- ✅ Docker stack boots with `GATEWAY_STORE_TYPE=postgres` and persists state across gateway restarts.
+- ✅ Mock Scentic webhook receiver receives and HMAC-verifies gateway webhooks locally.
+- ✅ Status endpoint reports `durable=true`, `productionSuitable=true` for Postgres.
+- ✅ Final operator handoff docs produced.
+- ⏳ Production GCP deployment — **not executed** (blocked on GCP provisioning; manifests only).
+- ⏳ Real upstream contract test evidence — **carried gap** (see `docs/PRODUCTION_BLOCKERS.md`).
+- ⏳ Scentic core integration — **not applied** (by Yair; spec in `docs/SCENTIC_CORE_REQUIRED_CHANGES.md`).
+
+> AGPL-05 is the final planned AGPL phase. No AGPL-06 is scoped. Remaining work is external: Scentic-core-side integration (Yair) and production GCP provisioning (cloud admin). See `docs/PRODUCTION_BLOCKERS.md`.
 
 ---
 
@@ -241,14 +257,14 @@ All described in `docs/SCENTIC_CORE_REQUIRED_CHANGES.md`:
 AGPL-00 (DONE)
    |
    +---> AGPL-01 (Gateway skeleton + Kimai)  [COMPLETE]  \
-   |                                                      +--> AGPL-03 (Local deploy + connection interface) [COMPLETE] --> AGPL-04 (Deploy) [NEXT] --> AGPL-05 (Source offer)
+   |                                                      +--> AGPL-03 (Local deploy + connection interface) [COMPLETE] --> AGPL-04 (Manifests + SQLite store) [COMPLETE] --> AGPL-05 (Postgres + final package) [COMPLETE — FINAL]
    +---> AGPL-02 (OpenSign integration)  [COMPLETE]      /
 ```
 
 - **AGPL-01 and AGPL-02 ran in parallel** — they touch separate gateway modules (`gateway/src/kimai/` vs `gateway/src/opensign/` + `gateway/src/signatures/`). Both are COMPLETE.
 - **AGPL-03 depends on both AGPL-01 and AGPL-02** — the connection interface requires both Kimai and OpenSign surfaces to exist in the gateway. AGPL-03 delivered local deployment + interface documentation + the webhook dispatcher; Scentic-core-side code is documented but not applied (lands when Yair approves).
-- **AGPL-04 depends on AGPL-03** — production deployment is only meaningful once the connection interface is defined and the Scentic side can actually use the gateway.
-- **AGPL-05 depends on AGPL-04** — source-offer verification runs against the deployed, built images.
+- **AGPL-04 depends on AGPL-03** — delivered GCloud deployment manifests + the SQLite durable store (local-only) + async store factory. No GCP project provisioned.
+- **AGPL-05 depends on AGPL-04** — replaced the SQLite Docker fallback with a Postgres durable store (pure-JS `pg`), added the mock Scentic webhook receiver, simplified the gateway Dockerfile, and produced the final operator handoff docs. **AGPL-05 is the final planned phase.** No AGPL-06 is scoped.
 
 ---
 
@@ -287,10 +303,15 @@ These changes happen in the **Scentic core repository** (separate from this repo
 
 - `docs/DEPLOYMENT.md` — GCloud deployment plan + local deployment.
 - `docs/SOURCE_OFFER.md` — AGPL source-offer compliance.
-- `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` — operator connection manual (incl. §12 local deployment).
+- `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` — operator connection manual (incl. §12 local deployment, §13 Postgres durable store).
 - `docs/SCENTIC_INTERFACE_SPEC.md` — implemented interface (27 routes + 21 webhooks + HMAC rules).
 - `docs/SCENTIC_CORE_REQUIRED_CHANGES.md` — Scentic-side changes (documentation only).
-- `docs/SCENTIC_ENV_VARS_REQUIRED.md` — Scentic-side env vars.
+- `docs/SCENTIC_ENV_VARS_REQUIRED.md` — Scentic-side + gateway-side env vars.
+- `docs/SECURITY_THREAT_MODEL.md` — threat model (incl. T-17 Postgres durable store, AGPL-05).
+- `docs/AGPL_DEPLOYMENT_HANDOFF.md` — final deployment handoff (AGPL-05).
+- `docs/FINAL_OPERATOR_CHECKLIST.md` — operator checklist (AGPL-05).
+- `docs/PRODUCTION_BLOCKERS.md` — production blockers (AGPL-05).
+- `docs/AGPL_04_CLOSEOUT.md` — AGPL-04 closeout.
 - `docs/AGPL_03_CLOSEOUT.md` — AGPL-03 closeout.
 - `docs/AGPL_03_EVIDENCE.md` — AGPL-03 executed evidence.
 - `docs/API_CONTRACTS.md` — gateway API contracts (planning surface).

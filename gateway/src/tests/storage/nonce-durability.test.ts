@@ -18,46 +18,46 @@ let tempDir: string;
 let dbPath: string;
 let store: SqliteMappingStore;
 
-beforeEach(() => {
+beforeEach(async () => {
   tempDir = mkdtempSync(join(tmpdir(), 'gateway-nonce-test-'));
   dbPath = join(tempDir, 'nonce.db');
   store = new SqliteMappingStore(dbPath);
 });
 
-afterEach(() => {
-  try { store.close(); } catch { /* already closed */ }
+afterEach(async () => {
+  try { await store.close(); } catch { /* already closed */ }
   rmSync(tempDir, { recursive: true, force: true });
 });
 
 describe('AGPL-04 nonce durability — tests Q–S', () => {
 
   // Q. seen() returns false for new nonce, true for replay
-  it('Q: Nonce seen() returns false for new nonce, true for replay', () => {
+  it('Q: Nonce seen() returns false for new nonce, true for replay', async () => {
     const nonce = `nonce-${crypto.randomUUID()}`;
     const ts = Date.now();
 
-    expect(store.seen(nonce, ts)).toBe(false);
+    expect(await store.seen(nonce, ts)).toBe(false);
     // Immediate replay of the same nonce must be rejected
-    expect(store.seen(nonce, ts)).toBe(true);
+    expect(await store.seen(nonce, ts)).toBe(true);
   });
 
   // R. Nonces persist across store close/reopen (simulate restart)
-  it('R: Nonces persist across store close/reopen (simulate restart)', () => {
+  it('R: Nonces persist across store close/reopen (simulate restart)', async () => {
     const nonce = `nonce-${crypto.randomUUID()}`;
     const ts = Date.now();
 
-    expect(store.seen(nonce, ts)).toBe(false);
-    store.close();
+    expect(await store.seen(nonce, ts)).toBe(false);
+    await store.close();
 
     // Reopen the same database file — a fresh process would do this
     const reopened = new SqliteMappingStore(dbPath);
     try {
       // Same nonce must still be recognised as seen (replay rejected)
-      expect(reopened.seen(nonce, ts)).toBe(true);
+      expect(await reopened.seen(nonce, ts)).toBe(true);
       // A new nonce is accepted
-      expect(reopened.seen(`nonce-${crypto.randomUUID()}`, ts)).toBe(false);
+      expect(await reopened.seen(`nonce-${crypto.randomUUID()}`, ts)).toBe(false);
     } finally {
-      reopened.close();
+      await reopened.close();
     }
   });
 
@@ -70,7 +70,7 @@ describe('AGPL-04 nonce durability — tests Q–S', () => {
     try {
       const oldNonce = `old-${crypto.randomUUID()}`;
       const ts = Date.now();
-      expect(localStore.seen(oldNonce, ts)).toBe(false);
+      expect(await localStore.seen(oldNonce, ts)).toBe(false);
 
       // Wait long enough for the nonce to exceed maxAgeMs.
       await new Promise(r => setTimeout(r, shortMaxAge + 30));
@@ -78,11 +78,11 @@ describe('AGPL-04 nonce durability — tests Q–S', () => {
       // Trigger cleanup by calling seen() with a fresh nonce; the cleanup
       // step runs first and removes expired nonces.
       const freshNonce = `fresh-${crypto.randomUUID()}`;
-      expect(localStore.seen(freshNonce, Date.now())).toBe(false);
+      expect(await localStore.seen(freshNonce, Date.now())).toBe(false);
 
       // The expired nonce must have been purged, so re-submitting it is
       // accepted again (returns false, not a replay).
-      expect(localStore.seen(oldNonce, Date.now())).toBe(false);
+      expect(await localStore.seen(oldNonce, Date.now())).toBe(false);
     } finally {
       localStore.close();
     }

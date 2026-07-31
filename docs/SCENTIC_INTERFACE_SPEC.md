@@ -1,6 +1,6 @@
 # Scentic ↔ AGPL Gateway Interface Specification
 
-> **Status:** Authoritative interface specification for the Scentic ↔ AGPL gateway integration. The gateway side is implemented (AGPL-01/02/03); the Scentic-core side is **documentation only** (see `docs/SCENTIC_CORE_REQUIRED_CHANGES.md`).
+> **Status:** Authoritative interface specification for the Scentic ↔ AGPL gateway integration. The gateway side is implemented (AGPL-01/02/03); the Scentic-core side is **documentation only** (see `docs/SCENTIC_CORE_REQUIRED_CHANGES.md`). Updated for AGPL-05: webhook events are now persisted in a **Postgres durable outbox** (see §2.5).
 >
 > **Scope:** Every REST route Scentic calls, every webhook event the gateway dispatches, the HMAC signing rules in both directions, error codes, retry behavior, data minimization, and multi-Firm mapping rules.
 >
@@ -333,6 +333,8 @@ Every non-public request must be HMAC-signed. See §3.1 for the canonical string
 
 The gateway dispatches signed webhooks to `{SCENTIC_WEBHOOK_TARGET_URL}` (Scentic-side receiver route). **21 event types**: 9 Kimai + 12 OpenSign. Delivery is at-least-once; Scentic must process idempotently.
 
+> **AGPL-05 durability note:** events are persisted in a **Postgres outbox** (`outbox_events` table) before dispatch, so they survive gateway restarts. Multiple gateway instances process the outbox concurrently via `SELECT ... FOR UPDATE SKIP LOCKED`, so each event is delivered by exactly one instance. The at-least-once delivery model and the `Idempotency-Key` deduplication requirement on Scentic core are unchanged (see §2.5).
+
 ### 2.1 Webhook payload schema
 
 All events share this envelope (see `gateway/src/events/webhook-types.ts`):
@@ -421,6 +423,18 @@ Every webhook carries (see `gateway/src/events/webhook-signer.ts`):
 | `OPENSIGN_SYNC_FAILED` | opensign | Sync/poll failed | `{ operation, error }` | `"Sync failed: poll"` |
 
 > OpenSign events never include PDF bytes, raw signer emails in `safeSummary` (hashed only), or document titles beyond a hashed form.
+
+### 2.5 Durable outbox (AGPL-05)
+
+As of AGPL-05, the gateway persists every outbound webhook event in a **Postgres durable outbox** before dispatch (`outbox_events` table, `gateway/src/storage/postgres-store.ts`). This does not change the webhook contract (events, headers, payload schema, HMAC are identical to §2.1–§2.4), but it strengthens the delivery guarantees Scentic core can rely on:
+
+- **Persistence:** events survive gateway restarts. A crash mid-dispatch does not lose the event; the dispatcher resumes from the outbox on boot.
+- **Multi-instance safety:** multiple gateway instances poll the outbox with `SELECT ... FOR UPDATE SKIP LOCKED`, so each event is claimed and delivered by exactly one instance. Scentic core may receive a given event from any instance; the `X-Gateway-*` headers and HMAC are identical regardless of the dispatching instance.
+- **Atomic nonce/idempotency:** nonces use `INSERT ... ON CONFLICT DO NOTHING`; idempotency keys use `INSERT ... ON CONFLICT`. Two concurrent instances cannot accept the same nonce or re-execute the same idempotent write.
+- **Outbox payload column is `JSONB`** and stores the full `WebhookPayload` (event type, ids, `safeSummary`). It never stores PDF bytes, raw signer emails (only `signer_email_hash` in `safeSummary`), or HMAC secrets.
+- **At-least-once is unchanged.** Scentic core must still deduplicate by `Idempotency-Key` (§2.3 step 6). Because events may now be retried across a longer time window (e.g. after a gateway restart), idempotent deduplication on the Scentic side is more important, not less.
+
+Scentic core does **not** connect to Postgres or read the outbox table directly. It consumes events exclusively via the HMAC-signed HTTP webhook delivery, exactly as in §2.1–§2.4.
 
 ---
 
@@ -582,11 +596,13 @@ Scentic does **not** maintain a `ProviderMapping` row for AGPL workflows. Scenti
 ## References
 
 - `docs/API_CONTRACTS.md` — planning contract surface (superset; this spec reflects the implemented routes).
-- `docs/SCENTIC_CORE_REQUIRED_CHANGES.md` — Scentic-side changes (documentation only).
-- `docs/SCENTIC_ENV_VARS_REQUIRED.md` — env vars.
+- `docs/SCENTIC_CORE_REQUIRED_CHANGES.md` — Scentic-side changes (documentation only, incl. §13 Postgres durable outbox note).
+- `docs/SCENTIC_ENV_VARS_REQUIRED.md` — env vars (incl. gateway-side Postgres vars, §7).
+- `docs/SECURITY_THREAT_MODEL.md` — T-03 (webhook spoofing), T-04 (replay), T-17 (Postgres durable store).
 - `gateway/src/auth/hmac.ts` — canonical string + signature computation.
 - `gateway/src/auth/scentic-auth.ts` — request auth middleware.
 - `gateway/src/events/webhook-signer.ts` — webhook signing.
 - `gateway/src/events/webhook-types.ts` — webhook payload/headers types.
 - `gateway/src/events/outbox.ts` — 21 event types.
-- `docs/SECURITY_THREAT_MODEL.md` — T-03 (webhook spoofing), T-04 (replay).
+- `gateway/src/storage/postgres-store.ts` — Postgres durable outbox (AGPL-05).
+- `gateway/src/storage/postgres-schema.sql` — Postgres DDL (`outbox_events`, `nonces`, `idempotency_keys`).

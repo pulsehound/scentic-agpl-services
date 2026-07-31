@@ -133,7 +133,7 @@ export class WebhookDispatcher {
       clearTimeout(timeoutId);
 
       if (resp.status >= 200 && resp.status < 300) {
-        this.outbox.markSent(event.eventId);
+        await this.outbox.markSent(event.eventId);
         this.deliveredCount++;
         return {
           eventId: event.eventId,
@@ -145,7 +145,7 @@ export class WebhookDispatcher {
 
       // 4xx (except 429) = stop retrying
       if (resp.status >= 400 && resp.status < 500 && resp.status !== 429) {
-        this.outbox.markFailed(event.eventId);
+        await this.outbox.markFailed(event.eventId);
         this.failedCount++;
         return {
           eventId: event.eventId,
@@ -157,7 +157,7 @@ export class WebhookDispatcher {
       }
 
       // 429 or 5xx = retryable
-      this.outbox.markFailed(event.eventId);
+      await this.outbox.markFailed(event.eventId);
       return {
         eventId: event.eventId,
         status: 'FAILED_RETRYABLE',
@@ -168,7 +168,7 @@ export class WebhookDispatcher {
       };
     } catch (err) {
       // Network error, timeout, etc. = retryable
-      this.outbox.markFailed(event.eventId);
+      await this.outbox.markFailed(event.eventId);
       return {
         eventId: event.eventId,
         status: 'FAILED_RETRYABLE',
@@ -187,7 +187,7 @@ export class WebhookDispatcher {
       return [];
     }
 
-    const pending = this.outbox.getPending();
+    const pending = await this.outbox.getPending();
     const results: WebhookDispatchResult[] = [];
 
     for (const event of pending) {

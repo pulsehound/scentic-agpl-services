@@ -1,0 +1,13 @@
+# Mock Scentic webhook receiver — LOCAL DEVELOPMENT ONLY.
+# Receives gateway webhook events, verifies HMAC, logs them.
+# NOT for production. Production uses the real Scentic core webhook receiver.
+
+FROM node:20-alpine
+
+WORKDIR /app
+
+COPY deploy/mock-scentic.js ./
+
+EXPOSE 3199
+
+CMD ["node", "mock-scentic.js"]

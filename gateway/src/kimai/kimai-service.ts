@@ -71,7 +71,7 @@ export class KimaiService {
 
   async initFirm(params: SyncFirmParams, correlationId: string): Promise<ServiceResult<FirmMapping>> {
     // Check if firm mapping already exists (idempotent)
-    const existing = this.store.getFirmMapping(params.scenticFirmId);
+    const existing = await this.store.getFirmMapping(params.scenticFirmId);
     if (existing && existing.status === 'ACTIVE') {
       return ok(existing);
     }
@@ -80,7 +80,7 @@ export class KimaiService {
     const teamName = sanitizeLabel(params.firmName, this.config.useConfidentialLabels, `Firm-${params.scenticFirmId.substring(0, 8)}`);
     const teamResult = await this.client.createTeam(teamName);
     if (!teamResult.success) {
-      this.outbox.publish({
+      await this.outbox.publish({
         eventType: 'KIMAI_FIRM_INITIALIZED',
         scenticFirmId: params.scenticFirmId,
         correlationId,
@@ -90,9 +90,9 @@ export class KimaiService {
       return fail(teamResult.error);
     }
 
-    const mapping = this.store.upsertFirmMapping(params, teamResult.data.id, teamName);
+    const mapping = await this.store.upsertFirmMapping(params, teamResult.data.id, teamName);
 
-    this.outbox.publish({
+    await this.outbox.publish({
       eventType: 'KIMAI_FIRM_INITIALIZED',
       scenticFirmId: params.scenticFirmId,
       correlationId,
@@ -107,13 +107,13 @@ export class KimaiService {
 
   async syncUser(params: SyncUserParams, correlationId: string): Promise<ServiceResult<UserMapping>> {
     // Check if user mapping already exists
-    const existing = this.store.getUserMapping(params.scenticFirmId, params.scenticUserId);
+    const existing = await this.store.getUserMapping(params.scenticFirmId, params.scenticUserId);
     if (existing && existing.status === 'ACTIVE') {
       return ok(existing);
     }
 
     // Verify firm mapping exists
-    const firmMapping = this.store.getFirmMapping(params.scenticFirmId);
+    const firmMapping = await this.store.getFirmMapping(params.scenticFirmId);
     if (!firmMapping || firmMapping.status !== 'ACTIVE') {
       return fail(firmScopeViolation('Firm not initialized. Call init-firm first.'));
     }
@@ -129,7 +129,7 @@ export class KimaiService {
     });
 
     if (!userResult.success) {
-      this.outbox.publish({
+      await this.outbox.publish({
         eventType: 'KIMAI_MAPPING_FAILED',
         scenticFirmId: params.scenticFirmId,
         correlationId,
@@ -143,9 +143,9 @@ export class KimaiService {
     // For AGPL-01, we use the admin token as a fallback (documented gap)
     const apiToken = this.config.adminApiToken; // TODO: Create per-user API token
 
-    const mapping = this.store.upsertUserMapping(params, userResult.data.id, username, apiToken);
+    const mapping = await this.store.upsertUserMapping(params, userResult.data.id, username, apiToken);
 
-    this.outbox.publish({
+    await this.outbox.publish({
       eventType: 'KIMAI_MAPPING_CREATED',
       scenticFirmId: params.scenticFirmId,
       correlationId,
@@ -159,12 +159,12 @@ export class KimaiService {
   // ── Client Sync ────────────────────────────────────────────────────────
 
   async syncClient(params: SyncClientParams, correlationId: string): Promise<ServiceResult<ClientMapping>> {
-    const existing = this.store.getClientMapping(params.scenticFirmId, params.scenticClientId);
+    const existing = await this.store.getClientMapping(params.scenticFirmId, params.scenticClientId);
     if (existing && existing.status === 'ACTIVE') {
       return ok(existing);
     }
 
-    const firmMapping = this.store.getFirmMapping(params.scenticFirmId);
+    const firmMapping = await this.store.getFirmMapping(params.scenticFirmId);
     if (!firmMapping || firmMapping.status !== 'ACTIVE') {
       return fail(firmScopeViolation('Firm not initialized'));
     }
@@ -181,7 +181,7 @@ export class KimaiService {
     });
 
     if (!result.success) {
-      this.outbox.publish({
+      await this.outbox.publish({
         eventType: 'KIMAI_MAPPING_FAILED',
         scenticFirmId: params.scenticFirmId,
         correlationId,
@@ -191,9 +191,9 @@ export class KimaiService {
       return fail(result.error);
     }
 
-    const mapping = this.store.upsertClientMapping(params, result.data.id, label);
+    const mapping = await this.store.upsertClientMapping(params, result.data.id, label);
 
-    this.outbox.publish({
+    await this.outbox.publish({
       eventType: 'KIMAI_MAPPING_CREATED',
       scenticFirmId: params.scenticFirmId,
       correlationId,
@@ -207,18 +207,18 @@ export class KimaiService {
   // ── Matter Sync ────────────────────────────────────────────────────────
 
   async syncMatter(params: SyncMatterParams, correlationId: string): Promise<ServiceResult<MatterMapping>> {
-    const existing = this.store.getMatterMapping(params.scenticFirmId, params.scenticMatterId);
+    const existing = await this.store.getMatterMapping(params.scenticFirmId, params.scenticMatterId);
     if (existing && existing.status === 'ACTIVE') {
       return ok(existing);
     }
 
-    const firmMapping = this.store.getFirmMapping(params.scenticFirmId);
+    const firmMapping = await this.store.getFirmMapping(params.scenticFirmId);
     if (!firmMapping || firmMapping.status !== 'ACTIVE') {
       return fail(firmScopeViolation('Firm not initialized'));
     }
 
     // Verify client mapping exists
-    const clientMapping = this.store.getClientMapping(params.scenticFirmId, params.scenticClientId);
+    const clientMapping = await this.store.getClientMapping(params.scenticFirmId, params.scenticClientId);
     if (!clientMapping || clientMapping.status !== 'ACTIVE') {
       return fail(invalidInput('Client not synced. Sync client first.'));
     }
@@ -237,7 +237,7 @@ export class KimaiService {
     });
 
     if (!result.success) {
-      this.outbox.publish({
+      await this.outbox.publish({
         eventType: 'KIMAI_MAPPING_FAILED',
         scenticFirmId: params.scenticFirmId,
         correlationId,
@@ -247,9 +247,9 @@ export class KimaiService {
       return fail(result.error);
     }
 
-    const mapping = this.store.upsertMatterMapping(params, result.data.id, label);
+    const mapping = await this.store.upsertMatterMapping(params, result.data.id, label);
 
-    this.outbox.publish({
+    await this.outbox.publish({
       eventType: 'KIMAI_MAPPING_CREATED',
       scenticFirmId: params.scenticFirmId,
       correlationId,
@@ -263,7 +263,7 @@ export class KimaiService {
   // ── Activity Sync ──────────────────────────────────────────────────────
 
   async syncActivity(params: SyncActivityParams, correlationId: string): Promise<ServiceResult<ActivityMapping>> {
-    const existing = this.store.getActivityMapping(params.scenticFirmId, params.scenticActivityCode);
+    const existing = await this.store.getActivityMapping(params.scenticFirmId, params.scenticActivityCode);
     if (existing && existing.status === 'ACTIVE') {
       return ok(existing);
     }
@@ -278,9 +278,9 @@ export class KimaiService {
       return fail(result.error);
     }
 
-    const mapping = this.store.upsertActivityMapping(params, result.data.id);
+    const mapping = await this.store.upsertActivityMapping(params, result.data.id);
 
-    this.outbox.publish({
+    await this.outbox.publish({
       eventType: 'KIMAI_MAPPING_CREATED',
       scenticFirmId: params.scenticFirmId,
       correlationId,
@@ -295,28 +295,28 @@ export class KimaiService {
 
   async createTimeEntry(params: CreateTimeEntryParams, correlationId: string): Promise<ServiceResult<TimeEntryMapping>> {
     // Idempotency: check if entry already exists
-    const existing = this.store.getTimeEntryMapping(params.scenticFirmId, params.scenticTimeEntryId);
+    const existing = await this.store.getTimeEntryMapping(params.scenticFirmId, params.scenticTimeEntryId);
     if (existing && existing.status === 'ACTIVE') {
       return ok(existing);
     }
 
     // Verify firm, user, matter, activity mappings
-    const firmMapping = this.store.getFirmMapping(params.scenticFirmId);
+    const firmMapping = await this.store.getFirmMapping(params.scenticFirmId);
     if (!firmMapping || firmMapping.status !== 'ACTIVE') {
       return fail(firmScopeViolation('Firm not initialized'));
     }
 
-    const userMapping = this.store.getUserMapping(params.scenticFirmId, params.scenticUserId);
+    const userMapping = await this.store.getUserMapping(params.scenticFirmId, params.scenticUserId);
     if (!userMapping || userMapping.status !== 'ACTIVE') {
       return fail(invalidInput('User not synced. Sync user first.'));
     }
 
-    const matterMapping = this.store.getMatterMapping(params.scenticFirmId, params.scenticMatterId);
+    const matterMapping = await this.store.getMatterMapping(params.scenticFirmId, params.scenticMatterId);
     if (!matterMapping || matterMapping.status !== 'ACTIVE') {
       return fail(invalidInput('Matter not synced. Sync matter first.'));
     }
 
-    const activityMapping = this.store.getActivityMapping(params.scenticFirmId, params.scenticActivityCode);
+    const activityMapping = await this.store.getActivityMapping(params.scenticFirmId, params.scenticActivityCode);
     if (!activityMapping || activityMapping.status !== 'ACTIVE') {
       // Auto-create default activity
       const defaultResult = await this.syncActivity({
@@ -327,7 +327,7 @@ export class KimaiService {
       if (!defaultResult.success) return fail(defaultResult.error);
     }
 
-    const activity = this.store.getActivityMapping(params.scenticFirmId, params.scenticActivityCode);
+    const activity = await this.store.getActivityMapping(params.scenticFirmId, params.scenticActivityCode);
     if (!activity) return fail(invalidInput('Activity mapping not found after sync'));
 
     // Create timesheet in Kimai using user's API token
@@ -342,7 +342,7 @@ export class KimaiService {
     }, userMapping.kimaiApiToken);
 
     if (!tsResult.success) {
-      this.outbox.publish({
+      await this.outbox.publish({
         eventType: 'KIMAI_SYNC_FAILED',
         scenticFirmId: params.scenticFirmId,
         correlationId,
@@ -352,9 +352,9 @@ export class KimaiService {
       return fail(tsResult.error);
     }
 
-    const mapping = this.store.upsertTimeEntryMapping(params, tsResult.data.id);
+    const mapping = await this.store.upsertTimeEntryMapping(params, tsResult.data.id);
 
-    this.outbox.publish({
+    await this.outbox.publish({
       eventType: 'KIMAI_TIME_ENTRY_CREATED',
       scenticFirmId: params.scenticFirmId,
       correlationId,
@@ -366,12 +366,12 @@ export class KimaiService {
   }
 
   async listTimeEntries(params: ListTimeEntriesParams, correlationId: string): Promise<ServiceResult<TimeEntryMapping[]>> {
-    const mappings = this.store.listTimeEntryMappings(params);
+    const mappings = await this.store.listTimeEntryMappings(params);
     return ok(mappings);
   }
 
   async updateTimeEntry(params: UpdateTimeEntryParams, correlationId: string): Promise<ServiceResult<TimeEntryMapping>> {
-    const mapping = this.store.getTimeEntryMapping(params.scenticFirmId, params.scenticTimeEntryId);
+    const mapping = await this.store.getTimeEntryMapping(params.scenticFirmId, params.scenticTimeEntryId);
     if (!mapping || mapping.status !== 'ACTIVE') {
       return fail(notFound('Time entry not found'));
     }
@@ -385,9 +385,9 @@ export class KimaiService {
 
     if (!result.success) return fail(result.error);
 
-    this.store.updateTimeEntryMapping(params.scenticFirmId, params.scenticTimeEntryId);
+    await this.store.updateTimeEntryMapping(params.scenticFirmId, params.scenticTimeEntryId);
 
-    this.outbox.publish({
+    await this.outbox.publish({
       eventType: 'KIMAI_TIME_ENTRY_UPDATED',
       scenticFirmId: params.scenticFirmId,
       correlationId,
@@ -399,7 +399,7 @@ export class KimaiService {
   }
 
   async deleteTimeEntry(firmId: string, timeEntryId: string, correlationId: string): Promise<ServiceResult<void>> {
-    const mapping = this.store.getTimeEntryMapping(firmId, timeEntryId);
+    const mapping = await this.store.getTimeEntryMapping(firmId, timeEntryId);
     if (!mapping || mapping.status !== 'ACTIVE') {
       return fail(notFound('Time entry not found'));
     }
@@ -407,9 +407,9 @@ export class KimaiService {
     const result = await this.client.deleteTimesheet(mapping.kimaiTimesheetId);
     if (!result.success) return fail(result.error);
 
-    this.store.deleteTimeEntryMapping(firmId, timeEntryId);
+    await this.store.deleteTimeEntryMapping(firmId, timeEntryId);
 
-    this.outbox.publish({
+    await this.outbox.publish({
       eventType: 'KIMAI_TIME_ENTRY_DELETED',
       scenticFirmId: firmId,
       correlationId,
@@ -422,7 +422,7 @@ export class KimaiService {
 
   async exportTimeEntries(params: ExportTimeEntriesParams, correlationId: string): Promise<ServiceResult<{ exportUrl?: string }>> {
     // Gather timesheet IDs for this firm
-    const mappings = this.store.listTimeEntryMappings({
+    const mappings = await this.store.listTimeEntryMappings({
       scenticFirmId: params.scenticFirmId,
       scenticUserId: params.scenticUserId,
       scenticMatterId: params.scenticMatterId,
@@ -435,7 +435,7 @@ export class KimaiService {
     // Map to Kimai project IDs
     const projectIds = new Set<number>();
     for (const m of mappings) {
-      const matterMapping = this.store.getMatterMapping(params.scenticFirmId, m.scenticMatterId);
+      const matterMapping = await this.store.getMatterMapping(params.scenticFirmId, m.scenticMatterId);
       if (matterMapping) projectIds.add(matterMapping.kimaiProjectId);
     }
 
@@ -448,7 +448,7 @@ export class KimaiService {
 
     if (!result.success) return fail(result.error);
 
-    this.outbox.publish({
+    await this.outbox.publish({
       eventType: 'KIMAI_TIME_ENTRY_EXPORT_READY',
       scenticFirmId: params.scenticFirmId,
       correlationId,
@@ -462,12 +462,12 @@ export class KimaiService {
   // ── Admin ──────────────────────────────────────────────────────────────
 
   async disableFirm(firmId: string, correlationId: string): Promise<ServiceResult<void>> {
-    const mapping = this.store.getFirmMapping(firmId);
+    const mapping = await this.store.getFirmMapping(firmId);
     if (!mapping) return fail(notFound('Firm not found'));
 
-    this.store.disableFirmMapping(firmId);
+    await this.store.disableFirmMapping(firmId);
 
-    this.outbox.publish({
+    await this.outbox.publish({
       eventType: 'KIMAI_FIRM_INITIALIZED',
       scenticFirmId: firmId,
       correlationId,

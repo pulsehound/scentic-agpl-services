@@ -30,8 +30,8 @@ describe('Security (firm isolation, secret hygiene, source offer, vendor pinning
     const init = await t.service.initFirm({ scenticFirmId: FIRM1, firmName: 'Acme Law' }, 'corr');
     expect(init.success).toBe(true);
 
-    expect(t.store.getFirmMapping(FIRM1)).not.toBeNull();
-    expect(t.store.getFirmMapping(FIRM2)).toBeNull();
+    expect(await t.store.getFirmMapping(FIRM1)).not.toBeNull();
+    expect(await t.store.getFirmMapping(FIRM2)).toBeNull();
 
     const list = await t.service.listTimeEntries({ scenticFirmId: FIRM2 }, 'corr');
     expect(list.success).toBe(true);
@@ -56,7 +56,7 @@ describe('Security (firm isolation, secret hygiene, source offer, vendor pinning
       t.config.webhookHmacSecret,
       t.config.kimaiAdminApiToken,
     ];
-    const events = t.outbox.getAll();
+    const events = await t.outbox.getAll();
     expect(events.length).toBeGreaterThan(0);
 
     for (const e of events) {
@@ -68,7 +68,7 @@ describe('Security (firm isolation, secret hygiene, source offer, vendor pinning
     }
 
     // Also confirm the user mapping token never leaks into events.
-    const userMapping = t.store.getUserMapping(FIRM1, USER1);
+    const userMapping = await t.store.getUserMapping(FIRM1, USER1);
     expect(userMapping).not.toBeNull();
     if (userMapping) {
       for (const e of events) {
@@ -108,7 +108,7 @@ describe('Security (firm isolation, secret hygiene, source offer, vendor pinning
     }
 
     // The real names must not appear in any outbox event either.
-    for (const e of app.outbox.getAll()) {
+    for (const e of await app.outbox.getAll()) {
       expect(e.safeSummary).not.toContain('Super Secret Client Inc');
       expect(e.safeSummary).not.toContain('Merger X Confidential');
     }

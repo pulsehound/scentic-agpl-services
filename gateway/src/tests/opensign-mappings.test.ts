@@ -17,8 +17,8 @@ describe('OpenSign mappings (firm scoping, isolation, probing) — tests J–N',
   it('J: an OpenSign firm mapping in firm1 is not visible from firm2', async () => {
     await t.opensignService!.initFirm({ scenticFirmId: FIRM1, firmName: 'Acme Law' }, 'corr');
 
-    expect(t.store.getOpenSignFirmMapping(FIRM1)).not.toBeNull();
-    expect(t.store.getOpenSignFirmMapping(FIRM2)).toBeNull();
+    expect(await t.store.getOpenSignFirmMapping(FIRM1)).not.toBeNull();
+    expect(await t.store.getOpenSignFirmMapping(FIRM2)).toBeNull();
   });
 
   // K. OpenSign user mapping is Firm-scoped
@@ -29,8 +29,8 @@ describe('OpenSign mappings (firm scoping, isolation, probing) — tests J–N',
       'corr',
     );
 
-    expect(t.store.getOpenSignUserMapping(FIRM1, USER1)).not.toBeNull();
-    expect(t.store.getOpenSignUserMapping(FIRM2, USER1)).toBeNull();
+    expect(await t.store.getOpenSignUserMapping(FIRM1, USER1)).not.toBeNull();
+    expect(await t.store.getOpenSignUserMapping(FIRM2, USER1)).toBeNull();
   });
 
   // L. Same Scentic user can map separately in two Firms
@@ -46,8 +46,8 @@ describe('OpenSign mappings (firm scoping, isolation, probing) — tests J–N',
       'corr',
     );
 
-    const m1 = t.store.getOpenSignUserMapping(FIRM1, USER1);
-    const m2 = t.store.getOpenSignUserMapping(FIRM2, USER1);
+    const m1 = await t.store.getOpenSignUserMapping(FIRM1, USER1);
+    const m2 = await t.store.getOpenSignUserMapping(FIRM2, USER1);
 
     expect(m1).not.toBeNull();
     expect(m2).not.toBeNull();

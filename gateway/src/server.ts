@@ -25,7 +25,7 @@ async function main() {
   });
 
   // Durable store bundle (memory, sqlite, or postgres)
-  const storeBundle = createStoreBundle(createStoreConfigFromEnv(process.env as Record<string, string | undefined>));
+  const storeBundle = await createStoreBundle(createStoreConfigFromEnv(process.env as Record<string, string | undefined>));
   const { mappingStore, nonceStore, outbox } = storeBundle;
 
   const kimaiService = new KimaiService(kimaiClient, mappingStore, outbox, {
@@ -85,16 +85,16 @@ async function main() {
   // Graceful shutdown
   process.on('SIGTERM', () => {
     console.log('[gateway] SIGTERM received, shutting down...');
-    server.close(() => {
-      storeBundle.close?.();
+    server.close(async () => {
+      await storeBundle.close?.();
       process.exit(0);
     });
   });
 
   process.on('SIGINT', () => {
     console.log('[gateway] SIGINT received, shutting down...');
-    server.close(() => {
-      storeBundle.close?.();
+    server.close(async () => {
+      await storeBundle.close?.();
       process.exit(0);
     });
   });

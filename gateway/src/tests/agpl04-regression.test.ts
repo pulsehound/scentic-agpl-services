@@ -26,11 +26,11 @@ const dockerfile = path.join(repoRoot, 'deploy', 'Dockerfile.gateway');
 
 class RecordingNonceStore implements NonceStore {
   calls: Array<{ nonce: string; timestamp: number }> = [];
-  seen(nonce: string, timestamp: number): boolean {
+  async seen(nonce: string, timestamp: number): Promise<boolean> {
     this.calls.push({ nonce, timestamp });
     return false;
   }
-  clear(): void { this.calls = []; }
+  async clear(): Promise<void> { this.calls = []; }
 }
 
 describe('AGPL-04 regression — tests AG–AK', () => {
@@ -147,17 +147,15 @@ describe('AGPL-04 regression — tests AG–AK', () => {
     expect(staging.storeType).toBe('memory');
   });
 
-  // AK. Dockerfile.gateway includes build tools for native modules
-  it('AK: Dockerfile.gateway includes build tools for native modules', () => {
+  // AK. Dockerfile.gateway uses pure-JS Postgres (no native module build tools needed)
+  it('AK: Dockerfile.gateway uses node:20 and copies schema assets', () => {
     expect(existsSync(dockerfile)).toBe(true);
     const df = readFileSync(dockerfile, 'utf-8');
 
-    // better-sqlite3 requires python3, make, and g++ to compile native bits
-    expect(df).toMatch(/python3/);
-    expect(df).toMatch(/\bmake\b/);
-    expect(df).toMatch(/g\+\+/);
+    // AGPL-05: Dockerfile no longer needs python3/make/g++ (pg is pure JS)
     // Schema asset must be copied into dist so the compiled server can read it
     expect(df).toMatch(/schema\.sql/);
     expect(df).toMatch(/node:20/);
+    expect(df).toMatch(/postgres-schema\.sql/);
   });
 });

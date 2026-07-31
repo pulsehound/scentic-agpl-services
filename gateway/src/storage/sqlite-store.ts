@@ -55,13 +55,13 @@ export class SqliteMappingStore implements MappingStore, NonceStore, EventOutbox
   }
 
   // ── MappingStore: Firm ─────────────────────────────────────────────────
-  getFirmMapping(scenticFirmId: string): FirmMapping | null {
+  async getFirmMapping(scenticFirmId: string): Promise<FirmMapping | null> {
     const row = this.db.prepare('SELECT * FROM firm_mappings WHERE scentic_firm_id = ?').get(scenticFirmId) as any;
     return row ? this.rowToFirmMapping(row) : null;
   }
 
-  upsertFirmMapping(params: SyncFirmParams, kimaiTeamId: number, kimaiTeamName: string): FirmMapping {
-    const existing = this.getFirmMapping(params.scenticFirmId);
+  async upsertFirmMapping(params: SyncFirmParams, kimaiTeamId: number, kimaiTeamName: string): Promise<FirmMapping> {
+    const existing = await this.getFirmMapping(params.scenticFirmId);
     const ts = now();
     if (existing) {
       this.db.prepare('UPDATE firm_mappings SET kimai_team_id = ?, kimai_team_name = ?, updated_at = ? WHERE scentic_firm_id = ?')
@@ -74,19 +74,19 @@ export class SqliteMappingStore implements MappingStore, NonceStore, EventOutbox
     return { id, scenticFirmId: params.scenticFirmId, kimaiTeamId, kimaiTeamName, status: 'ACTIVE', createdAt: ts, updatedAt: ts };
   }
 
-  disableFirmMapping(scenticFirmId: string): void {
+  async disableFirmMapping(scenticFirmId: string): Promise<void> {
     this.db.prepare('UPDATE firm_mappings SET status = ?, updated_at = ? WHERE scentic_firm_id = ?')
       .run('DISABLED', now(), scenticFirmId);
   }
 
   // ── MappingStore: User ─────────────────────────────────────────────────
-  getUserMapping(scenticFirmId: string, scenticUserId: string): UserMapping | null {
+  async getUserMapping(scenticFirmId: string, scenticUserId: string): Promise<UserMapping | null> {
     const row = this.db.prepare('SELECT * FROM user_mappings WHERE scentic_firm_id = ? AND scentic_user_id = ?').get(scenticFirmId, scenticUserId) as any;
     return row ? this.rowToUserMapping(row) : null;
   }
 
-  upsertUserMapping(params: SyncUserParams, kimaiUserId: number, kimaiUsername: string, kimaiApiToken: string): UserMapping {
-    const existing = this.getUserMapping(params.scenticFirmId, params.scenticUserId);
+  async upsertUserMapping(params: SyncUserParams, kimaiUserId: number, kimaiUsername: string, kimaiApiToken: string): Promise<UserMapping> {
+    const existing = await this.getUserMapping(params.scenticFirmId, params.scenticUserId);
     const ts = now();
     if (existing) {
       this.db.prepare('UPDATE user_mappings SET kimai_user_id = ?, kimai_username = ?, kimai_api_token = ?, updated_at = ? WHERE scentic_firm_id = ? AND scentic_user_id = ?')
@@ -99,19 +99,19 @@ export class SqliteMappingStore implements MappingStore, NonceStore, EventOutbox
     return { id, scenticFirmId: params.scenticFirmId, scenticUserId: params.scenticUserId, kimaiUserId, kimaiUsername, kimaiApiToken, status: 'ACTIVE', createdAt: ts, updatedAt: ts };
   }
 
-  disableUserMapping(scenticFirmId: string, scenticUserId: string): void {
+  async disableUserMapping(scenticFirmId: string, scenticUserId: string): Promise<void> {
     this.db.prepare('UPDATE user_mappings SET status = ?, updated_at = ? WHERE scentic_firm_id = ? AND scentic_user_id = ?')
       .run('DISABLED', now(), scenticFirmId, scenticUserId);
   }
 
   // ── MappingStore: Client ───────────────────────────────────────────────
-  getClientMapping(scenticFirmId: string, scenticClientId: string): ClientMapping | null {
+  async getClientMapping(scenticFirmId: string, scenticClientId: string): Promise<ClientMapping | null> {
     const row = this.db.prepare('SELECT * FROM client_mappings WHERE scentic_firm_id = ? AND scentic_client_id = ?').get(scenticFirmId, scenticClientId) as any;
     return row ? this.rowToClientMapping(row) : null;
   }
 
-  upsertClientMapping(params: SyncClientParams, kimaiCustomerId: number, displayLabel: string): ClientMapping {
-    const existing = this.getClientMapping(params.scenticFirmId, params.scenticClientId);
+  async upsertClientMapping(params: SyncClientParams, kimaiCustomerId: number, displayLabel: string): Promise<ClientMapping> {
+    const existing = await this.getClientMapping(params.scenticFirmId, params.scenticClientId);
     const ts = now();
     if (existing) {
       this.db.prepare('UPDATE client_mappings SET kimai_customer_id = ?, display_label_used = ?, updated_at = ? WHERE scentic_firm_id = ? AND scentic_client_id = ?')
@@ -125,13 +125,13 @@ export class SqliteMappingStore implements MappingStore, NonceStore, EventOutbox
   }
 
   // ── MappingStore: Matter ───────────────────────────────────────────────
-  getMatterMapping(scenticFirmId: string, scenticMatterId: string): MatterMapping | null {
+  async getMatterMapping(scenticFirmId: string, scenticMatterId: string): Promise<MatterMapping | null> {
     const row = this.db.prepare('SELECT * FROM matter_mappings WHERE scentic_firm_id = ? AND scentic_matter_id = ?').get(scenticFirmId, scenticMatterId) as any;
     return row ? this.rowToMatterMapping(row) : null;
   }
 
-  upsertMatterMapping(params: SyncMatterParams, kimaiProjectId: number, displayLabel: string): MatterMapping {
-    const existing = this.getMatterMapping(params.scenticFirmId, params.scenticMatterId);
+  async upsertMatterMapping(params: SyncMatterParams, kimaiProjectId: number, displayLabel: string): Promise<MatterMapping> {
+    const existing = await this.getMatterMapping(params.scenticFirmId, params.scenticMatterId);
     const ts = now();
     if (existing) {
       this.db.prepare('UPDATE matter_mappings SET kimai_project_id = ?, display_label_used = ?, scentic_client_id = ?, updated_at = ? WHERE scentic_firm_id = ? AND scentic_matter_id = ?')
@@ -145,13 +145,13 @@ export class SqliteMappingStore implements MappingStore, NonceStore, EventOutbox
   }
 
   // ── MappingStore: Activity ─────────────────────────────────────────────
-  getActivityMapping(scenticFirmId: string, scenticActivityCode: string): ActivityMapping | null {
+  async getActivityMapping(scenticFirmId: string, scenticActivityCode: string): Promise<ActivityMapping | null> {
     const row = this.db.prepare('SELECT * FROM activity_mappings WHERE scentic_firm_id = ? AND scentic_activity_code = ?').get(scenticFirmId, scenticActivityCode) as any;
     return row ? this.rowToActivityMapping(row) : null;
   }
 
-  upsertActivityMapping(params: SyncActivityParams, kimaiActivityId: number): ActivityMapping {
-    const existing = this.getActivityMapping(params.scenticFirmId, params.scenticActivityCode);
+  async upsertActivityMapping(params: SyncActivityParams, kimaiActivityId: number): Promise<ActivityMapping> {
+    const existing = await this.getActivityMapping(params.scenticFirmId, params.scenticActivityCode);
     const ts = now();
     if (existing) {
       this.db.prepare('UPDATE activity_mappings SET kimai_activity_id = ?, updated_at = ? WHERE scentic_firm_id = ? AND scentic_activity_code = ?')
@@ -165,13 +165,13 @@ export class SqliteMappingStore implements MappingStore, NonceStore, EventOutbox
   }
 
   // ── MappingStore: TimeEntry ────────────────────────────────────────────
-  getTimeEntryMapping(scenticFirmId: string, scenticTimeEntryId: string): TimeEntryMapping | null {
+  async getTimeEntryMapping(scenticFirmId: string, scenticTimeEntryId: string): Promise<TimeEntryMapping | null> {
     const row = this.db.prepare('SELECT * FROM time_entry_mappings WHERE scentic_firm_id = ? AND scentic_time_entry_id = ?').get(scenticFirmId, scenticTimeEntryId) as any;
     return row ? this.rowToTimeEntryMapping(row) : null;
   }
 
-  upsertTimeEntryMapping(params: CreateTimeEntryParams, kimaiTimesheetId: number): TimeEntryMapping {
-    const existing = this.getTimeEntryMapping(params.scenticFirmId, params.scenticTimeEntryId);
+  async upsertTimeEntryMapping(params: CreateTimeEntryParams, kimaiTimesheetId: number): Promise<TimeEntryMapping> {
+    const existing = await this.getTimeEntryMapping(params.scenticFirmId, params.scenticTimeEntryId);
     const ts = now();
     if (existing) {
       this.db.prepare('UPDATE time_entry_mappings SET kimai_timesheet_id = ?, updated_at = ? WHERE scentic_firm_id = ? AND scentic_time_entry_id = ?')
@@ -184,17 +184,17 @@ export class SqliteMappingStore implements MappingStore, NonceStore, EventOutbox
     return { id, scenticFirmId: params.scenticFirmId, scenticTimeEntryId: params.scenticTimeEntryId, kimaiTimesheetId, scenticMatterId: params.scenticMatterId, scenticUserId: params.scenticUserId, status: 'ACTIVE', createdAt: ts, updatedAt: ts };
   }
 
-  updateTimeEntryMapping(scenticFirmId: string, scenticTimeEntryId: string): void {
+  async updateTimeEntryMapping(scenticFirmId: string, scenticTimeEntryId: string): Promise<void> {
     this.db.prepare('UPDATE time_entry_mappings SET updated_at = ? WHERE scentic_firm_id = ? AND scentic_time_entry_id = ?')
       .run(now(), scenticFirmId, scenticTimeEntryId);
   }
 
-  deleteTimeEntryMapping(scenticFirmId: string, scenticTimeEntryId: string): void {
+  async deleteTimeEntryMapping(scenticFirmId: string, scenticTimeEntryId: string): Promise<void> {
     this.db.prepare('UPDATE time_entry_mappings SET status = ?, updated_at = ? WHERE scentic_firm_id = ? AND scentic_time_entry_id = ?')
       .run('DISABLED', now(), scenticFirmId, scenticTimeEntryId);
   }
 
-  listTimeEntryMappings(params: ListTimeEntriesParams): TimeEntryMapping[] {
+  async listTimeEntryMappings(params: ListTimeEntriesParams): Promise<TimeEntryMapping[]> {
     let sql = 'SELECT * FROM time_entry_mappings WHERE scentic_firm_id = ? AND status = ?';
     const args: unknown[] = [params.scenticFirmId, 'ACTIVE'];
     if (params.scenticUserId) { sql += ' AND scentic_user_id = ?'; args.push(params.scenticUserId); }
@@ -204,13 +204,13 @@ export class SqliteMappingStore implements MappingStore, NonceStore, EventOutbox
   }
 
   // ── MappingStore: OpenSign Firm ────────────────────────────────────────
-  getOpenSignFirmMapping(scenticFirmId: string): OpenSignFirmMapping | null {
+  async getOpenSignFirmMapping(scenticFirmId: string): Promise<OpenSignFirmMapping | null> {
     const row = this.db.prepare('SELECT * FROM opensign_firm_mappings WHERE scentic_firm_id = ?').get(scenticFirmId) as any;
     return row ? this.rowToOpenSignFirmMapping(row) : null;
   }
 
-  upsertOpenSignFirmMapping(params: SyncOpenSignFirmParams, opensignTenantId: string, opensignTenantName: string): OpenSignFirmMapping {
-    const existing = this.getOpenSignFirmMapping(params.scenticFirmId);
+  async upsertOpenSignFirmMapping(params: SyncOpenSignFirmParams, opensignTenantId: string, opensignTenantName: string): Promise<OpenSignFirmMapping> {
+    const existing = await this.getOpenSignFirmMapping(params.scenticFirmId);
     const ts = now();
     if (existing) {
       this.db.prepare('UPDATE opensign_firm_mappings SET opensign_tenant_id = ?, opensign_tenant_name = ?, updated_at = ? WHERE scentic_firm_id = ?')
@@ -223,19 +223,19 @@ export class SqliteMappingStore implements MappingStore, NonceStore, EventOutbox
     return { id, scenticFirmId: params.scenticFirmId, opensignTenantId, opensignTenantName, status: 'ACTIVE', createdAt: ts, updatedAt: ts };
   }
 
-  disableOpenSignFirmMapping(scenticFirmId: string): void {
+  async disableOpenSignFirmMapping(scenticFirmId: string): Promise<void> {
     this.db.prepare('UPDATE opensign_firm_mappings SET status = ?, updated_at = ? WHERE scentic_firm_id = ?')
       .run('DISABLED', now(), scenticFirmId);
   }
 
   // ── MappingStore: OpenSign User ────────────────────────────────────────
-  getOpenSignUserMapping(scenticFirmId: string, scenticUserId: string): OpenSignUserMapping | null {
+  async getOpenSignUserMapping(scenticFirmId: string, scenticUserId: string): Promise<OpenSignUserMapping | null> {
     const row = this.db.prepare('SELECT * FROM opensign_user_mappings WHERE scentic_firm_id = ? AND scentic_user_id = ?').get(scenticFirmId, scenticUserId) as any;
     return row ? this.rowToOpenSignUserMapping(row) : null;
   }
 
-  upsertOpenSignUserMapping(params: SyncOpenSignUserParams, opensignUserId: string, opensignSessionToken: string): OpenSignUserMapping {
-    const existing = this.getOpenSignUserMapping(params.scenticFirmId, params.scenticUserId);
+  async upsertOpenSignUserMapping(params: SyncOpenSignUserParams, opensignUserId: string, opensignSessionToken: string): Promise<OpenSignUserMapping> {
+    const existing = await this.getOpenSignUserMapping(params.scenticFirmId, params.scenticUserId);
     const ts = now();
     if (existing) {
       this.db.prepare('UPDATE opensign_user_mappings SET opensign_user_id = ?, opensign_email = ?, opensign_session_token = ?, updated_at = ? WHERE scentic_firm_id = ? AND scentic_user_id = ?')
@@ -249,13 +249,13 @@ export class SqliteMappingStore implements MappingStore, NonceStore, EventOutbox
   }
 
   // ── MappingStore: OpenSign Workflow ────────────────────────────────────
-  getOpenSignWorkflowMapping(scenticFirmId: string, scenticSignatureWorkflowId: string): OpenSignWorkflowMapping | null {
+  async getOpenSignWorkflowMapping(scenticFirmId: string, scenticSignatureWorkflowId: string): Promise<OpenSignWorkflowMapping | null> {
     const row = this.db.prepare('SELECT * FROM opensign_workflow_mappings WHERE scentic_firm_id = ? AND scentic_signature_workflow_id = ?').get(scenticFirmId, scenticSignatureWorkflowId) as any;
     return row ? this.rowToOpenSignWorkflowMapping(row) : null;
   }
 
-  upsertOpenSignWorkflowMapping(params: CreateOpenSignWorkflowParams, opensignDocumentId: string, opensignWorkflowId: string, opensignStatus: string): OpenSignWorkflowMapping {
-    const existing = this.getOpenSignWorkflowMapping(params.scenticFirmId, params.scenticSignatureWorkflowId);
+  async upsertOpenSignWorkflowMapping(params: CreateOpenSignWorkflowParams, opensignDocumentId: string, opensignWorkflowId: string, opensignStatus: string): Promise<OpenSignWorkflowMapping> {
+    const existing = await this.getOpenSignWorkflowMapping(params.scenticFirmId, params.scenticSignatureWorkflowId);
     const ts = now();
     if (existing) {
       this.db.prepare('UPDATE opensign_workflow_mappings SET opensign_document_id = ?, opensign_workflow_id = ?, opensign_status = ?, updated_at = ? WHERE scentic_firm_id = ? AND scentic_signature_workflow_id = ?')
@@ -268,24 +268,24 @@ export class SqliteMappingStore implements MappingStore, NonceStore, EventOutbox
     return { id, scenticFirmId: params.scenticFirmId, scenticSignatureWorkflowId: params.scenticSignatureWorkflowId, scenticMatterId: params.scenticMatterId, scenticDocumentId: params.scenticDocumentId, scenticDocumentVersionId: params.scenticDocumentVersionId, opensignDocumentId, opensignWorkflowId, opensignStatus, status: 'ACTIVE', createdAt: ts, updatedAt: ts };
   }
 
-  updateOpenSignWorkflowStatus(scenticFirmId: string, scenticSignatureWorkflowId: string, opensignStatus: string): void {
+  async updateOpenSignWorkflowStatus(scenticFirmId: string, scenticSignatureWorkflowId: string, opensignStatus: string): Promise<void> {
     this.db.prepare('UPDATE opensign_workflow_mappings SET opensign_status = ?, updated_at = ? WHERE scentic_firm_id = ? AND scentic_signature_workflow_id = ?')
       .run(opensignStatus, now(), scenticFirmId, scenticSignatureWorkflowId);
   }
 
-  listOpenSignWorkflowMappings(scenticFirmId: string): OpenSignWorkflowMapping[] {
+  async listOpenSignWorkflowMappings(scenticFirmId: string): Promise<OpenSignWorkflowMapping[]> {
     const rows = this.db.prepare('SELECT * FROM opensign_workflow_mappings WHERE scentic_firm_id = ? AND status = ?').all(scenticFirmId, 'ACTIVE') as any[];
     return rows.map(r => this.rowToOpenSignWorkflowMapping(r));
   }
 
   // ── MappingStore: OpenSign Signer ──────────────────────────────────────
-  getOpenSignSignerMapping(scenticFirmId: string, scenticSignatureWorkflowId: string, scenticSignerId: string): OpenSignSignerMapping | null {
+  async getOpenSignSignerMapping(scenticFirmId: string, scenticSignatureWorkflowId: string, scenticSignerId: string): Promise<OpenSignSignerMapping | null> {
     const row = this.db.prepare('SELECT * FROM opensign_signer_mappings WHERE scentic_firm_id = ? AND scentic_signature_workflow_id = ? AND scentic_signer_id = ?').get(scenticFirmId, scenticSignatureWorkflowId, scenticSignerId) as any;
     return row ? this.rowToOpenSignSignerMapping(row) : null;
   }
 
-  upsertOpenSignSignerMapping(scenticFirmId: string, scenticSignatureWorkflowId: string, scenticSignerId: string, opensignSignerId: string, signerEmailHash: string): OpenSignSignerMapping {
-    const existing = this.getOpenSignSignerMapping(scenticFirmId, scenticSignatureWorkflowId, scenticSignerId);
+  async upsertOpenSignSignerMapping(scenticFirmId: string, scenticSignatureWorkflowId: string, scenticSignerId: string, opensignSignerId: string, signerEmailHash: string): Promise<OpenSignSignerMapping> {
+    const existing = await this.getOpenSignSignerMapping(scenticFirmId, scenticSignatureWorkflowId, scenticSignerId);
     const ts = now();
     if (existing) {
       this.db.prepare('UPDATE opensign_signer_mappings SET opensign_signer_id = ?, signer_email_hash = ?, updated_at = ? WHERE scentic_firm_id = ? AND scentic_signature_workflow_id = ? AND scentic_signer_id = ?')
@@ -299,12 +299,12 @@ export class SqliteMappingStore implements MappingStore, NonceStore, EventOutbox
   }
 
   // ── MappingStore: Utility ──────────────────────────────────────────────
-  clear(): void {
+  async clear(): Promise<void> {
     this.db.exec('DELETE FROM firm_mappings; DELETE FROM user_mappings; DELETE FROM client_mappings; DELETE FROM matter_mappings; DELETE FROM activity_mappings; DELETE FROM time_entry_mappings; DELETE FROM opensign_firm_mappings; DELETE FROM opensign_user_mappings; DELETE FROM opensign_workflow_mappings; DELETE FROM opensign_signer_mappings; DELETE FROM nonces; DELETE FROM idempotency_keys; DELETE FROM outbox_events;');
   }
 
   // ── NonceStore ─────────────────────────────────────────────────────────
-  seen(nonce: string, timestamp: number): boolean {
+  async seen(nonce: string, timestamp: number): Promise<boolean> {
     // Clean expired nonces
     const cutoff = Date.now() - this.maxAgeMs;
     this.db.prepare('DELETE FROM nonces WHERE timestamp < ?').run(cutoff);
@@ -316,7 +316,7 @@ export class SqliteMappingStore implements MappingStore, NonceStore, EventOutbox
   }
 
   // ── EventOutbox ────────────────────────────────────────────────────────
-  publish(event: Omit<OutboxEvent, 'eventId' | 'createdAt' | 'retryCount' | 'maxRetries' | 'status'>): OutboxEvent {
+  async publish(event: Omit<OutboxEvent, 'eventId' | 'createdAt' | 'retryCount' | 'maxRetries' | 'status'>): Promise<OutboxEvent> {
     const fullEvent: OutboxEvent = {
       ...event,
       eventId: crypto.randomUUID(),
@@ -330,16 +330,16 @@ export class SqliteMappingStore implements MappingStore, NonceStore, EventOutbox
     return fullEvent;
   }
 
-  getPending(): OutboxEvent[] {
+  async getPending(): Promise<OutboxEvent[]> {
     const rows = this.db.prepare('SELECT * FROM outbox_events WHERE status = ?').all('PENDING') as any[];
     return rows.map(r => this.rowToOutboxEvent(r));
   }
 
-  markSent(eventId: string): void {
+  async markSent(eventId: string): Promise<void> {
     this.db.prepare('UPDATE outbox_events SET status = ? WHERE event_id = ?').run('SENT', eventId);
   }
 
-  markFailed(eventId: string): void {
+  async markFailed(eventId: string): Promise<void> {
     const event = this.db.prepare('SELECT retry_count, max_retries FROM outbox_events WHERE event_id = ?').get(eventId) as any;
     if (!event) return;
     const newRetryCount = event.retry_count + 1;
@@ -347,7 +347,7 @@ export class SqliteMappingStore implements MappingStore, NonceStore, EventOutbox
     this.db.prepare('UPDATE outbox_events SET retry_count = ?, status = ? WHERE event_id = ?').run(newRetryCount, newStatus, eventId);
   }
 
-  getAll(): OutboxEvent[] {
+  async getAll(): Promise<OutboxEvent[]> {
     const rows = this.db.prepare('SELECT * FROM outbox_events').all() as any[];
     return rows.map(r => this.rowToOutboxEvent(r));
   }

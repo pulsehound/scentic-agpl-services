@@ -1,10 +1,10 @@
 # Scentic Core — AGPL Gateway Environment Variables Required
 
-> **Status:** Documentation only. No Scentic core `.env` or `env-schema.ts` file was modified. This documents the env vars Scentic core would need to add if Yair decides to integrate with the AGPL gateway.
+> **Status:** Documentation only. No Scentic core `.env` or `env-schema.ts` file was modified. This documents the env vars Scentic core would need if Yair decides to integrate with the AGPL gateway, plus the gateway-side env vars an operator must set (§7).
 >
-> **Scope:** The Scentic-side (`scentic.ai`) env vars only. Gateway-side env vars are documented in `.env.example` and `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` §4.
+> **Scope:** The Scentic-side (`scentic.ai`) env vars (§§1–6) and the gateway-side env vars relevant to the durable store and integration (§7). The full gateway-side env list is in `.env.example` and `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` §4.
 >
-> **Related:** `docs/SCENTIC_CORE_REQUIRED_CHANGES.md` (§2), `docs/SCENTIC_INTERFACE_SPEC.md` (§3), `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` (§3).
+> **Related:** `docs/SCENTIC_CORE_REQUIRED_CHANGES.md` (§2), `docs/SCENTIC_INTERFACE_SPEC.md` (§3), `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` (§3, §13).
 
 ---
 
@@ -101,6 +101,27 @@ When the AGPL gateway is not configured (i.e. `SCENTIC_AGPL_SIGNATURE_PROVIDER_T
 | Webhook receiver | The route still exists and still verifies HMAC. With no `SCENTIC_AGPL_WEBHOOK_HMAC_SECRET`, all webhooks fail signature verification (`401`). This is correct fail-closed behavior — no webhook is processed without a configured secret. |
 
 This disabled state is the default. Scentic continues to operate without the AGPL gateway; the gateway is an opt-in integration.
+
+---
+
+## 7. Gateway-side env vars (operator-set)
+
+These env vars are set on the **gateway** (the AGPL service), not on Scentic core. They are documented here so the Scentic operator knows what the gateway deployment requires. The full gateway env list is in `.env.example` and `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` §4. The subset below is the AGPL-05 durable-store configuration.
+
+| Env var | Type | Required | Production validation | Description |
+|---------|------|----------|----------------------|-------------|
+| `GATEWAY_STORE_TYPE` | string | Yes | `memory` / `sqlite` / `postgres`. `memory` rejected in production; `sqlite` rejected unless `GATEWAY_ALLOW_SQLITE_IN_PRODUCTION=true`. Production must be `postgres`. | Selects the gateway durable store backend. Docker and production default to `postgres`. |
+| `GATEWAY_DATABASE_URL` | string (secret URL) | Yes (when `postgres`) | Must be a private-IP/localhost connection string in production; password must not be a placeholder. Loaded from Secret Manager. | Postgres connection string, e.g. `postgres://gateway:<password>@<cloud-sql-private-ip>:5432/gateway`. Drives the `pg.Pool` in `gateway/src/storage/postgres-store.ts`. |
+| `GATEWAY_POSTGRES_SSL_MODE` | string | No | `disable` / `require` / `verify-ca` / `verify-full`. Default `disable` (acceptable only for private-IP/VPC-internal). Use `require`+ for any non-private hop. | Postgres `sslmode` for the `pg` connection. |
+| `GATEWAY_ALLOW_SQLITE_IN_PRODUCTION` | boolean | No | Default `false`. | Escape hatch to allow `sqlite` in production (single-instance only; **not recommended**). |
+| `GATEWAY_REDIS_URL` | string (secret URL) | No | — | Optional Redis URL for the nonce/idempotency store. **Not required** — Postgres provides atomic nonce/idempotency via `ON CONFLICT`. Left empty by default. |
+
+**Notes:**
+
+- `GATEWAY_DATABASE_URL` is a Secret Manager secret in production (see `deploy/secrets.example.md`), never a plaintext env value or baked into the image.
+- The store factory (`gateway/src/storage/store-factory.ts`) is **async**; `createStoreBundle` returns `Promise<StoreBundle>` and runs `postgres-schema.sql` on boot.
+- Multi-instance safety is provided by Postgres atomic primitives: nonces (`ON CONFLICT DO NOTHING`), idempotency (`ON CONFLICT`), outbox (`FOR UPDATE SKIP LOCKED`). See `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` §13.2 and `docs/SECURITY_THREAT_MODEL.md` T-17.
+- These are gateway-only; Scentic core does not read or set them. Scentic core only needs the `SCENTIC_AGPL_*` vars in §1–§2.
 
 ---
 

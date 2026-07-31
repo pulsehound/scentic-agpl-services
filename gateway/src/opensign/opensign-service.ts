@@ -77,7 +77,7 @@ export class OpenSignService {
     }
 
     // Check existing mapping (idempotent)
-    const existing = this.store.getOpenSignFirmMapping(params.scenticFirmId);
+    const existing = await this.store.getOpenSignFirmMapping(params.scenticFirmId);
     if (existing && existing.status === 'ACTIVE') {
       return { success: true, data: { opensignTenantId: existing.opensignTenantId, opensignTenantName: existing.opensignTenantName } };
     }
@@ -85,7 +85,7 @@ export class OpenSignService {
     // Create tenant in OpenSign
     const tenantResult = await this.client.createTenant(params.firmName, `firm-${params.scenticFirmId}@scentic.local`);
     if (!tenantResult.success) {
-      this.outbox.publish({
+      await this.outbox.publish({
         eventType: 'OPENSIGN_SYNC_FAILED',
         scenticFirmId: params.scenticFirmId,
         correlationId,
@@ -96,9 +96,9 @@ export class OpenSignService {
     }
 
     const tenant = tenantResult.data!;
-    this.store.upsertOpenSignFirmMapping(params, tenant.objectId, params.firmName);
+    await this.store.upsertOpenSignFirmMapping(params, tenant.objectId, params.firmName);
 
-    this.outbox.publish({
+    await this.outbox.publish({
       eventType: 'OPENSIGN_FIRM_INITIALIZED',
       scenticFirmId: params.scenticFirmId,
       correlationId,
@@ -116,13 +116,13 @@ export class OpenSignService {
       return { success: false, error: notSupported('OpenSign is not enabled') };
     }
 
-    const firmMapping = this.store.getOpenSignFirmMapping(params.scenticFirmId);
+    const firmMapping = await this.store.getOpenSignFirmMapping(params.scenticFirmId);
     if (!firmMapping || firmMapping.status !== 'ACTIVE') {
       return { success: false, error: notFound('OpenSign firm mapping not found. Initialize firm first.') };
     }
 
     // Check existing (idempotent)
-    const existing = this.store.getOpenSignUserMapping(params.scenticFirmId, params.scenticUserId);
+    const existing = await this.store.getOpenSignUserMapping(params.scenticFirmId, params.scenticUserId);
     if (existing && existing.status === 'ACTIVE') {
       return { success: true, data: { opensignUserId: existing.opensignUserId } };
     }
@@ -138,7 +138,7 @@ export class OpenSignService {
     });
 
     if (!userResult.success) {
-      this.outbox.publish({
+      await this.outbox.publish({
         eventType: 'OPENSIGN_SYNC_FAILED',
         scenticFirmId: params.scenticFirmId,
         correlationId,
@@ -152,9 +152,9 @@ export class OpenSignService {
     const loginResult = await this.client.login(params.email, password);
     const sessionToken = loginResult.success ? loginResult.data!.sessionToken : '';
 
-    this.store.upsertOpenSignUserMapping(params, userResult.data!.objectId, sessionToken);
+    await this.store.upsertOpenSignUserMapping(params, userResult.data!.objectId, sessionToken);
 
-    this.outbox.publish({
+    await this.outbox.publish({
       eventType: 'OPENSIGN_USER_SYNCED',
       scenticFirmId: params.scenticFirmId,
       correlationId,
@@ -181,13 +181,13 @@ export class OpenSignService {
     }
 
     // Check existing (idempotent)
-    const existing = this.store.getOpenSignWorkflowMapping(params.scenticFirmId, params.scenticSignatureWorkflowId);
+    const existing = await this.store.getOpenSignWorkflowMapping(params.scenticFirmId, params.scenticSignatureWorkflowId);
     if (existing && existing.status === 'ACTIVE') {
       return { success: true, data: existing };
     }
 
     // Verify firm mapping exists
-    const firmMapping = this.store.getOpenSignFirmMapping(params.scenticFirmId);
+    const firmMapping = await this.store.getOpenSignFirmMapping(params.scenticFirmId);
     if (!firmMapping || firmMapping.status !== 'ACTIVE') {
       return { success: false, error: notFound('OpenSign firm mapping not found. Initialize firm first.') };
     }
@@ -199,7 +199,7 @@ export class OpenSignService {
     }
 
     // Get or create a user for the sender (use first synced user or admin)
-    const userMapping = this.store.getOpenSignUserMapping(params.scenticFirmId, params.signers[0].scenticSignerId);
+    const userMapping = await this.store.getOpenSignUserMapping(params.scenticFirmId, params.signers[0].scenticSignerId);
     const extUserPtr = userMapping
       ? { objectId: userMapping.opensignUserId, __type: 'Pointer', className: '_User' }
       : { objectId: '', __type: 'Pointer', className: '_User' };
@@ -236,7 +236,7 @@ export class OpenSignService {
       });
       if (!linkResult.success) {
         // Continue with other signers; log the issue
-        this.outbox.publish({
+        await this.outbox.publish({
           eventType: 'OPENSIGN_SYNC_FAILED',
           scenticFirmId: params.scenticFirmId,
           correlationId,
@@ -245,7 +245,7 @@ export class OpenSignService {
         });
       } else {
         const emailHash = createHash('sha256').update(signer.email).digest('hex');
-        this.store.upsertOpenSignSignerMapping(
+        await this.store.upsertOpenSignSignerMapping(
           params.scenticFirmId,
           params.scenticSignatureWorkflowId,
           signer.scenticSignerId,
@@ -256,14 +256,14 @@ export class OpenSignService {
     }
 
     // Store workflow mapping
-    const workflowMapping = this.store.upsertOpenSignWorkflowMapping(
+    const workflowMapping = await this.store.upsertOpenSignWorkflowMapping(
       params,
       opensignDocId,
       opensignDocId, // workflow ID = document ID in OpenSign
       'DRAFT',
     );
 
-    this.outbox.publish({
+    await this.outbox.publish({
       eventType: 'OPENSIGN_WORKFLOW_CREATED',
       scenticFirmId: params.scenticFirmId,
       correlationId,
@@ -285,7 +285,7 @@ export class OpenSignService {
       return { success: false, error: notSupported('OpenSign is not enabled') };
     }
 
-    const mapping = this.store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId);
+    const mapping = await this.store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId);
     if (!mapping || mapping.status !== 'ACTIVE') {
       return { success: false, error: notFound('Workflow not found') };
     }
@@ -300,8 +300,8 @@ export class OpenSignService {
 
     // Update stored status if changed
     if (mapping.opensignStatus !== status) {
-      this.store.updateOpenSignWorkflowStatus(scenticFirmId, scenticSignatureWorkflowId, status);
-      this.outbox.publish({
+      await this.store.updateOpenSignWorkflowStatus(scenticFirmId, scenticSignatureWorkflowId, status);
+      await this.outbox.publish({
         eventType: 'OPENSIGN_WORKFLOW_STATUS_CHANGED',
         scenticFirmId,
         correlationId,
@@ -331,7 +331,7 @@ export class OpenSignService {
       return { success: false, error: notSupported('OpenSign is not enabled') };
     }
 
-    const mapping = this.store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId);
+    const mapping = await this.store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId);
     if (!mapping || mapping.status !== 'ACTIVE') {
       return { success: false, error: notFound('Workflow not found') };
     }
@@ -340,10 +340,10 @@ export class OpenSignService {
     // There is no separate "send" Cloud Function. The document is already sent when
     // signers are linked. We update the status to SENT if it was DRAFT.
     if (mapping.opensignStatus === 'DRAFT') {
-      this.store.updateOpenSignWorkflowStatus(scenticFirmId, scenticSignatureWorkflowId, 'SENT');
+      await this.store.updateOpenSignWorkflowStatus(scenticFirmId, scenticSignatureWorkflowId, 'SENT');
     }
 
-    this.outbox.publish({
+    await this.outbox.publish({
       eventType: 'OPENSIGN_WORKFLOW_SENT',
       scenticFirmId,
       correlationId,
@@ -364,7 +364,7 @@ export class OpenSignService {
       return { success: false, error: notSupported('OpenSign is not enabled') };
     }
 
-    const mapping = this.store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId);
+    const mapping = await this.store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId);
     if (!mapping || mapping.status !== 'ACTIVE') {
       return { success: false, error: notFound('Workflow not found') };
     }
@@ -380,9 +380,9 @@ export class OpenSignService {
       return { success: false, error: wrapUpstreamError('OpenSign', 'cancelDocument', cancelResult.error) };
     }
 
-    this.store.updateOpenSignWorkflowStatus(scenticFirmId, scenticSignatureWorkflowId, 'VOIDED');
+    await this.store.updateOpenSignWorkflowStatus(scenticFirmId, scenticSignatureWorkflowId, 'VOIDED');
 
-    this.outbox.publish({
+    await this.outbox.publish({
       eventType: 'OPENSIGN_WORKFLOW_CANCELLED',
       scenticFirmId,
       correlationId,
@@ -404,7 +404,7 @@ export class OpenSignService {
       return { success: false, error: notSupported('OpenSign is not enabled') };
     }
 
-    const mapping = this.store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId);
+    const mapping = await this.store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId);
     if (!mapping || mapping.status !== 'ACTIVE') {
       return { success: false, error: notFound('Workflow not found') };
     }
@@ -421,7 +421,7 @@ export class OpenSignService {
       return { success: false, error: notSupported('OpenSign is not enabled') };
     }
 
-    const mapping = this.store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId);
+    const mapping = await this.store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId);
     if (!mapping || mapping.status !== 'ACTIVE') {
       return { success: false, error: notFound('Workflow not found') };
     }
@@ -435,7 +435,7 @@ export class OpenSignService {
     const docResult = await this.client.getDocument(mapping.opensignDocumentId);
     if (!docResult.success) {
       // OpenSign down — safe retry/failure state
-      this.outbox.publish({
+      await this.outbox.publish({
         eventType: 'OPENSIGN_CONNECTION_HEALTH_CHANGED',
         scenticFirmId,
         correlationId,
@@ -450,10 +450,10 @@ export class OpenSignService {
     const changed = mapping.opensignStatus !== newStatus;
 
     if (changed) {
-      this.store.updateOpenSignWorkflowStatus(scenticFirmId, scenticSignatureWorkflowId, newStatus);
+      await this.store.updateOpenSignWorkflowStatus(scenticFirmId, scenticSignatureWorkflowId, newStatus);
 
       // Publish status change event
-      this.outbox.publish({
+      await this.outbox.publish({
         eventType: 'OPENSIGN_WORKFLOW_STATUS_CHANGED',
         scenticFirmId,
         correlationId,
@@ -468,7 +468,7 @@ export class OpenSignService {
 
       // Publish completion events if completed
       if (newStatus === 'COMPLETED') {
-        this.outbox.publish({
+        await this.outbox.publish({
           eventType: 'OPENSIGN_WORKFLOW_COMPLETED',
           scenticFirmId,
           correlationId,
@@ -481,7 +481,7 @@ export class OpenSignService {
         });
 
         if (doc.SignedUrl) {
-          this.outbox.publish({
+          await this.outbox.publish({
             eventType: 'OPENSIGN_COMPLETED_PDF_READY',
             scenticFirmId,
             correlationId,
@@ -495,7 +495,7 @@ export class OpenSignService {
         }
 
         if (doc.CertificateUrl) {
-          this.outbox.publish({
+          await this.outbox.publish({
             eventType: 'OPENSIGN_CERTIFICATE_READY',
             scenticFirmId,
             correlationId,
@@ -527,7 +527,7 @@ export class OpenSignService {
       return { success: false, error: notSupported('OpenSign is not enabled') };
     }
 
-    const workflows = this.store.listOpenSignWorkflowMappings(scenticFirmId);
+    const workflows = await this.store.listOpenSignWorkflowMappings(scenticFirmId);
     const terminalStates = new Set(['COMPLETED', 'DECLINED', 'EXPIRED', 'VOIDED', 'FAILED']);
     const activeWorkflows = workflows.filter(w => !terminalStates.has(w.opensignStatus));
 
@@ -554,7 +554,7 @@ export class OpenSignService {
       return { success: false, error: notSupported('OpenSign is not enabled') };
     }
 
-    const mapping = this.store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId);
+    const mapping = await this.store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId);
     if (!mapping || mapping.status !== 'ACTIVE') {
       return { success: false, error: notFound('Workflow not found') };
     }
@@ -583,7 +583,7 @@ export class OpenSignService {
   // ── Disable firm ──────────────────────────────────────────────────────
 
   async disableFirm(scenticFirmId: string, correlationId: string): Promise<ServiceResult<{ disabled: boolean }>> {
-    this.store.disableOpenSignFirmMapping(scenticFirmId);
+    await this.store.disableOpenSignFirmMapping(scenticFirmId);
     return { success: true, data: { disabled: true } };
   }
 

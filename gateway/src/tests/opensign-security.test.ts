@@ -42,7 +42,7 @@ describe('OpenSign security (PII hygiene, source offer, vendor pin, core boundar
       'corr',
     );
 
-    const events = t.outbox.getAll();
+    const events = await t.outbox.getAll();
     expect(events.length).toBeGreaterThan(0);
     for (const e of events) {
       const payloadStr = JSON.stringify(e.payload);
@@ -72,7 +72,7 @@ describe('OpenSign security (PII hygiene, source offer, vendor pin, core boundar
       'corr',
     );
 
-    for (const e of t.outbox.getAll()) {
+    for (const e of await t.outbox.getAll()) {
       const payloadStr = JSON.stringify(e.payload);
       expect(payloadStr).not.toContain(DOC_URL);
       expect(payloadStr).not.toContain('dGVzdA==');

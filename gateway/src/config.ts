@@ -40,6 +40,7 @@ export interface GatewayConfig {
   sqlitePath: string;
   allowSqliteInProduction: boolean;
   redisUrl: string | null;
+  postgresSslMode: string;
 }
 
 const PLACEHOLDER_VALUES = new Set([
@@ -181,6 +182,7 @@ export function loadConfig(env: Record<string, string | undefined>): GatewayConf
     sqlitePath: env['GATEWAY_SQLITE_PATH'] ?? './gateway-state.db',
     allowSqliteInProduction: (env['GATEWAY_ALLOW_SQLITE_IN_PRODUCTION'] ?? 'false').toLowerCase() === 'true',
     redisUrl: env['GATEWAY_REDIS_URL'] ?? null,
+    postgresSslMode: env['GATEWAY_POSTGRES_SSL_MODE'] ?? 'disable',
   };
 }
 

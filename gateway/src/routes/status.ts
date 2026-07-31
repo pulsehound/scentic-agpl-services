@@ -19,7 +19,7 @@ export interface StatusDeps {
   webhookDispatcher?: WebhookDispatcher;
   mappingStore: MappingStore;
   storeType: 'memory' | 'sqlite' | 'postgres';
-  nonceStoreType: 'memory' | 'sqlite' | 'redis';
+  nonceStoreType: 'memory' | 'sqlite' | 'redis' | 'postgres';
   outboxStoreType: 'memory' | 'sqlite' | 'postgres';
 }
 
@@ -95,6 +95,8 @@ export function createStatusRouter(deps: StatusDeps): Router {
           mapping: storeType,
           nonce: nonceStoreType,
           outbox: outboxStoreType,
+          durable: storeType === 'sqlite' || storeType === 'postgres',
+          productionSuitable: storeType === 'postgres',
         },
         sourceOffer: {
           route: '/source',
@@ -102,14 +104,14 @@ export function createStatusRouter(deps: StatusDeps): Router {
         },
         warnings: [
           ...(storeType === 'memory' ? ['In-memory mapping store — data lost on restart'] : []),
+          ...(storeType === 'sqlite' ? ['SQLite store — single-instance only, not suitable for production multi-instance'] : []),
           ...(nonceStoreType === 'memory' ? ['In-memory nonce store — not suitable for multi-instance'] : []),
           ...(outboxStoreType === 'memory' ? ['In-memory outbox — events lost on restart'] : []),
           'Production readiness: false',
           'Scentic core integration: not connected (interface spec only)',
         ],
         blockers: [
-          'Durable production mapping store required (SQLite/Postgres)',
-          'Redis/shared nonce store required for multi-instance',
+          ...(storeType !== 'postgres' ? ['Postgres production store required for production deployment'] : []),
           'Real Kimai container contract test evidence required',
           'Real OpenSign container contract test evidence required',
           'OpenSign master key IP allowlist hardening required',

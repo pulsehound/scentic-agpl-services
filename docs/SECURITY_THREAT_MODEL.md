@@ -1,6 +1,6 @@
 # Scentic ↔ AGPL Gateway Security Threat Model
 
-**Status:** AGPL-00 planning document + AGPL-02 mitigation notes (T-02, T-16) + AGPL-03 mitigation notes (T-03 webhook dispatch). The gateway side is implemented; Scentic-core-side mitigations are documentation-only until Yair lands the receiver.
+**Status:** AGPL-00 planning document + AGPL-02 mitigation notes (T-02, T-16) + AGPL-03 mitigation notes (T-03 webhook dispatch) + AGPL-05 mitigation notes (T-17 Postgres durable store). The gateway side is implemented; Scentic-core-side mitigations are documentation-only until Yair lands the receiver.
 **Scope:** Threat model for the integration between the proprietary Scentic core and the AGPL-licensed `scentic-agpl-services` gateway (Kimai time tracking + OpenSign e-signature).
 **Audience:** Gateway implementers, Scentic core integration engineers, security reviewers, `security-auditor` droid, `release-gatekeeper`.
 **Method:** Each threat is scored for severity and paired with proposed controls and proposed tests. Tests are mandatory evidence for gate closure; controls alone are not evidence.
@@ -27,6 +27,7 @@
 | T-14 | Logs contain document contents/signers/matter names | HIGH | Log verbosity | Structured logging + redaction + hashed-only fields |
 | T-15 | AGPL license contamination of Scentic proprietary repo | HIGH | Copy/paste AGPL code | Repo isolation + import scanning + license headers |
 | T-16 | OpenSign MASTER_KEY compromise | CRITICAL | Key leak / overuse | Use only for provisioning + KMS + rotation + audit |
+| T-17 | Durable-store data exposure / cross-firm leakage via Postgres | HIGH | SQL injection / weak scoping / shared instance | Parameterized queries + Firm-scoped tables + UNIQUE constraints + private-IP Cloud SQL |
 
 ---
 
@@ -385,6 +386,37 @@
 
 > **AGPL-02 mitigation note:** T-16 is partially mitigated in AGPL-02 by **using the master key only for provisioning-style operations** (admin login, tenant creation, user creation). The OpenSign client (`gateway/src/opensign/opensign-client.ts`) authenticates with the master key for all current operations, which is a carried gap: the production target is to use per-user/per-firm session tokens for routine document operations and restrict the master key to tenant/user provisioning only (see `docs/AGPL_02_CLOSEOUT.md` §5). The master key is never logged, never sent to Scentic, and is subject to the production config validation in `gateway/src/config.ts` (must be a strong non-placeholder value when `OPENSIGN_ENABLED=true`). Network isolation (T-08) prevents the master key from being used from outside the gateway network. Full T-16 closure (master key used **only** for provisioning, routine ops on per-firm tokens) is an AGPL-04 production-readiness requirement.
 
+## T-17 Durable-store data exposure / cross-firm leakage via Postgres
+
+- **Severity:** HIGH
+- **Description:** AGPL-05 replaced the Docker SQLite fallback with a **Postgres** durable store (`gateway-postgres` locally; Cloud SQL Postgres in production). The store persists mapping, nonce, idempotency, and outbox state across Firm boundaries in a shared database. A SQL-injection flaw, a missing `scentic_firm_id` filter, or a mis-scoped query could leak one Firm's mappings or outbox events to another Firm, or expose signer/time-entry metadata that should not be persisted in plaintext.
+- **Attack vector:**
+  1. Attacker controls Firm B and triggers a gateway operation whose store query is built via string concatenation (SQL injection), or whose `WHERE` clause omits the `scentic_firm_id` filter.
+  2. The query returns Firm A's mappings, outbox events, or signer rows.
+  3. Alternatively, the outbox `JSONB payload` is queried/read by a concurrent instance processing a different Firm's event due to a missing firm filter.
+- **Impact:** Cross-Firm leakage of mapping metadata, webhook event payloads, or signer email hashes. Violates the cross-firm leakage invariant.
+- **Proposed controls (implemented in AGPL-05):**
+  1. **Parameterized queries only.** `PostgresMappingStore` (`gateway/src/storage/postgres-store.ts`) uses the `pg` driver's parameterized query API (`pool.query(text, [params])`) for every statement. No string-interpolated SQL. Values are bound, never concatenated.
+  2. **Firm-scoped tables.** Every mapping table carries a `scentic_firm_id` column, and every lookup query filters on it (`WHERE scentic_firm_id = $1`). The mapping-store interface inherits the AGPL-01 cross-firm leakage prevention: a Firm A context cannot resolve Firm B mappings because the `firmId` filter returns nothing.
+  3. **`UNIQUE` constraints.** `(scentic_firm_id, scentic_entity_id)` uniqueness on every mapping table prevents a Kimai/OpenSign entity from being aliased to two Firms at the database level.
+  4. **Multi-instance safety without double-dispatch.** The outbox uses `SELECT ... FOR UPDATE SKIP LOCKED` so multiple gateway instances can poll the outbox concurrently; each event is claimed by exactly one instance. Nonces use `INSERT ... ON CONFLICT (nonce) DO NOTHING` for atomic replay prevention; idempotency uses `INSERT ... ON CONFLICT (key) ...` for atomic duplicate prevention.
+  5. **No document contents.** The schema (`gateway/src/storage/postgres-schema.sql`) stores only operational metadata. PDF bytes, document contents, and file bodies are never persisted in Postgres (they live in OpenSign's object storage and are fetched on demand).
+  6. **Signer emails hashed.** `opensign_signer_mappings` stores `signer_email_hash`, not the raw signer email. The raw email is sent to OpenSign (required for delivery) but is not persisted in the gateway durable store.
+  7. **Outbox payload is `JSONB` but minimal.** `outbox_events.payload` is `JSONB` and contains only the `WebhookPayload` fields (event type, ids, `safeSummary`). It never contains PDF content, raw signer emails (hashed only in `safeSummary`), or HMAC secrets.
+  8. **Private-IP Cloud SQL.** In production the Cloud SQL Postgres instance has no public IP (`--no-assign-ip`); it is reachable only over the AGPL VPC. The gateway connects via the VPC connector (`run.googleapis.com/vpc-access-egress: private-ip-only`). Direct access from outside the gateway network is blocked (T-08).
+  9. **Connection string from Secret Manager.** `GATEWAY_DATABASE_URL` is a Secret Manager secret, not a plaintext env value or baked into the image. The DB password is never logged.
+  10. **SSL mode.** `GATEWAY_POSTGRES_SSL_MODE` defaults to `disable` (acceptable only for private-IP/VPC-internal connections); production with any non-private hop should use `require` or stricter.
+- **Proposed tests:**
+  - **Cross-firm mapping leakage test (Postgres):** Seed Firm A and Firm B mappings in the Postgres store. As Firm B, attempt to resolve Firm A's client/matter/workflow mappings via the store interface. Assert `null`/empty (firm filter holds).
+  - **SQL-injection mutation test:** Mutate one query to use string concatenation (e.g. interpolate `firmId`); assert a property test feeding a malicious `firmId` (`' OR '1'='1`) is rejected or returns nothing for the wrong firm.
+  - **Outbox firm-scope test:** Insert outbox events for Firm A and Firm B. Assert `FOR UPDATE SKIP LOCKED` processing never delivers a Firm A event to a Firm B webhook target.
+  - **Nonce atomicity test:** Concurrently insert the same nonce from two simulated instances. Assert exactly one succeeds (`ON CONFLICT DO NOTHING`); the other is rejected as a replay.
+  - **Idempotency atomicity test:** Concurrently reuse the same idempotency key with the same body from two instances. Assert exactly one re-executes upstream and the other receives the cached response.
+  - **Schema-content test:** Inspect the Postgres schema and assert no column stores PDF bytes, raw signer emails, or secrets; assert `signer_email_hash` (not `signer_email`) is the persisted field.
+  - **Private-IP test:** Attempt to reach the Cloud SQL Postgres instance from outside the AGPL VPC. Assert connection blocked.
+
+> **AGPL-05 mitigation note:** T-17 is mitigated by the Postgres store design: all queries are parameterized (`pg` bound params), all tables are Firm-scoped with `UNIQUE(scentic_firm_id, ...)` constraints, multi-instance concurrency is handled atomically (`ON CONFLICT`, `FOR UPDATE SKIP LOCKED`), and the schema stores no document contents or raw signer emails (only `signer_email_hash`). Production hardening (Cloud SQL private IP, Secret Manager-backed `GATEWAY_DATABASE_URL`, `GATEWAY_POSTGRES_SSL_MODE=require+`) is documented in `deploy/gcloud/cloud-run-gateway.yaml` and `docs/DEPLOYMENT.md` §3.5 but not yet provisioned (production deployment is blocked — see `docs/PRODUCTION_BLOCKERS.md`). The store interfaces (`MappingStore`, `NonceStore`, `EventOutbox`) are async as of AGPL-05; callers must `await` all store operations.
+
 ---
 
 ## Appendix A: Severity definitions
@@ -410,6 +442,7 @@
 | T-13, T-15 | Dependency and secret scanning; license scanning; repo boundary tests |
 | T-14 | Log redaction property tests |
 | T-16 | Credential rotation tests; privilege tests |
+| T-17 | Cross-firm leakage tests (Postgres); SQL-injection mutation tests; nonce/idempotency atomicity tests |
 
 ## Appendix C: Open questions (AGPL-00)
 

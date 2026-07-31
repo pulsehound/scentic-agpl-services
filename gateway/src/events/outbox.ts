@@ -41,18 +41,18 @@ export interface OutboxEvent {
 }
 
 export interface EventOutbox {
-  publish(event: Omit<OutboxEvent, 'eventId' | 'createdAt' | 'retryCount' | 'maxRetries' | 'status'>): OutboxEvent;
-  getPending(): OutboxEvent[];
-  markSent(eventId: string): void;
-  markFailed(eventId: string): void;
-  clear(): void;
-  getAll(): OutboxEvent[];
+  publish(event: Omit<OutboxEvent, 'eventId' | 'createdAt' | 'retryCount' | 'maxRetries' | 'status'>): Promise<OutboxEvent>;
+  getPending(): Promise<OutboxEvent[]>;
+  markSent(eventId: string): Promise<void>;
+  markFailed(eventId: string): Promise<void>;
+  clear(): Promise<void>;
+  getAll(): Promise<OutboxEvent[]>;
 }
 
 export class InMemoryEventOutbox implements EventOutbox {
   private events: OutboxEvent[] = [];
 
-  publish(event: Omit<OutboxEvent, 'eventId' | 'createdAt' | 'retryCount' | 'maxRetries' | 'status'>): OutboxEvent {
+  async publish(event: Omit<OutboxEvent, 'eventId' | 'createdAt' | 'retryCount' | 'maxRetries' | 'status'>): Promise<OutboxEvent> {
     const fullEvent: OutboxEvent = {
       ...event,
       eventId: crypto.randomUUID(),
@@ -65,16 +65,16 @@ export class InMemoryEventOutbox implements EventOutbox {
     return fullEvent;
   }
 
-  getPending(): OutboxEvent[] {
+  async getPending(): Promise<OutboxEvent[]> {
     return this.events.filter(e => e.status === 'PENDING');
   }
 
-  markSent(eventId: string): void {
+  async markSent(eventId: string): Promise<void> {
     const event = this.events.find(e => e.eventId === eventId);
     if (event) event.status = 'SENT';
   }
 
-  markFailed(eventId: string): void {
+  async markFailed(eventId: string): Promise<void> {
     const event = this.events.find(e => e.eventId === eventId);
     if (event) {
       event.retryCount++;
@@ -84,11 +84,11 @@ export class InMemoryEventOutbox implements EventOutbox {
     }
   }
 
-  clear(): void {
+  async clear(): Promise<void> {
     this.events = [];
   }
 
-  getAll(): OutboxEvent[] {
+  async getAll(): Promise<OutboxEvent[]> {
     return [...this.events];
   }
 }

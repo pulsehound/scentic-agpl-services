@@ -59,8 +59,8 @@ export function verifySignature(
 }
 
 export interface NonceStore {
-  seen(nonce: string, timestamp: number): boolean;
-  clear(): void;
+  seen(nonce: string, timestamp: number): Promise<boolean>;
+  clear(): Promise<void>;
 }
 
 export class InMemoryNonceStore implements NonceStore {
@@ -71,7 +71,7 @@ export class InMemoryNonceStore implements NonceStore {
     this.maxAgeMs = maxAgeMs;
   }
 
-  seen(nonce: string, timestamp: number): boolean {
+  async seen(nonce: string, timestamp: number): Promise<boolean> {
     // Clean expired nonces
     const cutoff = Date.now() - this.maxAgeMs;
     for (const [key, ts] of this.nonces) {
@@ -83,7 +83,7 @@ export class InMemoryNonceStore implements NonceStore {
     return false;
   }
 
-  clear(): void {
+  async clear(): Promise<void> {
     this.nonces.clear();
   }
 }

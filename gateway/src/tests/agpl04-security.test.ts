@@ -42,12 +42,12 @@ afterEach(() => {
 describe('AGPL-04 security — tests AA–AF', () => {
 
   // AA. SQLite store does not store raw signer emails (only hashes)
-  it('AA: SQLite store does not store raw signer emails (only hashes)', () => {
+  it('AA: SQLite store does not store raw signer emails (only hashes)', async () => {
     const store = new SqliteMappingStore(dbPath);
     try {
       const rawEmail = 'signer-aa@example.com';
       const emailHash = 'sha256:' + 'a'.repeat(64); // deterministic hash fixture
-      store.upsertOpenSignSignerMapping(
+      await store.upsertOpenSignSignerMapping(
         'firm-aa', 'sw-aa', 'signer-aa',
         'os-signer-aa', emailHash,
       );
@@ -70,24 +70,24 @@ describe('AGPL-04 security — tests AA–AF', () => {
   });
 
   // AB. Store factory production validation rejects memory store
-  it('AB: Store factory production validation rejects memory store', () => {
+  it('AB: Store factory production validation rejects memory store', async () => {
     const cfg: StoreFactoryConfig = {
       storeType: 'memory',
       isProduction: true,
       allowSqliteInProduction: false,
     };
-    expect(() => createStoreBundle(cfg)).toThrow(/memory.*not allowed in production/i);
+    await expect(createStoreBundle(cfg)).rejects.toThrow(/memory.*not allowed in production/i);
   });
 
   // AC. Store factory production validation rejects sqlite without explicit allow flag
-  it('AC: Store factory production validation rejects sqlite without explicit allow flag', () => {
+  it('AC: Store factory production validation rejects sqlite without explicit allow flag', async () => {
     const cfg: StoreFactoryConfig = {
       storeType: 'sqlite',
       sqlitePath: dbPath,
       isProduction: true,
       allowSqliteInProduction: false,
     };
-    expect(() => createStoreBundle(cfg)).toThrow(/sqlite.*not allowed in production/i);
+    await expect(createStoreBundle(cfg)).rejects.toThrow(/sqlite.*not allowed in production/i);
   });
 
   // AD. Config includes storeType, sqlitePath, allowSqliteInProduction, redisUrl fields

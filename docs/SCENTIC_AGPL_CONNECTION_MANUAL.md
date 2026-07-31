@@ -1,6 +1,6 @@
 # Scentic ↔ AGPL Gateway Connection Manual (DRAFT)
 
-> **Status:** Updated for AGPL-03. The gateway + Kimai + OpenSign integration is implemented and runnable locally (see §12). The Scentic-side `AGPL_GATEWAY` provider type is **documentation only** (see `docs/SCENTIC_CORE_REQUIRED_CHANGES.md`); the gateway is exercisable via its own REST surface and a manual webhook receiver.
+> **Status:** Updated for AGPL-05. The gateway + Kimai + OpenSign integration is implemented and runnable locally (see §12), now backed by a **Postgres durable store** (replacing the SQLite Docker fallback) and a **mock Scentic webhook receiver** for local end-to-end webhook testing. The Scentic-side `AGPL_GATEWAY` provider type is **documentation only** (see `docs/SCENTIC_CORE_REQUIRED_CHANGES.md`); the gateway is exercisable via its own REST surface and the bundled mock Scentic receiver. **Scentic core was not modified in any AGPL phase (AGPL-00 through AGPL-05).**
 > **Audience:** Operators integrating the Scentic core with the AGPL services stack (Kimai, OpenSign, gateway).
 
 ---
@@ -13,9 +13,12 @@ Scentic core connects to the AGPL services stack exclusively through the **AGPL 
 Scentic core  --(HTTPS, service token)-->  AGPL gateway  -->  Kimai REST API
                                                       -->  OpenSign Parse REST API
 Scentic core  <--(webhook, HMAC)----------  AGPL gateway  <--  (OpenSign polling)
+                                                      |
+                                                      +--> Postgres (durable store:
+                                                            mappings, nonces, outbox)
 ```
 
-The gateway owns all mapping state between Scentic entities (Firms, Users, Clients, Matters) and AGPL entities (Kimai teams/users/customers/projects, OpenSign tenants/templates/envelopes).
+The gateway owns all mapping state between Scentic entities (Firms, Users, Clients, Matters) and AGPL entities (Kimai teams/users/customers/projects, OpenSign tenants/templates/envelopes). As of AGPL-05, this state is persisted in a **Postgres** database (`gateway-postgres` in the Docker stack; Cloud SQL Postgres in the production manifest), replacing the in-memory/SQLite fallbacks. All store interfaces (`MappingStore`, `NonceStore`, `EventOutbox`) are now **async** (return `Promise<T>`).
 
 ---
 
@@ -64,6 +67,10 @@ The canonical list is in `.env.example`. Summary:
 | `OPENSIGN_MASTER_KEY` | OpenSign Parse master key (server-side only; never sent to Scentic). |
 | `OPENSIGN_POLL_INTERVAL_MS` | Polling interval for OpenSign completion detection (default `15000`). |
 | `LOG_LEVEL` | `info` / `debug` / `warn` / `error`. |
+| `GATEWAY_STORE_TYPE` | Durable store backend: `memory` / `sqlite` / `postgres`. **Docker and production use `postgres`.** `memory` is dev/tests only and rejected in production. See §13. |
+| `GATEWAY_DATABASE_URL` | Postgres connection string (required when `GATEWAY_STORE_TYPE=postgres`). Format: `postgres://user:password@host:5432/gateway`. Loaded from Secret Manager in production. |
+| `GATEWAY_POSTGRES_SSL_MODE` | Postgres `sslmode` (`disable` / `require` / `verify-ca` / `verify-full`). Default `disable` (acceptable only for private-IP / VPC-internal connections). Use `require` or stricter for any non-localhost connection. |
+| `GATEWAY_REDIS_URL` | Optional Redis URL for nonce/idempotency store. **Not required** — Postgres provides atomic nonce/idempotency via `ON CONFLICT` (see §13.2). Left empty by default. |
 
 All secrets are mounted from GCloud Secret Manager in production (see `docs/DEPLOYMENT.md` §5).
 
@@ -156,11 +163,12 @@ This polling gap is a known limitation (see §10).
 | Component | Check | Expected |
 |---|---|---|
 | Gateway | `GET /health` | `200 { status:"ok", deps:{ kimai:"ok", opensign:"ok" } }` |
+| Gateway status | `GET /api/v1/status` | `200` with `data.stores.durable` and `data.stores.productionSuitable` booleans. `productionSuitable=true` only when `GATEWAY_STORE_TYPE=postgres`. See §13.3. |
 | Scentic → Gateway | Scentic's provider-health-service calls `GET /health` and reports gateway status alongside other signature providers. | `ok` |
 | Kimai | Kimai `/api/ping` (or login page 200). | 200 |
 | OpenSign | Parse `/app/{APP_ID}/health` or `GET /`. | 200 |
 
-Scentic checks gateway health via the provider health service. When `SCENTIC_AGPL_SIGNATURE_PROVIDER_TYPE=AGPL_GATEWAY` is implemented (AGPL-03), the provider health service will register the gateway and surface its status in Scentic's health endpoint and admin UI.
+Scentic checks gateway health via the provider health service. When `SCENTIC_AGPL_SIGNATURE_PROVIDER_TYPE=AGPL_GATEWAY` is implemented (AGPL-03 spec), the provider health service will register the gateway and surface its status in Scentic's health endpoint and admin UI.
 
 ---
 
@@ -201,9 +209,9 @@ Run these in order after deployment:
      }'
    # Expected: 200/201 with the OpenSign envelope id and Scentic matter mapping.
    ```
-5. **Confirm webhook delivery** — Complete or decline the test envelope; confirm Scentic receives the webhook at `POST /api/agpl/webhooks/events` with a valid signature and an idempotent persist.
+5. **Confirm webhook delivery** — Complete or decline the test envelope; confirm the mock Scentic receiver (or the real Scentic webhook receiver, once implemented) receives the webhook at `POST /api/agpl/webhooks/events` with a valid signature and an idempotent persist. In the Docker stack, inspect `docker compose logs mock-scentic` for received events.
 
-> Until the Scentic-side `AGPL_GATEWAY` provider type exists (AGPL-03), steps 3–5 are exercised via the gateway directly and a manual webhook receiver. Once AGPL-03 lands, steps 3–5 are exercised through the Scentic signature provider interface.
+> Until the Scentic-side `AGPL_GATEWAY` provider type exists (spec in `docs/SCENTIC_CORE_REQUIRED_CHANGES.md`), steps 3–5 are exercised via the gateway directly and the bundled `mock-scentic` webhook receiver. Once the Scentic-side provider lands, steps 3–5 are exercised through the Scentic signature provider interface.
 
 ---
 
@@ -212,12 +220,14 @@ Run these in order after deployment:
 | Item | Status | Resolution phase |
 |---|---|---|
 | OpenSign native webhooks | **Not available.** Gateway polls OpenSign for completion. | Accepted workaround; revisit if OpenSign adds webhooks. |
-| Scentic `AGPL_GATEWAY` `SignatureProviderType` | **Not yet implemented.** | AGPL-03 |
-| Scentic env-schema validation for `SCENTIC_AGPL_*` | **Not yet implemented.** | AGPL-03 |
-| Scentic provider-health-service entry for the gateway | **Not yet implemented.** | AGPL-03 |
-| Scentic time-tracking API routes | **Not yet implemented.** | AGPL-03 |
-| Production deployment | **Not yet provisioned.** | AGPL-04 |
-| Source-offer endpoint live | **Not yet live.** | AGPL-05 |
+| Scentic `AGPL_GATEWAY` `SignatureProviderType` | **Not yet implemented.** | Scentic core (by Yair); spec in `docs/SCENTIC_CORE_REQUIRED_CHANGES.md`. |
+| Scentic env-schema validation for `SCENTIC_AGPL_*` | **Not yet implemented.** | Scentic core (by Yair). |
+| Scentic provider-health-service entry for the gateway | **Not yet implemented.** | Scentic core (by Yair). |
+| Scentic time-tracking API routes | **Not yet implemented.** | Scentic core (by Yair). |
+| Production deployment | **Not yet provisioned.** | Blocked on GCP project + secrets (see `docs/PRODUCTION_BLOCKERS.md`). |
+| Source-offer endpoint live | **Live locally** (`GET /source`); final repo URL pending. | AGPL-05; finalize before external network use. |
+| Durable store | **Delivered** — Postgres (`GATEWAY_STORE_TYPE=postgres`) is the Docker and production default. SQLite remains a bare-metal local fallback; `memory` is tests/dev only. | AGPL-05 COMPLETE. |
+| Mock Scentic webhook receiver | **Delivered** — `mock-scentic` service in the Docker stack (local dev only). | AGPL-05 COMPLETE. |
 
 ---
 
@@ -232,34 +242,36 @@ This manual references those endpoints by path only; always consult `docs/SCENTI
 
 ---
 
-## 12. Local deployment (AGPL-03)
+## 12. Local deployment (AGPL-03 / AGPL-05)
 
-This section describes how to run the full AGPL stack locally for development and connection testing. **This is not production-ready** (see §12.7). The Scentic-side provider is documentation-only (see `docs/SCENTIC_CORE_REQUIRED_CHANGES.md`); local testing exercises the gateway directly plus a manual webhook receiver.
+This section describes how to run the full AGPL stack locally for development and connection testing. **This is not production-ready** (see §12.6). The Scentic-side provider is documentation-only (see `docs/SCENTIC_CORE_REQUIRED_CHANGES.md`); local testing exercises the gateway directly plus the bundled mock Scentic webhook receiver (AGPL-05).
 
 ### 12.1 Architecture overview (local)
 
 ```
-Scentic core (local, optional)        <-- webhook receiver (manual harness or future AGPL_GATEWAY provider)
+Scentic core (local, optional)        <-- webhook receiver (mock-scentic or future AGPL_GATEWAY provider)
   ^                                     |
   | webhook (HMAC, X-Gateway-*)         |
   |                                     v
   +--- gateway (Node/Express, :3101) ---+
-        |              |
-        v              v
-      Kimai          OpenSign
-   (Apache, :8001)  (Parse Server, :8080)
-        |              |
-        v              v
+        |              |              |
+        v              v              v
+      Kimai          OpenSign      gateway-postgres
+   (Apache, :8001)  (Parse, :8080)  (Postgres 16, :5433)
+        |              |              durable store: mappings,
+        v              v              nonces, idempotency, outbox
    MariaDB (:3306)  MongoDB (:27017)
                      MinIO (:9000)  [OpenSign file storage]
 ```
 
 Components:
 
-- **gateway** — the AGPL bridge service (`gateway/`, Node.js/Express/TypeScript).
+- **gateway** — the AGPL bridge service (`gateway/`, Node.js/Express/TypeScript). Durable state in Postgres.
+- **gateway-postgres** — Postgres 16 durable store for mapping/nonce/idempotency/outbox tables (AGPL-05; replaces the SQLite Docker fallback).
+- **mock-scentic** — lightweight Node.js webhook receiver that verifies the gateway's HMAC signature, logs events, and responds `200`. **Local dev only.**
 - **Kimai** — AGPL time-tracking (PHP/Symfony/Apache) + MariaDB.
 - **OpenSign** — AGPL e-signature (Parse Server) + MongoDB + MinIO (S3-compatible file storage).
-- **databases** — MariaDB (Kimai) and MongoDB (OpenSign) as named volumes.
+- **databases** — Postgres (gateway), MariaDB (Kimai), MongoDB (OpenSign) as named volumes.
 
 ### 12.2 Local deployment setup
 
@@ -281,11 +293,11 @@ Components:
    ```bash
    docker compose -f deploy/docker-compose.yml up -d
    ```
-   This starts gateway, Kimai, Kimai DB, OpenSign server, OpenSign frontend, and MongoDB.
+   This starts `gateway-postgres`, `mock-scentic`, `gateway`, Kimai, Kimai DB, OpenSign server, OpenSign frontend, MongoDB, and MailHog. The gateway uses `GATEWAY_STORE_TYPE=postgres` and waits for `gateway-postgres` to be healthy before booting.
 4. **Startup order** is enforced by `depends_on` in the compose file:
    - `kimai-db` → `kimai`
    - `opensign-mongo` → `opensign-server` → `opensign-frontend`
-   - `kimai` + `opensign-server` → `gateway`
+   - `gateway-postgres` (healthy) + `mock-scentic` + `kimai` + `opensign-server` → `gateway`
 5. **Initialize Kimai** (first run only):
    ```bash
    docker compose -f deploy/docker-compose.yml exec kimai bin/console kimai:install -n
@@ -301,8 +313,17 @@ Components:
 curl http://localhost:3101/health
 # Expected: 200 with deps.kimai + deps.opensign reachable
 
-# Gateway status
+# Gateway status (shows stores.durable + stores.productionSuitable)
 curl http://localhost:3101/api/v1/status
+# Expected: stores.mapping=postgres, stores.durable=true, stores.productionSuitable=true
+
+# Mock Scentic webhook receiver health
+curl http://localhost:3199/health
+# Expected: 200 (mock receiver ready; logs received webhook events to stdout)
+
+# Gateway Postgres (durable store) health
+docker compose -f deploy/docker-compose.yml exec gateway-postgres pg_isready -U gateway
+# Expected: /var/run/postgresql:5432 - accepting connections
 
 # Kimai provider health (HMAC required — use the gateway test helper or signed curl)
 curl http://localhost:3101/api/v1/providers/kimai/health \
@@ -333,7 +354,7 @@ pnpm --filter gateway build
 pnpm --filter gateway test:run -- src/tests/webhook-dispatcher.test.ts
 ```
 
-Real-Kimai / real-OpenSign container contract tests are a carried gap (mock-only in AGPL-01/02/03); they must land before AGPL-04 production readiness.
+Real-Kimai / real-OpenSign container contract tests are a carried gap (mock-only in AGPL-01/02/03); they must land before production readiness (see `docs/PRODUCTION_BLOCKERS.md`).
 
 ### 12.5 Troubleshooting
 
@@ -344,21 +365,26 @@ Real-Kimai / real-OpenSign container contract tests are a carried gap (mock-only
 | `401 UNAUTHORIZED` on signed requests | Wrong HMAC secret, stale timestamp, or wrong canonical string | Confirm `SCENTIC_SHARED_HMAC_SECRET` matches between Scentic/dev caller and gateway; check clock skew (±5 min); verify the canonical string per `docs/SCENTIC_INTERFACE_SPEC.md` §3.1. For bodyless requests, ensure body hash = `JSON.stringify({}) = '{}'`. |
 | `503 UNAVAILABLE` on signature routes | `OPENSIGN_ENABLED=false` | Set `OPENSIGN_ENABLED=true` and provide `OPENSIGN_MASTER_KEY`/`OPENSIGN_ADMIN_PASSWORD`. |
 | `501 NOT_SUPPORTED` on `/remind` | OpenSign has no manual reminder API | Expected; use automatic per-doc reminders (`AutomaticReminders`). |
-| Webhook not delivered | `SCENTIC_WEBHOOK_TARGET_URL` or `SCENTIC_WEBHOOK_HMAC_SECRET` unset on gateway | Set both in `deploy/.env`; the dispatcher is disabled when either is missing. |
-| Port conflict on 3101/8001/8080/3000 | Another process using the port | Change the host port mapping in `deploy/docker-compose.yml`. |
+| Webhook not delivered | `SCENTIC_WEBHOOK_TARGET_URL` or `SCENTIC_WEBHOOK_HMAC_SECRET` unset on gateway | Set both in `deploy/.env`; the dispatcher is disabled when either is missing. In the Docker stack the target is `http://mock-scentic:3199/webhook`. |
+| Gateway fails to boot: `GATEWAY_STORE_TYPE=postgres requires GATEWAY_DATABASE_URL` | Postgres selected but no connection string | Set `GATEWAY_DATABASE_URL` (the Docker stack default is `postgres://gateway@gateway-postgres:5432/gateway`). |
+| Gateway fails to boot: connection refused to `gateway-postgres:5432` | Postgres container not yet healthy | Wait for the `gateway-postgres` healthcheck; the gateway `depends_on` gate should prevent this, but a slow host may need `start_period` raised. |
+| Mock Scentic receiver not receiving webhooks | `mock-scentic` not started or secret mismatch | Verify `docker compose ps mock-scentic` is healthy; confirm `SCENTIC_WEBHOOK_HMAC_SECRET` matches between `gateway` and `mock-scentic` (both read `${SCENTIC_WEBHOOK_HMAC_SECRET:-dev-webhook-hmac-secret}`). |
+| Port conflict on 3101/3199/5433/8001/8080/3000 | Another process using the port | Change the host port mapping in `deploy/docker-compose.yml`. |
 
 ### 12.6 What is NOT production-ready
 
 The local deployment is for development and connection testing only. The following are **not** production-ready:
 
-- **In-memory stores:** the gateway uses in-memory mapping, nonce, and idempotency stores. A process restart loses mapping state. Production needs SQLite/Postgres (mapping) and Redis (nonce/idempotency).
+- **Docker store is durable but not production-hardened:** the Docker stack uses Postgres (`gateway-postgres`) with a local volume, so mapping/nonce/outbox state survives gateway restarts. However the volume is local (no backup/restore tested), dev credentials are placeholders, and no HA/replication is configured. Production uses Cloud SQL Postgres (see §13 and `deploy/gcloud/`).
+- **`memory` store (when explicitly selected):** `GATEWAY_STORE_TYPE=memory` uses in-memory mapping/nonce/idempotency stores; a process restart loses all state. Rejected in production by `store-factory.ts`. Suitable only for unit/integration tests.
+- **`sqlite` store (bare-metal local only):** `GATEWAY_STORE_TYPE=sqlite` is a single-instance file-backed store. It is **not used in the Docker stack** (better-sqlite3 native module segfaults in the Alpine container) and is rejected in production unless `GATEWAY_ALLOW_SQLITE_IN_PRODUCTION=true`. Use it only for bare-metal local dev outside Docker.
 - **Dev secrets:** the docker-compose dev defaults (`dev-master-key`, `dev-token`, `dev-webhook-secret`) are placeholders. Production requires strong secrets from Secret Manager (see `docs/SCENTIC_ENV_VARS_REQUIRED.md` §3).
-- **Mock-only upstream tests:** no real-Kimai or real-OpenSign container contract test exists yet (carried gap for AGPL-04).
+- **Mock-only upstream tests:** no real-Kimai or real-OpenSign container contract test exists yet (carried gap; see `docs/PRODUCTION_BLOCKERS.md`).
 - **Per-user upstream tokens:** the gateway uses `KIMAI_ADMIN_API_TOKEN` and the OpenSign master key for all operations. Per-user tokens are a carried gap.
 - **No TLS:** local uses plain HTTP. Production requires TLS (VPC peering + Internal Load Balancer, or Cloud Run `--ingress=internal`).
-- **No persistence guarantees:** docker volumes are local; no backup/restore tested.
+- **No persistence/backup guarantees:** the Docker Postgres volume is local; no backup/restore tested. Cloud SQL backups are documented but not provisioned.
 - **No monitoring/alerting:** local has no uptime checks or dashboards.
-- **Webhook dispatch to a real Scentic receiver:** the Scentic-side `AGPL_GATEWAY` provider and webhook receiver are documentation-only (AGPL-03). Local webhook testing uses a manual receiver harness.
+- **Mock Scentic receiver:** the `mock-scentic` service is a **local dev harness only** — it logs events and returns `200` but does not persist them or update Scentic workflow state. The real Scentic-side webhook receiver is documentation-only (see `docs/SCENTIC_CORE_REQUIRED_CHANGES.md` §3).
 
 ### 12.7 How to keep Scentic proprietary core separate
 
@@ -375,12 +401,82 @@ For the full separation policy, see `docs/SOURCE_OFFER.md`.
 
 ---
 
+## 13. Postgres durable store (AGPL-05)
+
+AGPL-05 replaced the Docker SQLite fallback with a **Postgres** durable store. The `pg` driver is pure JavaScript (no native build tools), which also resolved the `better-sqlite3` segfault that prevented SQLite from running inside the Alpine-based gateway container. The Docker stack now uses Postgres by default; the production manifest targets Cloud SQL Postgres.
+
+### 13.1 Configuration
+
+| Env var | Required | Default (Docker) | Purpose |
+|---|---|---|---|
+| `GATEWAY_STORE_TYPE` | Yes | `postgres` | Selects the store backend. `postgres` for Docker/production; `memory` for tests; `sqlite` for bare-metal local only. |
+| `GATEWAY_DATABASE_URL` | Yes (when `postgres`) | `postgres://gateway@gateway-postgres:5432/gateway` | Postgres connection string. Production value comes from Secret Manager. |
+| `GATEWAY_POSTGRES_SSL_MODE` | No | `disable` | `sslmode` for the `pg` connection. Use `require`+ for any non-localhost/non-private-IP connection. |
+| `GATEWAY_ALLOW_SQLITE_IN_PRODUCTION` | No | `false` | Escape hatch to allow SQLite in production (single-instance only; **not recommended**). |
+
+The store factory (`gateway/src/storage/store-factory.ts`) is **async** (`createStoreBundle` returns `Promise<StoreBundle>`). In production it rejects `memory` outright and rejects `sqlite` unless the escape hatch is set. The Postgres adapter (`gateway/src/storage/postgres-store.ts`) runs `postgres-schema.sql` on boot to create the 13 tables if absent.
+
+### 13.2 Multi-instance safety
+
+Postgres enables safe horizontal scaling of the gateway (multiple Cloud Run instances sharing one Cloud SQL database):
+
+- **Nonces** (`nonces` table): atomic replay prevention via `INSERT ... ON CONFLICT (nonce) DO NOTHING`. Two concurrent instances cannot accept the same nonce.
+- **Idempotency keys** (`idempotency_keys` table): atomic duplicate prevention via `INSERT ... ON CONFLICT (key) DO NOTHING`/`DO UPDATE`. A retried write is served from the cached response row, not re-executed upstream.
+- **Outbox** (`outbox_events` table): safe concurrent processing via `SELECT ... FOR UPDATE SKIP LOCKED`. Multiple gateway instances can poll the outbox without double-dispatching the same webhook event.
+- **Mappings**: `UNIQUE` constraints on `(scentic_firm_id, scentic_entity_id)` prevent duplicate mappings across instances.
+
+Redis is **optional** — Postgres alone provides all the atomic primitives required for multi-instance operation. `GATEWAY_REDIS_URL` is left empty by default.
+
+### 13.3 Status endpoint
+
+`GET /api/v1/status` reports the store backend and durability flags:
+
+```json
+"stores": {
+  "mapping": "postgres",
+  "nonce": "postgres",
+  "outbox": "postgres",
+  "durable": true,
+  "productionSuitable": true
+}
+```
+
+`durable` is `true` for `sqlite` and `postgres`; `productionSuitable` is `true` **only** for `postgres`. The `warnings` array flags any non-Postgres backend; the `blockers` array lists remaining production blockers (real upstream contract tests, PFX cert, GCP provisioning, Scentic core integration).
+
+### 13.4 What is stored (and what is not)
+
+The Postgres schema (`gateway/src/storage/postgres-schema.sql`) stores only operational mapping and coordination state — **never** document contents, raw signer emails, or secrets:
+
+| Stored | Not stored |
+|---|---|
+| Scentic ↔ Kimai/OpenSign id mappings (firm, user, client, matter, activity, time entry, workflow, signer) | PDF bytes / document contents |
+| Outbox event metadata + `JSONB payload` (event type, ids, `safeSummary`) | Raw signer emails (only `signer_email_hash` is persisted) |
+| Nonces, idempotency keys + cached response bodies | HMAC secrets, upstream API tokens, master keys |
+| `TIMESTAMPTZ` created/updated timestamps | Confidential matter names beyond the sanitized `display_label_used` |
+
+All tables are **Firm-scoped** (`scentic_firm_id` column) with `UNIQUE` constraints, preserving the cross-firm leakage prevention invariants from AGPL-01/02.
+
+### 13.5 Scentic core was not modified
+
+AGPL-05, like all prior phases, did **not** modify the Scentic core repository (`scentic.ai`). The Postgres store is gateway-internal; Scentic core continues to see the same REST + webhook interface documented in `docs/SCENTIC_INTERFACE_SPEC.md`. The only Scentic-visible change is that the gateway's status endpoint now reports `durable`/`productionSuitable`, and webhook events are persisted in a Postgres outbox (so delivery survives gateway restarts). The Scentic-side webhook receiver still needs to be implemented by Yair (see `docs/SCENTIC_CORE_REQUIRED_CHANGES.md` §3).
+
+---
+
 ## References
 
 - `docs/DEPLOYMENT.md` — AGPL services deployment (production + local).
 - `docs/SOURCE_OFFER.md` — AGPL source-offer compliance.
-- `docs/NEXT_STEPS.md` — implementation roadmap (AGPL-03 lands the Scentic-side changes).
+- `docs/NEXT_STEPS.md` — implementation roadmap (AGPL-05 is the final phase).
 - `docs/SCENTIC_INTERFACE_SPEC.md` — implemented interface (27 routes + 21 webhooks).
 - `docs/SCENTIC_CORE_REQUIRED_CHANGES.md` — Scentic-side changes (documentation only).
-- `docs/SCENTIC_ENV_VARS_REQUIRED.md` — Scentic-side env vars.
+- `docs/SCENTIC_ENV_VARS_REQUIRED.md` — Scentic-side + gateway-side env vars.
+- `docs/SECURITY_THREAT_MODEL.md` — threat model (incl. Postgres storage section, AGPL-05).
+- `docs/AGPL_DEPLOYMENT_HANDOFF.md` — final deployment handoff.
+- `docs/FINAL_OPERATOR_CHECKLIST.md` — operator checklist.
+- `docs/PRODUCTION_BLOCKERS.md` — production blockers.
 - `.env.example` — gateway environment variable list.
+- `gateway/src/storage/postgres-store.ts` — PostgresMappingStore implementation.
+- `gateway/src/storage/postgres-schema.sql` — Postgres DDL (13 tables).
+- `gateway/src/storage/store-factory.ts` — async store factory (memory/sqlite/postgres).
+- `deploy/docker-compose.yml` — local docker-compose stack (Postgres default).
+- `deploy/mock-scentic.js` + `deploy/Dockerfile.mock-scentic` — mock webhook receiver.

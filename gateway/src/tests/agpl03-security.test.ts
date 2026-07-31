@@ -167,7 +167,7 @@ describe('AGPL-03 security & boundary — tests A–D, AA–AK', () => {
 
   // AD. Firm scope appears in every event and endpoint contract
   it('AD: webhook payload includes scenticFirmId on every dispatched event', async () => {
-    const event = t.outbox.publish({
+    const event = await t.outbox.publish({
       eventType: 'KIMAI_TIME_ENTRY_CREATED',
       scenticFirmId: 'firm-ad-test',
       correlationId: 'corr-ad',

@@ -46,8 +46,8 @@ function devConfig(storeType: 'memory' | 'sqlite', extra: Partial<StoreFactoryCo
 describe('AGPL-04 store-factory — tests L–P', () => {
 
   // L. memory bundle returns InMemory* instances
-  it('L: createStoreBundle with memory returns InMemoryMappingStore instances', () => {
-    const bundle = createStoreBundle(devConfig('memory'));
+  it('L: createStoreBundle with memory returns InMemoryMappingStore instances', async () => {
+    const bundle = await createStoreBundle(devConfig('memory'));
 
     expect(bundle.storeType).toBe('memory');
     expect(bundle.nonceStoreType).toBe('memory');
@@ -59,8 +59,8 @@ describe('AGPL-04 store-factory — tests L–P', () => {
   });
 
   // M. sqlite bundle returns SqliteMappingStore instances (single store backs all three)
-  it('M: createStoreBundle with sqlite returns SqliteMappingStore instances', () => {
-    const bundle = createStoreBundle(devConfig('sqlite'));
+  it('M: createStoreBundle with sqlite returns SqliteMappingStore instances', async () => {
+    const bundle = await createStoreBundle(devConfig('sqlite'));
 
     expect(bundle.storeType).toBe('sqlite');
     expect(bundle.nonceStoreType).toBe('sqlite');
@@ -71,41 +71,41 @@ describe('AGPL-04 store-factory — tests L–P', () => {
     expect(bundle.outbox).toBe(bundle.mappingStore);
     expect(typeof bundle.close).toBe('function');
 
-    bundle.close!();
+    await bundle.close!();
   });
 
   // N. memory rejected in production
-  it('N: createStoreBundle rejects memory in production', () => {
+  it('N: createStoreBundle rejects memory in production', async () => {
     const cfg: StoreFactoryConfig = {
       storeType: 'memory',
       isProduction: true,
       allowSqliteInProduction: false,
     };
-    expect(() => createStoreBundle(cfg)).toThrow(/memory.*not allowed in production/i);
+    await expect(createStoreBundle(cfg)).rejects.toThrow(/memory.*not allowed in production/i);
   });
 
   // O. sqlite rejected in production without allow flag
-  it('O: createStoreBundle rejects sqlite in production without allow flag', () => {
+  it('O: createStoreBundle rejects sqlite in production without allow flag', async () => {
     const cfg: StoreFactoryConfig = {
       storeType: 'sqlite',
       sqlitePath: dbPath,
       isProduction: true,
       allowSqliteInProduction: false,
     };
-    expect(() => createStoreBundle(cfg)).toThrow(/sqlite.*not allowed in production/i);
+    await expect(createStoreBundle(cfg)).rejects.toThrow(/sqlite.*not allowed in production/i);
   });
 
   // P. sqlite allowed in production with allow flag
-  it('P: createStoreBundle allows sqlite in production with allow flag', () => {
+  it('P: createStoreBundle allows sqlite in production with allow flag', async () => {
     const cfg: StoreFactoryConfig = {
       storeType: 'sqlite',
       sqlitePath: dbPath,
       isProduction: true,
       allowSqliteInProduction: true,
     };
-    const bundle = createStoreBundle(cfg);
+    const bundle = await createStoreBundle(cfg);
     expect(bundle.storeType).toBe('sqlite');
     expect(bundle.mappingStore).toBeInstanceOf(SqliteMappingStore);
-    bundle.close!();
+    await bundle.close!();
   });
 });

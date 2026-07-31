@@ -1,29 +1,25 @@
 # scentic-agpl-services — Gateway Dockerfile (LOCAL DEVELOPMENT ONLY)
 # Builds the Gateway service for the local docker-compose stack.
 # NOT for production. Production uses Cloud Run (see deploy/gcloud/).
+#
+# AGPL-05: Uses Postgres (pg, pure JS) instead of SQLite (better-sqlite3, native).
+# No native module compilation needed — pg is pure JavaScript.
 
 FROM node:20-alpine
 
 WORKDIR /app/gateway
 
-# Install build tools for native modules (better-sqlite3)
-RUN apk add --no-cache python3 make g++
-
 # Copy gateway package.json and install deps with npm
+# pg is pure JS — no build tools or native compilation needed
 COPY gateway/package.json ./
 RUN npm install
-
-# Force compile better-sqlite3 from source (Alpine/musl needs compilation)
-RUN cd node_modules/better-sqlite3 && rm -rf build prebuilds && npx --yes node-gyp configure && npx --yes node-gyp build
-
-# Verify native module compiled
-RUN test -f node_modules/better-sqlite3/build/Release/better_sqlite3.node
 
 # Copy gateway source and build
 COPY gateway/ ./
 RUN ./node_modules/.bin/tsc
 
-# Copy non-TS assets (schema.sql) to dist
+# Copy non-TS assets (schema files) to dist
+RUN cp src/storage/postgres-schema.sql dist/storage/postgres-schema.sql
 RUN cp src/storage/schema.sql dist/storage/schema.sql
 
 EXPOSE 3101

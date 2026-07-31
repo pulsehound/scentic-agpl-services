@@ -5,7 +5,9 @@ dist
 .git
 *.md
 docs/
-deploy/
 scripts/
 vendor/
 artifacts/
+deploy/gcloud/
+deploy/secrets.example.md
+deploy/env.example

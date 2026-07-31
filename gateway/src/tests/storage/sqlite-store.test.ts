@@ -17,23 +17,23 @@ let tempDir: string;
 let dbPath: string;
 let store: SqliteMappingStore;
 
-beforeEach(() => {
+beforeEach(async () => {
   tempDir = mkdtempSync(join(tmpdir(), 'gateway-sqlite-test-'));
   dbPath = join(tempDir, 'test.db');
   store = new SqliteMappingStore(dbPath);
 });
 
-afterEach(() => {
-  store.close();
+afterEach(async () => {
+  await store.close();
   rmSync(tempDir, { recursive: true, force: true });
 });
 
 describe('AGPL-04 SqliteMappingStore CRUD — tests A–K', () => {
 
   // A. Firm mapping create + retrieve
-  it('A: SqliteMappingStore creates firm mapping and retrieves it', () => {
+  it('A: SqliteMappingStore creates firm mapping and retrieves it', async () => {
     const scenticFirmId = `firm-${crypto.randomUUID()}`;
-    const created = store.upsertFirmMapping(
+    const created = await store.upsertFirmMapping(
       { scenticFirmId, firmName: 'Acme Law' },
       101,
       'Acme Law',
@@ -45,7 +45,7 @@ describe('AGPL-04 SqliteMappingStore CRUD — tests A–K', () => {
     expect(created.kimaiTeamName).toBe('Acme Law');
     expect(created.status).toBe('ACTIVE');
 
-    const fetched = store.getFirmMapping(scenticFirmId);
+    const fetched = await store.getFirmMapping(scenticFirmId);
     expect(fetched).not.toBeNull();
     expect(fetched!.id).toBe(created.id);
     expect(fetched!.kimaiTeamId).toBe(101);
@@ -53,11 +53,11 @@ describe('AGPL-04 SqliteMappingStore CRUD — tests A–K', () => {
   });
 
   // B. Firm mapping upsert updates existing
-  it('B: SqliteMappingStore upserts (updates) existing firm mapping', () => {
+  it('B: SqliteMappingStore upserts (updates) existing firm mapping', async () => {
     const scenticFirmId = `firm-${crypto.randomUUID()}`;
-    store.upsertFirmMapping({ scenticFirmId, firmName: 'Acme Law' }, 101, 'Acme Law');
+    await store.upsertFirmMapping({ scenticFirmId, firmName: 'Acme Law' }, 101, 'Acme Law');
 
-    const updated = store.upsertFirmMapping(
+    const updated = await store.upsertFirmMapping(
       { scenticFirmId, firmName: 'Acme Law PLLC' },
       202,
       'Acme Law PLLC',
@@ -67,19 +67,19 @@ describe('AGPL-04 SqliteMappingStore CRUD — tests A–K', () => {
     expect(updated.kimaiTeamName).toBe('Acme Law PLLC');
     expect(updated.scenticFirmId).toBe(scenticFirmId);
     // Same record, not a duplicate
-    expect(updated.id).toBe(store.getFirmMapping(scenticFirmId)!.id);
+    expect(updated.id).toBe((await store.getFirmMapping(scenticFirmId))!.id);
 
-    store.disableFirmMapping(scenticFirmId);
-    expect(store.getFirmMapping(scenticFirmId)!.status).toBe('DISABLED');
+    await store.disableFirmMapping(scenticFirmId);
+    expect((await store.getFirmMapping(scenticFirmId))!.status).toBe('DISABLED');
   });
 
   // C. User mapping CRUD (create, get, disable)
-  it('C: User mapping CRUD (create, get, disable)', () => {
+  it('C: User mapping CRUD (create, get, disable)', async () => {
     const scenticFirmId = `firm-${crypto.randomUUID()}`;
     const scenticUserId = `user-${crypto.randomUUID()}`;
-    store.upsertFirmMapping({ scenticFirmId, firmName: 'Firm C' }, 1, 'Firm C');
+    await store.upsertFirmMapping({ scenticFirmId, firmName: 'Firm C' }, 1, 'Firm C');
 
-    const created = store.upsertUserMapping(
+    const created = await store.upsertUserMapping(
       { scenticFirmId, scenticUserId, email: 'alice@example.com', firstName: 'Alice', lastName: 'Lawyer' },
       201,
       'alice',
@@ -93,21 +93,21 @@ describe('AGPL-04 SqliteMappingStore CRUD — tests A–K', () => {
     expect(created.kimaiApiToken).toBe('kimai-token-secret');
     expect(created.status).toBe('ACTIVE');
 
-    const fetched = store.getUserMapping(scenticFirmId, scenticUserId);
+    const fetched = await store.getUserMapping(scenticFirmId, scenticUserId);
     expect(fetched).not.toBeNull();
     expect(fetched!.kimaiUserId).toBe(201);
 
-    store.disableUserMapping(scenticFirmId, scenticUserId);
-    expect(store.getUserMapping(scenticFirmId, scenticUserId)!.status).toBe('DISABLED');
+    await store.disableUserMapping(scenticFirmId, scenticUserId);
+    expect((await store.getUserMapping(scenticFirmId, scenticUserId))!.status).toBe('DISABLED');
   });
 
   // D. Client mapping CRUD (create, get)
-  it('D: Client mapping CRUD (create, get)', () => {
+  it('D: Client mapping CRUD (create, get)', async () => {
     const scenticFirmId = `firm-${crypto.randomUUID()}`;
     const scenticClientId = `client-${crypto.randomUUID()}`;
-    store.upsertFirmMapping({ scenticFirmId, firmName: 'Firm D' }, 1, 'Firm D');
+    await store.upsertFirmMapping({ scenticFirmId, firmName: 'Firm D' }, 1, 'Firm D');
 
-    const created = store.upsertClientMapping(
+    const created = await store.upsertClientMapping(
       { scenticFirmId, scenticClientId, clientName: 'Globex Inc' },
       301,
       'Globex Inc',
@@ -118,19 +118,19 @@ describe('AGPL-04 SqliteMappingStore CRUD — tests A–K', () => {
     expect(created.displayLabelUsed).toBe('Globex Inc');
     expect(created.status).toBe('ACTIVE');
 
-    const fetched = store.getClientMapping(scenticFirmId, scenticClientId);
+    const fetched = await store.getClientMapping(scenticFirmId, scenticClientId);
     expect(fetched).not.toBeNull();
     expect(fetched!.kimaiCustomerId).toBe(301);
   });
 
   // E. Matter mapping CRUD (create, get, includes scenticClientId)
-  it('E: Matter mapping CRUD (create, get, includes scenticClientId)', () => {
+  it('E: Matter mapping CRUD (create, get, includes scenticClientId)', async () => {
     const scenticFirmId = `firm-${crypto.randomUUID()}`;
     const scenticClientId = `client-${crypto.randomUUID()}`;
     const scenticMatterId = `matter-${crypto.randomUUID()}`;
-    store.upsertFirmMapping({ scenticFirmId, firmName: 'Firm E' }, 1, 'Firm E');
+    await store.upsertFirmMapping({ scenticFirmId, firmName: 'Firm E' }, 1, 'Firm E');
 
-    const created = store.upsertMatterMapping(
+    const created = await store.upsertMatterMapping(
       { scenticFirmId, scenticMatterId, scenticClientId, matterName: 'Acquisition' },
       401,
       'Acquisition',
@@ -141,19 +141,19 @@ describe('AGPL-04 SqliteMappingStore CRUD — tests A–K', () => {
     expect(created.kimaiProjectId).toBe(401);
     expect(created.status).toBe('ACTIVE');
 
-    const fetched = store.getMatterMapping(scenticFirmId, scenticMatterId);
+    const fetched = await store.getMatterMapping(scenticFirmId, scenticMatterId);
     expect(fetched).not.toBeNull();
     expect(fetched!.scenticClientId).toBe(scenticClientId);
     expect(fetched!.kimaiProjectId).toBe(401);
   });
 
   // F. Activity mapping CRUD (create, get)
-  it('F: Activity mapping CRUD (create, get)', () => {
+  it('F: Activity mapping CRUD (create, get)', async () => {
     const scenticFirmId = `firm-${crypto.randomUUID()}`;
     const code = 'ACT-RESEARCH';
-    store.upsertFirmMapping({ scenticFirmId, firmName: 'Firm F' }, 1, 'Firm F');
+    await store.upsertFirmMapping({ scenticFirmId, firmName: 'Firm F' }, 1, 'Firm F');
 
-    const created = store.upsertActivityMapping(
+    const created = await store.upsertActivityMapping(
       { scenticFirmId, scenticActivityCode: code, activityName: 'Research' },
       501,
     );
@@ -162,7 +162,7 @@ describe('AGPL-04 SqliteMappingStore CRUD — tests A–K', () => {
     expect(created.kimaiActivityId).toBe(501);
     expect(created.status).toBe('ACTIVE');
 
-    const fetched = store.getActivityMapping(scenticFirmId, code);
+    const fetched = await store.getActivityMapping(scenticFirmId, code);
     expect(fetched).not.toBeNull();
     expect(fetched!.kimaiActivityId).toBe(501);
   });
@@ -173,9 +173,9 @@ describe('AGPL-04 SqliteMappingStore CRUD — tests A–K', () => {
     const scenticUserId = `user-${crypto.randomUUID()}`;
     const scenticMatterId = `matter-${crypto.randomUUID()}`;
     const scenticTimeEntryId = `te-${crypto.randomUUID()}`;
-    store.upsertFirmMapping({ scenticFirmId, firmName: 'Firm G' }, 1, 'Firm G');
+    await store.upsertFirmMapping({ scenticFirmId, firmName: 'Firm G' }, 1, 'Firm G');
 
-    const created = store.upsertTimeEntryMapping(
+    const created = await store.upsertTimeEntryMapping(
       {
         scenticFirmId, scenticUserId, scenticMatterId,
         scenticActivityCode: 'ACT-RESEARCH', scenticTimeEntryId,
@@ -188,7 +188,7 @@ describe('AGPL-04 SqliteMappingStore CRUD — tests A–K', () => {
     expect(created.kimaiTimesheetId).toBe(601);
     expect(created.status).toBe('ACTIVE');
 
-    const fetched = store.getTimeEntryMapping(scenticFirmId, scenticTimeEntryId);
+    const fetched = await store.getTimeEntryMapping(scenticFirmId, scenticTimeEntryId);
     expect(fetched).not.toBeNull();
     expect(fetched!.kimaiTimesheetId).toBe(601);
 
@@ -196,25 +196,25 @@ describe('AGPL-04 SqliteMappingStore CRUD — tests A–K', () => {
     const beforeUpdate = fetched!.updatedAt;
     // Small delay to ensure updatedAt timestamp changes
     await new Promise(r => setTimeout(r, 10));
-    store.updateTimeEntryMapping(scenticFirmId, scenticTimeEntryId);
-    const afterUpdate = store.getTimeEntryMapping(scenticFirmId, scenticTimeEntryId);
+    await store.updateTimeEntryMapping(scenticFirmId, scenticTimeEntryId);
+    const afterUpdate = await store.getTimeEntryMapping(scenticFirmId, scenticTimeEntryId);
     expect(afterUpdate!.updatedAt).not.toBe(beforeUpdate);
 
     // list (active)
-    const listed = store.listTimeEntryMappings({ scenticFirmId });
+    const listed = await store.listTimeEntryMappings({ scenticFirmId });
     expect(listed.length).toBe(1);
     expect(listed[0].scenticTimeEntryId).toBe(scenticTimeEntryId);
 
     // soft delete (DISABLED), excluded from list
-    store.deleteTimeEntryMapping(scenticFirmId, scenticTimeEntryId);
-    expect(store.getTimeEntryMapping(scenticFirmId, scenticTimeEntryId)!.status).toBe('DISABLED');
-    expect(store.listTimeEntryMappings({ scenticFirmId }).length).toBe(0);
+    await store.deleteTimeEntryMapping(scenticFirmId, scenticTimeEntryId);
+    expect((await store.getTimeEntryMapping(scenticFirmId, scenticTimeEntryId))!.status).toBe('DISABLED');
+    expect((await store.listTimeEntryMappings({ scenticFirmId })).length).toBe(0);
   });
 
   // H. OpenSign firm mapping CRUD
-  it('H: OpenSign firm mapping CRUD', () => {
+  it('H: OpenSign firm mapping CRUD', async () => {
     const scenticFirmId = `firm-${crypto.randomUUID()}`;
-    const created = store.upsertOpenSignFirmMapping(
+    const created = await store.upsertOpenSignFirmMapping(
       { scenticFirmId, firmName: 'Acme Law' },
       'tenant-1',
       'Acme Law',
@@ -225,12 +225,12 @@ describe('AGPL-04 SqliteMappingStore CRUD — tests A–K', () => {
     expect(created.opensignTenantName).toBe('Acme Law');
     expect(created.status).toBe('ACTIVE');
 
-    const fetched = store.getOpenSignFirmMapping(scenticFirmId);
+    const fetched = await store.getOpenSignFirmMapping(scenticFirmId);
     expect(fetched).not.toBeNull();
     expect(fetched!.opensignTenantId).toBe('tenant-1');
 
     // upsert update
-    const updated = store.upsertOpenSignFirmMapping(
+    const updated = await store.upsertOpenSignFirmMapping(
       { scenticFirmId, firmName: 'Acme Law PLLC' },
       'tenant-2',
       'Acme Law PLLC',
@@ -238,17 +238,17 @@ describe('AGPL-04 SqliteMappingStore CRUD — tests A–K', () => {
     expect(updated.opensignTenantId).toBe('tenant-2');
     expect(updated.opensignTenantName).toBe('Acme Law PLLC');
 
-    store.disableOpenSignFirmMapping(scenticFirmId);
-    expect(store.getOpenSignFirmMapping(scenticFirmId)!.status).toBe('DISABLED');
+    await store.disableOpenSignFirmMapping(scenticFirmId);
+    expect((await store.getOpenSignFirmMapping(scenticFirmId))!.status).toBe('DISABLED');
   });
 
   // I. OpenSign user mapping CRUD (includes email and session token)
-  it('I: OpenSign user mapping CRUD (includes email and session token)', () => {
+  it('I: OpenSign user mapping CRUD (includes email and session token)', async () => {
     const scenticFirmId = `firm-${crypto.randomUUID()}`;
     const scenticUserId = `user-${crypto.randomUUID()}`;
-    store.upsertOpenSignFirmMapping({ scenticFirmId, firmName: 'Firm I' }, 't', 'Firm I');
+    await store.upsertOpenSignFirmMapping({ scenticFirmId, firmName: 'Firm I' }, 't', 'Firm I');
 
-    const created = store.upsertOpenSignUserMapping(
+    const created = await store.upsertOpenSignUserMapping(
       { scenticFirmId, scenticUserId, email: 'bob@example.com', name: 'Bob' },
       'os-user-1',
       'session-token-secret',
@@ -260,13 +260,13 @@ describe('AGPL-04 SqliteMappingStore CRUD — tests A–K', () => {
     expect(created.opensignSessionToken).toBe('session-token-secret');
     expect(created.status).toBe('ACTIVE');
 
-    const fetched = store.getOpenSignUserMapping(scenticFirmId, scenticUserId);
+    const fetched = await store.getOpenSignUserMapping(scenticFirmId, scenticUserId);
     expect(fetched).not.toBeNull();
     expect(fetched!.opensignEmail).toBe('bob@example.com');
     expect(fetched!.opensignSessionToken).toBe('session-token-secret');
 
     // upsert update (email + token rotate)
-    const updated = store.upsertOpenSignUserMapping(
+    const updated = await store.upsertOpenSignUserMapping(
       { scenticFirmId, scenticUserId, email: 'bob2@example.com', name: 'Bob' },
       'os-user-1',
       'session-token-rotated',
@@ -276,14 +276,14 @@ describe('AGPL-04 SqliteMappingStore CRUD — tests A–K', () => {
   });
 
   // J. OpenSign workflow mapping CRUD (create, update status, list)
-  it('J: OpenSign workflow mapping CRUD (create, update status, list)', () => {
+  it('J: OpenSign workflow mapping CRUD (create, update status, list)', async () => {
     const scenticFirmId = `firm-${crypto.randomUUID()}`;
     const scenticSignatureWorkflowId = `sw-${crypto.randomUUID()}`;
     const scenticMatterId = `matter-${crypto.randomUUID()}`;
     const scenticDocumentId = `doc-${crypto.randomUUID()}`;
     const scenticDocumentVersionId = `dv-${crypto.randomUUID()}`;
 
-    const created = store.upsertOpenSignWorkflowMapping(
+    const created = await store.upsertOpenSignWorkflowMapping(
       {
         scenticFirmId, scenticSignatureWorkflowId, scenticMatterId,
         scenticDocumentId, scenticDocumentVersionId,
@@ -301,29 +301,29 @@ describe('AGPL-04 SqliteMappingStore CRUD — tests A–K', () => {
     expect(created.opensignStatus).toBe('DRAFT');
     expect(created.status).toBe('ACTIVE');
 
-    const fetched = store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId);
+    const fetched = await store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId);
     expect(fetched).not.toBeNull();
     expect(fetched!.opensignWorkflowId).toBe('os-wf-1');
 
     // update status
-    store.updateOpenSignWorkflowStatus(scenticFirmId, scenticSignatureWorkflowId, 'SENT');
-    expect(store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId)!.opensignStatus).toBe('SENT');
+    await store.updateOpenSignWorkflowStatus(scenticFirmId, scenticSignatureWorkflowId, 'SENT');
+    expect((await store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId))!.opensignStatus).toBe('SENT');
 
     // list
-    const listed = store.listOpenSignWorkflowMappings(scenticFirmId);
+    const listed = await store.listOpenSignWorkflowMappings(scenticFirmId);
     expect(listed.length).toBe(1);
     expect(listed[0].opensignStatus).toBe('SENT');
   });
 
   // K. OpenSign signer mapping CRUD (includes email hash, not raw email)
-  it('K: OpenSign signer mapping CRUD (includes email hash, not raw email)', () => {
+  it('K: OpenSign signer mapping CRUD (includes email hash, not raw email)', async () => {
     const scenticFirmId = `firm-${crypto.randomUUID()}`;
     const scenticSignatureWorkflowId = `sw-${crypto.randomUUID()}`;
     const scenticSignerId = `signer-${crypto.randomUUID()}`;
     const rawEmail = 'carol@example.com';
     const emailHash = 'sha256-' + rawEmail; // placeholder hash; store stores whatever is passed
 
-    const created = store.upsertOpenSignSignerMapping(
+    const created = await store.upsertOpenSignSignerMapping(
       scenticFirmId, scenticSignatureWorkflowId, scenticSignerId,
       'os-signer-1', emailHash,
     );
@@ -334,12 +334,12 @@ describe('AGPL-04 SqliteMappingStore CRUD — tests A–K', () => {
     expect(created.signerEmailHash).not.toBe(rawEmail);
     expect(created.status).toBe('ACTIVE');
 
-    const fetched = store.getOpenSignSignerMapping(scenticFirmId, scenticSignatureWorkflowId, scenticSignerId);
+    const fetched = await store.getOpenSignSignerMapping(scenticFirmId, scenticSignatureWorkflowId, scenticSignerId);
     expect(fetched).not.toBeNull();
     expect(fetched!.signerEmailHash).toBe(emailHash);
 
     // upsert update
-    const updated = store.upsertOpenSignSignerMapping(
+    const updated = await store.upsertOpenSignSignerMapping(
       scenticFirmId, scenticSignatureWorkflowId, scenticSignerId,
       'os-signer-1', 'sha256-rotated',
     );

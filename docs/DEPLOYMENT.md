@@ -1,8 +1,8 @@
 # AGPL Services Deployment Plan
 
-> **Status:** Planning document (AGPL-00) + local deployment verified (AGPL-03). No production deployment yet. The local docker-compose stack is runnable; production GCP deployment is AGPL-04 scope.
+> **Status:** Planning document (AGPL-00) + local deployment verified (AGPL-03) + Postgres durable store delivered (AGPL-05). No production deployment executed. The local docker-compose stack is runnable and uses Postgres by default; production GCP deployment is documented via manifests but not provisioned.
 > **Scope:** Deployment of the Scentic AGPL services stack — Kimai, OpenSign, and the Scentic↔AGPL gateway — on Google Cloud Platform (GCP), plus local development deployment.
-> **Out of scope:** Scentic proprietary core (already deployed in its own GCP project).
+> **Out of scope:** Scentic proprietary core (already deployed in its own GCP project; not modified in any AGPL phase).
 
 ---
 
@@ -58,6 +58,10 @@ Deploy all AGPL-licensed services into a **new, dedicated GCP project** (working
                 │   │  AGPL Gateway                  │                         │
                 │   │  (Cloud Run, internal-only)    │                         │
                 │   │  Node.js / Express             │                         │
+                │   │  Durable store: Cloud SQL      │                         │
+                │   │     Postgres (mappings,        │                         │
+                │   │     nonces, idempotency,       │                         │
+                │   │     outbox)                    │                         │
                 │   │  GET  /health                  │                         │
                 │   │  GET  /source-offer            │                         │
                 │   │  POST /auth/verify             │                         │
@@ -81,9 +85,16 @@ Deploy all AGPL-licensed services into a **new, dedicated GCP project** (working
                 │   │ Cloud SQL   │    │ MongoDB  │  │  GCS       │           │
                 │   │ MySQL 8     │    │ (Atlas   │  │  Bucket    │           │
                 │   │ utf8mb4     │    │  or GCE  │  │  (OpenSign │           │
-                │   │             │    │  self-   │  │   files /  │           │
+                │   │ (Kimai)     │    │  self-   │  │   files /  │           │
                 │   │             │    │  hosted) │  │   PDFs)    │           │
                 │   └─────────────┘    └──────────┘  └────────────┘           │
+                │                                                              │
+                │   ┌─────────────────────────────────────────┐                │
+                │   │ Cloud SQL Postgres 15/16 (gateway store)│                │
+                │   │ private IP, regional HA                 │                │
+                │   │ tables: mappings, nonces,               │                │
+                │   │   idempotency_keys, outbox_events       │                │
+                │   └─────────────────────────────────────────┘                │
                 │                                                              │
                 │   Secrets: Cloud Secret Manager  (per-service secrets)       │
                 │   Logging: Cloud Logging                                       │
@@ -107,10 +118,10 @@ Deploy all AGPL-licensed services into a **new, dedicated GCP project** (working
 ### 3.1 Gateway — Cloud Run (managed, internal-only)
 
 - **Runtime:** Node.js 20.
-- **Image:** Built from `gateway/Dockerfile`, pushed to Artifact Registry in `scentic-agpl-prod`.
-- **Compute:** Cloud Run service with `--ingress=internal` (and `--ingress=internal-and-cloud-load-balancing` if fronted by an Internal Load Balancer).
-- **Scaling:** Min instances 1 (avoid cold starts on internal calls), max instances configurable. Can scale to zero if cost-sensitive and cold starts are acceptable.
-- **No database:** The gateway is stateless. Mapping state lives in Kimai/OpenSign APIs and optionally a lightweight in-memory or attached-volume cache.
+- **Image:** Built from `deploy/Dockerfile.gateway` (AGPL-05 simplified: pure-JS `pg` driver, no native build toolchain), pushed to Artifact Registry in `scentic-agpl-prod`.
+- **Compute:** Cloud Run service with `--ingress=internal` (and `--ingress=internal-and-cloud-latency-balancing` if fronted by an Internal Load Balancer).
+- **Scaling:** Min instances 1 (avoid cold starts on internal calls), max instances configurable. Can scale to zero if cost-sensitive and cold starts are acceptable. **Multi-instance safe** with the Postgres store (atomic nonce/idempotency/outbox ops — see §3.5).
+- **Durable store:** Postgres (Cloud SQL). The gateway persists mapping, nonce, idempotency, and outbox state in Postgres (`GATEWAY_STORE_TYPE=postgres`). `memory` is rejected in production; `sqlite` is rejected unless `GATEWAY_ALLOW_SQLITE_IN_PRODUCTION=true` (single-instance only, not recommended). See §3.5.
 - **Secrets:** Mounted from Secret Manager via Cloud Run secret volume mounts.
 - **Env:** See `.env.example` for the canonical variable list.
 
@@ -144,6 +155,21 @@ Deploy all AGPL-licensed services into a **new, dedicated GCP project** (working
 - **Lifecycle:** Noncurrent versions + age-based transitions to Nearline/Coldline for completed envelopes after a retention threshold.
 - **Encryption:** CMEK recommended for production.
 - **Backup:** Object Versioning on the bucket + a weekly `gsutil rsync` to a secondary bucket in a different region for DR.
+
+### 3.5 Gateway durable store — Cloud SQL Postgres (AGPL-05)
+
+The gateway's mapping/nonce/idempotency/outbox state is persisted in **Postgres** (Cloud SQL Postgres in production; `gateway-postgres` in the local Docker stack). AGPL-05 replaced the SQLite Docker fallback with the pure-JavaScript `pg` driver, which both resolved the `better-sqlite3` native-module segfault in Alpine containers and enabled multi-instance operation.
+
+- **Instance:** Cloud SQL Postgres 15 (or 16), private IP in the AGPL VPC, regional HA for production. See `deploy/gcloud/deploy-commands.md` §5 for provisioning commands.
+- **Database:** `gateway` database + `gateway` user. Schema is auto-created on boot via `gateway/src/storage/postgres-schema.sql` (13 tables, `TIMESTAMPTZ`, `JSONB` outbox payload).
+- **Connection string:** `GATEWAY_DATABASE_URL=postgres://gateway:<password>@<cloud-sql-private-ip>:5432/gateway`. Password sourced from Secret Manager (`GATEWAY_DATABASE_URL` secret — see §5 and `deploy/secrets.example.md`).
+- **SSL:** `GATEWAY_POSTGRES_SSL_MODE`. `disable` is acceptable only for private-IP/VPC-internal connections; use `require` or stricter otherwise.
+- **Store backend selection:** `GATEWAY_STORE_TYPE=postgres` (Docker + production default). `memory` is rejected in production by `store-factory.ts`; `sqlite` is rejected unless `GATEWAY_ALLOW_SQLITE_IN_PRODUCTION=true` (single-instance, not recommended).
+- **Multi-instance safety:** atomic nonce prevention (`ON CONFLICT DO NOTHING`), atomic idempotency (`ON CONFLICT`), and safe concurrent outbox processing (`FOR UPDATE SKIP LOCKED`). Redis is optional (`GATEWAY_REDIS_URL` left empty by default).
+- **What is stored:** Scentic↔Kimai/OpenSign id mappings (firm/user/client/matter/activity/time-entry/workflow/signer), outbox event metadata + `JSONB` payload, nonces, idempotency keys + cached responses, `TIMESTAMPTZ` timestamps. All tables Firm-scoped (`scentic_firm_id`) with `UNIQUE` constraints.
+- **What is NOT stored:** document/PDF contents, raw signer emails (only `signer_email_hash`), HMAC secrets, upstream API tokens, master keys.
+
+The store factory (`gateway/src/storage/store-factory.ts`) is **async**; `createStoreBundle` returns `Promise<StoreBundle>`. The Postgres adapter is `gateway/src/storage/postgres-store.ts`.
 
 ---
 
@@ -184,6 +210,7 @@ Deploy all AGPL-licensed services into a **new, dedicated GCP project** (working
   - `gateway-SCENTIC_AGPL_WEBHOOK_SECRET`
   - `gateway-KIMAI_BASE_URL`, `gateway-KIMAI_API_TOKEN_*`
   - `gateway-OPENSIGN_BASE_URL`, `gateway-OPENSIGN_APP_ID`, `gateway-OPENSIGN_MASTER_KEY`
+  - `gateway-GATEWAY_DATABASE_URL` (Cloud SQL Postgres connection string for the durable store; AGPL-05)
   - `kimai-DATABASE_URL`
   - `opensign-APP_ID`, `opensign-MASTER_KEY`, `opensign-MONGO_URL`
   - `opensign-S3_ACCESS_KEY`, `opensign-S3_SECRET_KEY`
@@ -221,7 +248,7 @@ When `NODE_ENV=production` and `OPENSIGN_ENABLED=true`, `gateway/src/config.ts` 
 
 ## 6. Docker Compose for local / dev
 
-The authoritative local docker-compose file is `deploy/docker-compose.yml` (verified runnable in AGPL-03). It runs the full stack: gateway, Kimai + MariaDB, OpenSign server + frontend, MongoDB. The outline below reflects the implemented service set; always consult `deploy/docker-compose.yml` for the exact, current configuration.
+The authoritative local docker-compose file is `deploy/docker-compose.yml` (verified runnable in AGPL-03; Postgres durable store added in AGPL-05). It runs the full stack: `gateway-postgres` (Postgres 16 durable store), `mock-scentic` (mock webhook receiver, local dev only), `gateway`, Kimai + MariaDB, OpenSign server + frontend, MongoDB, and MailHog. The gateway uses `GATEWAY_STORE_TYPE=postgres` by default and waits for `gateway-postgres` to be healthy before booting. The outline below reflects the implemented service set; always consult `deploy/docker-compose.yml` for the exact, current configuration.
 
 ```yaml
 version: "3.9"
@@ -333,19 +360,24 @@ The full local bring-up procedure — architecture overview, setup, health check
 
 | Service | Port | Notes |
 |---------|------|-------|
-| gateway | `3101` | `GET /health` (public), `GET /api/v1/status` (public), HMAC-signed routes under `/api/v1/...` |
+| gateway | `3101` | `GET /health` (public), `GET /api/v1/status` (public, reports `stores.durable`/`stores.productionSuitable`), HMAC-signed routes under `/api/v1/...` |
+| gateway-postgres | `5433` → 5432 | Postgres 16 durable store (mappings/nonces/idempotency/outbox) |
+| mock-scentic | `3199` | Mock Scentic webhook receiver (local dev only; verifies HMAC, logs events) |
 | kimai | `8001` | Kimai UI + API |
 | opensign-server | `8080` | Parse Server REST (`/app`) |
 | opensign-frontend | `3000` | OpenSign React UI |
 | opensign-mongo | `27018` → 27017 | MongoDB for OpenSign |
+| mailhog | `8025` / `1025` | Local email catcher UI / SMTP |
 
 **Local health checks:**
 
 ```bash
 curl http://localhost:3101/health        # gateway + deps
-curl http://localhost:3101/api/v1/status # gateway status
+curl http://localhost:3101/api/v1/status # gateway status (stores.durable=true, productionSuitable=true with postgres)
+curl http://localhost:3199/health        # mock Scentic receiver
 curl http://localhost:8001/              # Kimai login page (200)
 curl http://localhost:8080/app           # OpenSign Parse (200)
+docker compose -f deploy/docker-compose.yml exec gateway-postgres pg_isready -U gateway
 ```
 
 **Local contract tests:**
@@ -356,7 +388,7 @@ pnpm --filter gateway typecheck   # tsc --noEmit
 pnpm --filter gateway build       # tsc → dist/
 ```
 
-**What is NOT production-ready (local stack):** in-memory mapping/nonce/idempotency stores (lost on restart), dev placeholder secrets, mock-only upstream tests, admin/master-key fallback for upstream auth, plain HTTP (no TLS), no persistence/backup, no monitoring/alerting. See `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` §12.6.
+**What is NOT production-ready (local stack):** Docker Postgres volume is local (no backup/restore/HA tested), dev placeholder secrets, mock-only upstream tests, admin/master-key fallback for upstream auth, plain HTTP (no TLS), no monitoring/alerting, and the `mock-scentic` receiver is a local dev harness (does not persist events or update Scentic workflow state). See `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` §12.6 and §13.
 
 ---
 
@@ -367,9 +399,11 @@ pnpm --filter gateway build       # tsc → dist/
 | Service | Endpoint | Expected |
 |---|---|---|
 | Gateway | `GET /health` | `200 { status:"ok", deps:{ kimai:"ok", opensign:"ok" } }` |
+| Gateway status | `GET /api/v1/status` | `200` with `stores.durable=true`, `stores.productionSuitable=true` (Postgres) |
 | Kimai | Kimai `/api/ping` or HTTP 200 on the login page | 200 |
 | OpenSign | Parse Server `/app/{APP_ID}/health` or `GET /` | 200 |
-| Cloud SQL | Cloud SQL proxy health | Up |
+| Cloud SQL MySQL (Kimai) | Cloud SQL proxy health | Up |
+| Cloud SQL Postgres (gateway store) | `pg_isready` / Cloud SQL connector health | Up |
 | MongoDB | Atlas connection status / `rs.status()` | Healthy |
 | GCS bucket | Object HEAD on a health probe object | 200 |
 
@@ -456,10 +490,10 @@ pnpm --filter gateway build       # tsc → dist/
 
 1. Provision `scentic-agpl-prod` GCP project, billing, VPC, Cloud DNS private zone.
 2. Peer VPCs with the Scentic core project.
-3. Provision Cloud SQL (Kimai MySQL), MongoDB Atlas (peer to AGPL VPC), GCS bucket.
+3. Provision Cloud SQL (Kimai MySQL), **Cloud SQL Postgres (gateway durable store — see §3.5 and `deploy/gcloud/deploy-commands.md` §5)**, MongoDB Atlas (peer to AGPL VPC), GCS bucket.
 4. Deploy Kimai, run installer, create admin + initial API tokens.
 5. Deploy OpenSign, configure storage/mail/PFX, create initial app/tenant.
-6. Deploy gateway (internal-only), wire Kimai/OpenSign base URLs and tokens from Secret Manager.
+6. Deploy gateway (internal-only), wire Kimai/OpenSign base URLs and tokens from Secret Manager; set `GATEWAY_STORE_TYPE=postgres` and `GATEWAY_DATABASE_URL` from Secret Manager.
 7. Point Scentic core at the gateway via internal URL + service token (see `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md`).
 8. Enable uptime checks, alerts, dashboards.
 9. Run end-to-end connection tests (see connection manual §9).
