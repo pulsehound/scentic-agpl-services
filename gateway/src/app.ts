@@ -10,18 +10,21 @@ import { createHealthRouter, createSourceOfferRouter } from './routes/health.js'
 import { createMappingsRouter } from './routes/mappings.js';
 import { createTimeRouter } from './routes/time.js';
 import { createAdminRouter } from './routes/admin.js';
+import { createSignatureRouter } from './routes/signature.js';
 import type { KimaiService } from './kimai/kimai-service.js';
+import type { OpenSignService } from './opensign/opensign-service.js';
 import type { GatewayError } from './http/errors.js';
 import { clearContext } from './http/request-context.js';
 
 export interface AppDeps {
   config: GatewayConfig;
   kimaiService: KimaiService;
+  opensignService?: OpenSignService;
   upstreamSources: { kimaiSha: string; opensignSha: string };
 }
 
 export function createApp(deps: AppDeps): express.Application {
-  const { config, kimaiService, upstreamSources } = deps;
+  const { config, kimaiService, opensignService, upstreamSources } = deps;
   const app = express();
 
   // Parse JSON bodies (limit to 10MB for document uploads in future)
@@ -50,6 +53,9 @@ export function createApp(deps: AppDeps): express.Application {
   app.use(createMappingsRouter(kimaiService));
   app.use(createTimeRouter(kimaiService));
   app.use(createAdminRouter(kimaiService));
+  if (opensignService) {
+    app.use(createSignatureRouter(opensignService));
+  }
 
   // 404 handler
   app.use((_req, res) => {

@@ -2,7 +2,7 @@
 
 > **Status:** Planning document. Tracks the phased implementation of the Scentic AGPL services stack (gateway + Kimai + OpenSign) and the required Scentic core changes.
 >
-> **Current phase:** AGPL-01 COMPLETE — AGPL-02 (OpenSign integration) is next.
+> **Current phase:** AGPL-02 COMPLETE — AGPL-03 (Scentic-side provider adapters) is next.
 
 ---
 
@@ -83,9 +83,9 @@ Not yet done (handed off to the phases below): gateway implementation, Kimai/Ope
 
 ---
 
-## 3. AGPL-02 — OpenSign integration  ← NEXT
+## 3. AGPL-02 — OpenSign integration
 
-> **Parallelizable with AGPL-01** (see §7). AGPL-01 is now COMPLETE; AGPL-02 is the active next phase.
+**STATUS: COMPLETE** — OpenSign integration foundation delivered. See `docs/AGPL_02_CLOSEOUT.md` and `docs/AGPL_02_EVIDENCE.md`.
 
 ### Deliverables
 
@@ -119,11 +119,32 @@ Not yet done (handed off to the phases below): gateway implementation, Kimai/Ope
 - Full signature lifecycle contract test passes against real OpenSign.
 - Webhook dispatched to a test receiver with a valid HMAC signature on terminal status.
 
+### What was delivered in AGPL-02
+
+- OpenSign API client (`gateway/src/opensign/opensign-client.ts`) wrapping the Parse Server REST API; endpoints verified against `vendor/opensign/` source (login, createTenant, addUser, uploadFile, createDocument, getDocument, linkContactToDoc, declineDocument, getSignedUrl, generateCertificate).
+- OpenSign service (`gateway/src/opensign/opensign-service.ts`) with firm-scoped operations, polling model, and idempotent firm init / user sync.
+- 11 signature REST endpoints (`gateway/src/routes/signature.ts`): health, init, users/sync, workflows (create/get/send/cancel/remind/poll/completed/poll-due).
+- Extended mapping store with OpenSign entity types (Firm/User/Workflow/Signer), firm-scoped.
+- Extended event outbox with 12 OpenSign event types.
+- Config/env validation for OpenSign (`OPENSIGN_ENABLED`, `OPENSIGN_BASE_URL`, `OPENSIGN_APP_ID`, `OPENSIGN_MASTER_KEY`, `OPENSIGN_ADMIN_EMAIL`, `OPENSIGN_ADMIN_PASSWORD`, `OPENSIGN_POLL_INTERVAL_SECONDS`, `OPENSIGN_COMPLETION_TIMEOUT_SECONDS`) with production checks.
+- AGPL-01 fixes carried in: auth middleware `extractFirmIdFromPath` path-firm check; bodyless request canonical hash documented (`{}`).
+- Source offer updated with OpenSign license inconsistency note (root AGPL-3.0 vs `package.json` MIT; treated as AGPL-3.0).
+- OpenSign unsupported operations documented (manual reminders `NOT_SUPPORTED`, no native void/cancel — uses `declinedoc`, no native webhooks — polling).
+- Scentic core: NOT MODIFIED (read-only inspection only).
+- OpenSign upstream: NOT MODIFIED (at pinned SHA `f72624fa26211fe00776453d99a67120a4f5e060`).
+
+### Remaining gaps (carry forward to AGPL-03 / AGPL-04)
+
+- Per-user OpenSign session tokens (currently uses master key for all operations).
+- In-memory mapping store (production needs SQLite/Postgres).
+- Mock-only OpenSign tests (no real-OpenSign container contract test yet).
+- Webhook dispatch to Scentic (outbox records events; dispatch is AGPL-03 scope).
+
 ---
 
-## 4. AGPL-03 — Scentic-side provider adapters
+## 4. AGPL-03 — Scentic-side provider adapters  ← NEXT
 
-> **Depends on AGPL-01 and AGPL-02** (see §7).
+> **Depends on AGPL-01 and AGPL-02** (both now COMPLETE).
 
 ### Deliverables (Scentic core changes — separate repository)
 
@@ -201,11 +222,11 @@ Not yet done (handed off to the phases below): gateway implementation, Kimai/Ope
 AGPL-00 (DONE)
    |
    +---> AGPL-01 (Gateway skeleton + Kimai)  [COMPLETE]  \
-   |                                                      +--> AGPL-03 (Scentic adapters) --> AGPL-04 (Deploy) --> AGPL-05 (Source offer)
-   +---> AGPL-02 (OpenSign integration)  [NEXT]          /
+   |                                                      +--> AGPL-03 (Scentic adapters) [NEXT] --> AGPL-04 (Deploy) --> AGPL-05 (Source offer)
+   +---> AGPL-02 (OpenSign integration)  [COMPLETE]      /
 ```
 
-- **AGPL-01 and AGPL-02 can run in parallel** — they touch separate gateway modules (`gateway/src/kimai/` vs `gateway/src/opensign/` + `gateway/src/signatures/`).
+- **AGPL-01 and AGPL-02 ran in parallel** — they touch separate gateway modules (`gateway/src/kimai/` vs `gateway/src/opensign/` + `gateway/src/signatures/`). Both are now COMPLETE.
 - **AGPL-03 depends on both AGPL-01 and AGPL-02** — Scentic adapters require both Kimai and OpenSign surfaces to exist in the gateway.
 - **AGPL-04 depends on AGPL-03** — production deployment is only meaningful once the Scentic side can actually use the gateway.
 - **AGPL-05 depends on AGPL-04** — source-offer verification runs against the deployed, built images.

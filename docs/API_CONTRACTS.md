@@ -95,6 +95,12 @@ Error envelope:
 
 ## 5. Auth model
 
+### 5.1 Bodyless request canonical hash rule
+
+For requests with no body (GET, DELETE without body), `express.json()` initializes `req.body` to `{}` (empty object). The body hash is therefore computed as `JSON.stringify({}) = '{}'`. All Scentic-core signers must replicate this behavior for bodyless requests: do not omit the body hash, do not hash the empty string, and do not hash `undefined` — hash the literal JSON string `{}`. Failing to replicate this produces a signature mismatch and a `401 UNAUTHORIZED` from the gateway.
+
+### 5.2 Token model
+
 - All routes (except `GET /health` and `GET /source-offer`) require a valid `X-Scentic-Service-Token`.
 - The token is compared in constant time against the configured `SCENTIC_SERVICE_TOKEN`. A failed comparison returns `401 UNAUTHORIZED` with code `INVALID_SERVICE_TOKEN` and increments a metric; it must not leak whether the token is malformed vs absent.
 - The token is a single shared secret owned by Scentic core. It is **not** per-Firm. Firm scoping is enforced by the `firmId` path parameter combined with the gateway's mapping table, never by the service token alone.
@@ -678,6 +684,28 @@ All OpenSign routes are scoped by `firmId`. The gateway resolves `firmId` → Op
 
 ---
 
+#### 6.3.0 Implemented `/signature/` routes (AGPL-02)
+
+The following routes are implemented in `gateway/src/routes/signature.ts` and are the canonical Scentic-facing signature endpoints. All require HMAC auth and are Firm-scoped via the `:firmId` path parameter.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET`  | `/api/v1/providers/opensign/health` | OpenSign provider health probe. |
+| `POST` | `/api/v1/firms/:firmId/signature/init` | Initialize a Firm's OpenSign tenant (idempotent). |
+| `POST` | `/api/v1/firms/:firmId/signature/users/sync` | Sync a Scentic user into the Firm's OpenSign tenant. |
+| `POST` | `/api/v1/firms/:firmId/signature/workflows` | Create a signature workflow (upload PDF, link signers). Idempotent via `scenticSignatureWorkflowId`. |
+| `GET`  | `/api/v1/firms/:firmId/signature/workflows/:workflowId` | Get workflow status (polls OpenSign `getDocument`). |
+| `POST` | `/api/v1/firms/:firmId/signature/workflows/:workflowId/send` | Send workflow for signature. |
+| `POST` | `/api/v1/firms/:firmId/signature/workflows/:workflowId/cancel` | Cancel (decline) a workflow. |
+| `POST` | `/api/v1/firms/:firmId/signature/workflows/:workflowId/remind` | Send a reminder — returns `501 NOT_SUPPORTED` (OpenSign has no manual reminder API). |
+| `POST` | `/api/v1/firms/:firmId/signature/workflows/:workflowId/poll` | Poll a single workflow for status changes. |
+| `GET`  | `/api/v1/firms/:firmId/signature/workflows/:workflowId/completed` | Get completed-PDF / certificate readiness status. |
+| `POST` | `/api/v1/firms/:firmId/signature/poll-due` | Poll all due (non-terminal) workflows for a Firm. |
+
+Cross-Firm access to any `:firmId`-scoped signature route returns `404 NOT_FOUND` (the mapping store is Firm-scoped, so a workflow created in firm A is invisible to firm B). Unsupported operations (`remind`) return `501 NOT_SUPPORTED` with a safe, generic message.
+
+---
+
 #### 6.3.1 `POST /opensign/firm/{firmId}/workflows`
 
 Create a signing workflow: upload the PDF to OpenSign, create signers, and send. This is a multi-step upstream operation wrapped in one Scentic-facing call.
@@ -930,6 +958,31 @@ Download the audit certificate for the completed workflow. Returns `application/
 - **409** `WORKFLOW_NOT_COMPLETED`.
 - **Audit event:** `opensign.workflow.certificate`.
 - **Data minimization:** Certificate contains signer emails, timestamps, and IPs as recorded by OpenSign. These are forwarded only to the owning Firm.
+
+### 6.3.8 Implemented Signature surface (AGPL-02)
+
+The endpoints in §6.3.1–6.3.7 are the planned AGPL-00 contract. The **actually implemented** AGPL-02 signature endpoints (in `gateway/src/routes/signature.ts`) are listed below. They are Firm-scoped (`:firmId`) and require HMAC service-to-service auth (see §5). Paths use the canonical `/api/v1/...` prefix.
+
+| # | Method | Path | Purpose |
+|---|--------|------|---------|
+| 1 | GET  | `/api/v1/providers/opensign/health` | OpenSign provider health probe (reachability + app id). |
+| 2 | POST | `/api/v1/firms/:firmId/signature/init` | Initialize a Firm's OpenSign tenant mapping (idempotent). Body: `{ firmName }`. |
+| 3 | POST | `/api/v1/firms/:firmId/signature/users/sync` | Sync a Scentic user to an OpenSign user. Body: `{ scenticUserId, email, name }`. |
+| 4 | POST | `/api/v1/firms/:firmId/signature/workflows` | Create a signing workflow (upload PDF, create signers, optionally send). Idempotent via `scenticSignatureWorkflowId`. |
+| 5 | GET  | `/api/v1/firms/:firmId/signature/workflows/:workflowId` | Get workflow status (aggregate derived from `getDocument`). |
+| 6 | POST | `/api/v1/firms/:firmId/signature/workflows/:workflowId/send` | Send a draft workflow to signers. |
+| 7 | POST | `/api/v1/firms/:firmId/signature/workflows/:workflowId/cancel` | Cancel/void a workflow. Maps to OpenSign `declinedoc` (no native void). Body: `{ reason }`. |
+| 8 | POST | `/api/v1/firms/:firmId/signature/workflows/:workflowId/remind` | Send a manual reminder. Returns `501 NOT_SUPPORTED` — OpenSign has no manual reminder API; reminders are automatic per-doc. |
+| 9 | POST | `/api/v1/firms/:firmId/signature/workflows/:workflowId/poll` | Poll a single workflow for status changes (records outbox events on transitions). |
+| 10 | GET  | `/api/v1/firms/:firmId/signature/workflows/:workflowId/completed` | Get completed-PDF status (signed PDF + certificate availability). |
+| 11 | POST | `/api/v1/firms/:firmId/signature/poll-due` | Poll all due (non-terminal) workflows for a Firm. |
+
+**Notes on the implemented surface:**
+
+- The `remind` endpoint (row 8) is wired but returns `NOT_SUPPORTED` because OpenSign exposes no manual-reminder Cloud Function. Automatic reminders are configured per-document via `AutomaticReminders` + `RemindOnceInEvery` on `createdocumentfromapp`. See `docs/OPENSIGN_MAPPING.md`.
+- The `cancel` endpoint (row 7) uses `declinedoc` as the closest available function. OpenSign has no native void/cancel API. See `docs/OPENSIGN_MAPPING.md`.
+- All responses use the standard JSON envelope (`{ ok, data, meta }`). Errors use the standard error envelope (§3, §7).
+- Webhook dispatch to Scentic on terminal status changes is **not** wired in AGPL-02; outbox events are recorded for AGPL-03 to dispatch. See `docs/AGPL_02_CLOSEOUT.md`.
 
 ### 6.4 Webhooks (gateway → Scentic)
 

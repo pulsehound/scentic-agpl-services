@@ -15,6 +15,8 @@ import type { GatewayConfig } from '../config.js';
 import { InMemoryMappingStore } from '../mappings/mapping-store.js';
 import { InMemoryEventOutbox } from '../events/outbox.js';
 import { KimaiService } from '../kimai/kimai-service.js';
+import { OpenSignClient } from '../opensign/opensign-client.js';
+import { OpenSignService } from '../opensign/opensign-service.js';
 import { createApp } from '../app.js';
 import { InMemoryNonceStore } from '../auth/hmac.js';
 
@@ -71,6 +73,50 @@ export function makeMockKimaiClient(overrides: Record<string, ReturnType<typeof 
 
 export type MockKimaiClient = ReturnType<typeof makeMockKimaiClient>;
 
+// ─── Mock OpenSignClient ────────────────────────────────────────────────────
+
+export function makeMockOpenSignClient(overrides: Record<string, ReturnType<typeof vi.fn>> = {}) {
+  const defaults = {
+    setSessionToken: vi.fn(),
+    getSessionToken: vi.fn(() => 'test-session-token'),
+    getStatus: vi.fn(async () => ({ success: true, data: { reachable: true, appId: 'opensign' } })),
+    login: vi.fn(async () => ({ success: true, data: { sessionToken: 'test-session-token', objectId: 'user-1' } })),
+    getTenant: vi.fn(async () => ({ success: true, data: { objectId: 'tenant-1', TenantName: 'Test Firm', IsActive: true } })),
+    createTenant: vi.fn(async (name: string) => ({ success: true, data: { objectId: 'tenant-new', TenantName: name, IsActive: true } })),
+    getUserId: vi.fn(async () => ({ success: true, data: { objectId: 'user-1' } })),
+    addUser: vi.fn(async () => ({ success: true, data: { objectId: 'user-new' } })),
+    uploadFile: vi.fn(async () => ({ success: true, data: { url: 'http://opensign/files/test.pdf' } })),
+    createDocument: vi.fn(async () => ({ success: true, data: { objectId: 'doc-new' } })),
+    getDocument: vi.fn(async () => ({
+      success: true,
+      data: {
+        objectId: 'doc-1',
+        Name: 'Test Doc',
+        URL: 'http://opensign/files/test.pdf',
+        SignedUrl: undefined,
+        CertificateUrl: undefined,
+        IsCompleted: false,
+        IsDeclined: false,
+        IsArchive: false,
+        Signers: [],
+        Placeholders: [],
+        AuditTrail: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    })),
+    linkContactToDoc: vi.fn(async () => ({ success: true, data: { objectId: 'contact-1' } })),
+    declineDocument: vi.fn(async () => ({ success: true, data: true })),
+    getSignedUrl: vi.fn(async () => ({ success: true, data: { url: 'http://opensign/signed/test.pdf' } })),
+    generateCertificate: vi.fn(async () => ({ success: true, data: { url: 'http://opensign/cert/test.pdf' } })),
+    cancelDocument: vi.fn(async () => ({ success: true, data: true })),
+    sendReminder: vi.fn(async () => ({ success: false, error: { code: 'NOT_SUPPORTED', message: 'OpenSign does not support manual reminders via API.' } })),
+  };
+  return { ...defaults, ...overrides };
+}
+
+export type MockOpenSignClient = ReturnType<typeof makeMockOpenSignClient>;
+
 // ─── Test config ────────────────────────────────────────────────────────────
 
 export function makeTestConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
@@ -90,6 +136,15 @@ export function makeTestConfig(overrides: Partial<GatewayConfig> = {}): GatewayC
     useConfidentialLabels: true,
     logLevel: 'info',
     gatewayVersion: '0.1.0',
+    // OpenSign
+    opensignEnabled: true,
+    opensignBaseUrl: 'http://localhost:8080/app',
+    opensignAppId: 'opensign',
+    opensignMasterKey: 'test-master-key',
+    opensignAdminEmail: 'admin@opensign.test',
+    opensignAdminPassword: 'test-password',
+    opensignPollIntervalSeconds: 30,
+    opensignCompletionTimeoutSeconds: 86400,
     ...overrides,
   };
 }
@@ -203,6 +258,8 @@ export interface TestApp {
   client: MockKimaiClient;
   config: GatewayConfig;
   service: KimaiService;
+  opensignClient?: MockOpenSignClient;
+  opensignService?: OpenSignService;
 }
 
 export interface MakeAppOpts {
@@ -210,6 +267,8 @@ export interface MakeAppOpts {
   client?: MockKimaiClient;
   store?: InMemoryMappingStore;
   outbox?: InMemoryEventOutbox;
+  opensignClient?: MockOpenSignClient;
+  enableOpenSign?: boolean;
   upstreamSources?: { kimaiSha: string; opensignSha: string };
 }
 
@@ -235,9 +294,27 @@ export function makeApp(opts: MakeAppOpts = {}): TestApp {
     adminApiToken: config.kimaiAdminApiToken,
   });
 
-  const app = createApp({ config, kimaiService: service, upstreamSources });
+  let opensignService: OpenSignService | undefined;
+  let opensignClient: MockOpenSignClient | undefined;
 
-  return { app, store, outbox, client, config, service };
+  const enableOpenSign = opts.enableOpenSign ?? config.opensignEnabled;
+  if (enableOpenSign) {
+    opensignClient = opts.opensignClient ?? makeMockOpenSignClient();
+    opensignService = new OpenSignService(opensignClient as unknown as OpenSignClient, store, outbox, {
+      enabled: true,
+      pollIntervalSeconds: config.opensignPollIntervalSeconds,
+      completionTimeoutSeconds: config.opensignCompletionTimeoutSeconds,
+    });
+  }
+
+  const app = createApp({
+    config,
+    kimaiService: service,
+    opensignService,
+    upstreamSources,
+  });
+
+  return { app, store, outbox, client, config, service, opensignClient, opensignService };
 }
 
 // ─── Signed request helper ──────────────────────────────────────────────────

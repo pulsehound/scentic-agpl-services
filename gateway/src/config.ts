@@ -26,6 +26,15 @@ export interface GatewayConfig {
   useConfidentialLabels: boolean;
   logLevel: string;
   gatewayVersion: string;
+  // OpenSign
+  opensignEnabled: boolean;
+  opensignBaseUrl: string;
+  opensignAppId: string;
+  opensignMasterKey: string;
+  opensignAdminEmail: string;
+  opensignAdminPassword: string;
+  opensignPollIntervalSeconds: number;
+  opensignCompletionTimeoutSeconds: number;
 }
 
 const PLACEHOLDER_VALUES = new Set([
@@ -77,6 +86,14 @@ export function loadConfig(env: Record<string, string | undefined>): GatewayConf
   const kimaiBaseUrl = env['KIMAI_BASE_URL'] ?? '';
   const kimaiAdminApiToken = env['KIMAI_ADMIN_API_TOKEN'] ?? '';
 
+  // OpenSign config
+  const opensignEnabled = (env['OPENSIGN_ENABLED'] ?? 'false').toLowerCase() === 'true';
+  const opensignBaseUrl = env['OPENSIGN_BASE_URL'] ?? '';
+  const opensignAppId = env['OPENSIGN_APP_ID'] ?? 'opensign';
+  const opensignMasterKey = env['OPENSIGN_MASTER_KEY'] ?? '';
+  const opensignAdminEmail = env['OPENSIGN_ADMIN_EMAIL'] ?? '';
+  const opensignAdminPassword = env['OPENSIGN_ADMIN_PASSWORD'] ?? '';
+
   if (isProduction) {
     const errors: string[] = [];
     if (!hmacSecret || isPlaceholder(hmacSecret)) {
@@ -106,6 +123,24 @@ export function loadConfig(env: Record<string, string | undefined>): GatewayConf
     if (!kimaiAdminApiToken || isPlaceholder(kimaiAdminApiToken)) {
       errors.push('KIMAI_ADMIN_API_TOKEN must be set in production');
     }
+    // OpenSign production validation (only if enabled)
+    if (opensignEnabled) {
+      if (!opensignBaseUrl) {
+        errors.push('OPENSIGN_BASE_URL must be set when OPENSIGN_ENABLED=true in production');
+      }
+      if (opensignBaseUrl && !isPrivateUrl(opensignBaseUrl)) {
+        errors.push('OPENSIGN_BASE_URL must be a private network URL in production');
+      }
+      if (!opensignMasterKey || isPlaceholder(opensignMasterKey)) {
+        errors.push('OPENSIGN_MASTER_KEY must be set to a strong non-placeholder value when OpenSign is enabled in production');
+      }
+      if (!opensignAdminEmail) {
+        errors.push('OPENSIGN_ADMIN_EMAIL must be set when OPENSIGN_ENABLED=true in production');
+      }
+      if (!opensignAdminPassword || isPlaceholder(opensignAdminPassword)) {
+        errors.push('OPENSIGN_ADMIN_PASSWORD must be set to a strong non-placeholder value when OpenSign is enabled in production');
+      }
+    }
     if (errors.length > 0) {
       throw new Error(`Gateway config validation failed:\n  - ${errors.join('\n  - ')}`);
     }
@@ -127,6 +162,15 @@ export function loadConfig(env: Record<string, string | undefined>): GatewayConf
     useConfidentialLabels: (env['KIMAI_USE_CONFIDENTIAL_LABELS'] ?? 'false').toLowerCase() === 'true',
     logLevel: env['LOG_LEVEL'] ?? 'info',
     gatewayVersion: '0.1.0',
+    // OpenSign
+    opensignEnabled,
+    opensignBaseUrl: opensignBaseUrl || 'http://localhost:8080/app',
+    opensignAppId,
+    opensignMasterKey: opensignMasterKey || 'dev-master-key',
+    opensignAdminEmail: opensignAdminEmail || 'admin@opensign.local',
+    opensignAdminPassword: opensignAdminPassword || 'dev-password',
+    opensignPollIntervalSeconds: parseInt(env['OPENSIGN_POLL_INTERVAL_SECONDS'] ?? '30', 10),
+    opensignCompletionTimeoutSeconds: parseInt(env['OPENSIGN_COMPLETION_TIMEOUT_SECONDS'] ?? '86400', 10),
   };
 }
 

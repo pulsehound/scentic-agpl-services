@@ -16,6 +16,9 @@ import type {
   SyncFirmParams, SyncUserParams, SyncClientParams, SyncMatterParams,
   SyncActivityParams, CreateTimeEntryParams, UpdateTimeEntryParams,
   ListTimeEntriesParams,
+  OpenSignFirmMapping, OpenSignUserMapping, OpenSignDocumentMapping,
+  OpenSignWorkflowMapping, OpenSignSignerMapping,
+  SyncOpenSignFirmParams, SyncOpenSignUserParams, CreateOpenSignWorkflowParams,
 } from './types.js';
 
 export interface MappingStore {
@@ -50,6 +53,25 @@ export interface MappingStore {
 
   // Utility
   clear(): void;
+
+  // OpenSign Firm
+  getOpenSignFirmMapping(scenticFirmId: string): OpenSignFirmMapping | null;
+  upsertOpenSignFirmMapping(params: SyncOpenSignFirmParams, opensignTenantId: string, opensignTenantName: string): OpenSignFirmMapping;
+  disableOpenSignFirmMapping(scenticFirmId: string): void;
+
+  // OpenSign User
+  getOpenSignUserMapping(scenticFirmId: string, scenticUserId: string): OpenSignUserMapping | null;
+  upsertOpenSignUserMapping(params: SyncOpenSignUserParams, opensignUserId: string, opensignSessionToken: string): OpenSignUserMapping;
+
+  // OpenSign Workflow
+  getOpenSignWorkflowMapping(scenticFirmId: string, scenticSignatureWorkflowId: string): OpenSignWorkflowMapping | null;
+  upsertOpenSignWorkflowMapping(params: CreateOpenSignWorkflowParams, opensignDocumentId: string, opensignWorkflowId: string, opensignStatus: string): OpenSignWorkflowMapping;
+  updateOpenSignWorkflowStatus(scenticFirmId: string, scenticSignatureWorkflowId: string, opensignStatus: string): void;
+  listOpenSignWorkflowMappings(scenticFirmId: string): OpenSignWorkflowMapping[];
+
+  // OpenSign Signer
+  getOpenSignSignerMapping(scenticFirmId: string, scenticSignatureWorkflowId: string, scenticSignerId: string): OpenSignSignerMapping | null;
+  upsertOpenSignSignerMapping(scenticFirmId: string, scenticSignatureWorkflowId: string, scenticSignerId: string, opensignSignerId: string, signerEmailHash: string): OpenSignSignerMapping;
 }
 
 export class InMemoryMappingStore implements MappingStore {
@@ -59,6 +81,11 @@ export class InMemoryMappingStore implements MappingStore {
   private matters = new Map<string, MatterMapping>(); // key: firmId:matterId
   private activities = new Map<string, ActivityMapping>(); // key: firmId:activityCode
   private timeEntries = new Map<string, TimeEntryMapping>(); // key: firmId:entryId
+  // OpenSign mappings
+  private osFirms = new Map<string, OpenSignFirmMapping>();
+  private osUsers = new Map<string, OpenSignUserMapping>(); // key: firmId:userId
+  private osWorkflows = new Map<string, OpenSignWorkflowMapping>(); // key: firmId:workflowId
+  private osSigners = new Map<string, OpenSignSignerMapping>(); // key: firmId:workflowId:signerId
 
   private userKey(firmId: string, userId: string): string { return `${firmId}:${userId}`; }
   private clientKey(firmId: string, clientId: string): string { return `${firmId}:${clientId}`; }
@@ -271,5 +298,135 @@ export class InMemoryMappingStore implements MappingStore {
     this.matters.clear();
     this.activities.clear();
     this.timeEntries.clear();
+    this.osFirms.clear();
+    this.osUsers.clear();
+    this.osWorkflows.clear();
+    this.osSigners.clear();
+  }
+
+  // ── OpenSign Firm ─────────────────────────────────────────────────────
+  getOpenSignFirmMapping(scenticFirmId: string): OpenSignFirmMapping | null {
+    return this.osFirms.get(scenticFirmId) ?? null;
+  }
+
+  upsertOpenSignFirmMapping(params: SyncOpenSignFirmParams, opensignTenantId: string, opensignTenantName: string): OpenSignFirmMapping {
+    const existing = this.osFirms.get(params.scenticFirmId);
+    const now = this.now();
+    const mapping: OpenSignFirmMapping = existing
+      ? { ...existing, opensignTenantId, opensignTenantName, updatedAt: now }
+      : {
+          id: crypto.randomUUID(),
+          scenticFirmId: params.scenticFirmId,
+          opensignTenantId,
+          opensignTenantName,
+          status: 'ACTIVE' as MappingStatus,
+          createdAt: now,
+          updatedAt: now,
+        };
+    this.osFirms.set(params.scenticFirmId, mapping);
+    return mapping;
+  }
+
+  disableOpenSignFirmMapping(scenticFirmId: string): void {
+    const mapping = this.osFirms.get(scenticFirmId);
+    if (mapping) {
+      mapping.status = 'DISABLED';
+      mapping.updatedAt = this.now();
+    }
+  }
+
+  // ── OpenSign User ─────────────────────────────────────────────────────
+  getOpenSignUserMapping(scenticFirmId: string, scenticUserId: string): OpenSignUserMapping | null {
+    return this.osUsers.get(this.userKey(scenticFirmId, scenticUserId)) ?? null;
+  }
+
+  upsertOpenSignUserMapping(params: SyncOpenSignUserParams, opensignUserId: string, opensignSessionToken: string): OpenSignUserMapping {
+    const key = this.userKey(params.scenticFirmId, params.scenticUserId);
+    const existing = this.osUsers.get(key);
+    const now = this.now();
+    const mapping: OpenSignUserMapping = existing
+      ? { ...existing, opensignUserId, opensignEmail: params.email, opensignSessionToken, updatedAt: now }
+      : {
+          id: crypto.randomUUID(),
+          scenticFirmId: params.scenticFirmId,
+          scenticUserId: params.scenticUserId,
+          opensignUserId,
+          opensignEmail: params.email,
+          opensignSessionToken,
+          status: 'ACTIVE' as MappingStatus,
+          createdAt: now,
+          updatedAt: now,
+        };
+    this.osUsers.set(key, mapping);
+    return mapping;
+  }
+
+  // ── OpenSign Workflow ─────────────────────────────────────────────────
+  getOpenSignWorkflowMapping(scenticFirmId: string, scenticSignatureWorkflowId: string): OpenSignWorkflowMapping | null {
+    return this.osWorkflows.get(this.matterKey(scenticFirmId, scenticSignatureWorkflowId)) ?? null;
+  }
+
+  upsertOpenSignWorkflowMapping(params: CreateOpenSignWorkflowParams, opensignDocumentId: string, opensignWorkflowId: string, opensignStatus: string): OpenSignWorkflowMapping {
+    const key = this.matterKey(params.scenticFirmId, params.scenticSignatureWorkflowId);
+    const existing = this.osWorkflows.get(key);
+    const now = this.now();
+    const mapping: OpenSignWorkflowMapping = existing
+      ? { ...existing, opensignDocumentId, opensignWorkflowId, opensignStatus, updatedAt: now }
+      : {
+          id: crypto.randomUUID(),
+          scenticFirmId: params.scenticFirmId,
+          scenticSignatureWorkflowId: params.scenticSignatureWorkflowId,
+          scenticMatterId: params.scenticMatterId,
+          scenticDocumentId: params.scenticDocumentId,
+          scenticDocumentVersionId: params.scenticDocumentVersionId,
+          opensignDocumentId,
+          opensignWorkflowId,
+          opensignStatus,
+          status: 'ACTIVE' as MappingStatus,
+          createdAt: now,
+          updatedAt: now,
+        };
+    this.osWorkflows.set(key, mapping);
+    return mapping;
+  }
+
+  updateOpenSignWorkflowStatus(scenticFirmId: string, scenticSignatureWorkflowId: string, opensignStatus: string): void {
+    const mapping = this.osWorkflows.get(this.matterKey(scenticFirmId, scenticSignatureWorkflowId));
+    if (mapping) {
+      mapping.opensignStatus = opensignStatus;
+      mapping.updatedAt = this.now();
+    }
+  }
+
+  listOpenSignWorkflowMappings(scenticFirmId: string): OpenSignWorkflowMapping[] {
+    return Array.from(this.osWorkflows.values()).filter(
+      m => m.scenticFirmId === scenticFirmId && m.status === 'ACTIVE',
+    );
+  }
+
+  // ── OpenSign Signer ───────────────────────────────────────────────────
+  getOpenSignSignerMapping(scenticFirmId: string, scenticSignatureWorkflowId: string, scenticSignerId: string): OpenSignSignerMapping | null {
+    return this.osSigners.get(`${scenticFirmId}:${scenticSignatureWorkflowId}:${scenticSignerId}`) ?? null;
+  }
+
+  upsertOpenSignSignerMapping(scenticFirmId: string, scenticSignatureWorkflowId: string, scenticSignerId: string, opensignSignerId: string, signerEmailHash: string): OpenSignSignerMapping {
+    const key = `${scenticFirmId}:${scenticSignatureWorkflowId}:${scenticSignerId}`;
+    const existing = this.osSigners.get(key);
+    const now = this.now();
+    const mapping: OpenSignSignerMapping = existing
+      ? { ...existing, opensignSignerId, signerEmailHash, updatedAt: now }
+      : {
+          id: crypto.randomUUID(),
+          scenticFirmId,
+          scenticSignatureWorkflowId,
+          scenticSignerId,
+          opensignSignerId,
+          signerEmailHash,
+          status: 'ACTIVE' as MappingStatus,
+          createdAt: now,
+          updatedAt: now,
+        };
+    this.osSigners.set(key, mapping);
+    return mapping;
   }
 }

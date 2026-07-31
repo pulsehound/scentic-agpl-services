@@ -17,6 +17,8 @@ export function createHealthRouter(config: GatewayConfig): Router {
         version: config.gatewayVersion,
         env: config.env,
         kimaiBaseUrl: redactSecret(config.kimaiBaseUrl),
+        opensignEnabled: config.opensignEnabled,
+        opensignBaseUrl: config.opensignEnabled ? redactSecret(config.opensignBaseUrl) : '(disabled)',
         timestamp: new Date().toISOString(),
       },
     });
@@ -47,6 +49,7 @@ export function createSourceOfferRouter(config: GatewayConfig, upstreamSources: 
             url: 'https://github.com/OpenSignLabs/OpenSign',
             license: 'AGPL-3.0',
             pinnedCommit: upstreamSources.opensignSha,
+            licenseNote: 'Root LICENSE is AGPL-3.0. apps/OpenSignServer/package.json declares MIT, which appears to be a leftover. The governing license is AGPL-3.0 per the root LICENSE file.',
           },
         },
         buildInstructions: 'See docs/DEPLOYMENT.md',

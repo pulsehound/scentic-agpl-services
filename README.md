@@ -76,15 +76,16 @@ See `docs/SOURCE_OFFER.md` for full details.
 
 ## Status
 
-**Phase AGPL-01: GATEWAY SKELETON + KIMAI INTEGRATION FOUNDATION COMPLETE**
+**Phase AGPL-02: OPENSIGN INTEGRATION FOUNDATION COMPLETE**
 
-The gateway skeleton and Kimai integration foundation are implemented in `gateway/` (Node.js/Express/TypeScript with Vitest tests). This includes HMAC service-to-service auth, an in-memory mapping store, a Kimai API client, Kimai service with firm-scoped operations and confidential label mode, REST endpoints (health, source-offer, firm init, sync, time entry CRUD, export, admin), an event outbox, upstream source pinning, and strict config/env validation.
+The gateway skeleton, Kimai integration foundation (AGPL-01), and OpenSign integration foundation (AGPL-02) are implemented in `gateway/` (Node.js/Express/TypeScript with Vitest tests). AGPL-02 adds an OpenSign API client (Parse Server REST, endpoints verified against `vendor/opensign/` source), an OpenSign service with firm-scoped operations and a polling completion-detection model, 11 signature REST endpoints, extended mapping store (OpenSign Firm/User/Workflow/Signer), 12 OpenSign event types in the outbox, and config/env validation for OpenSign. AGPL-01 fixes carried in: auth middleware path-firm check (`extractFirmIdFromPath`), bodyless request canonical hash documented. OpenSign unsupported operations documented (manual reminders `NOT_SUPPORTED`, no native void/cancel — uses `declinedoc`, no native webhooks — polling).
 
-Carried gaps (to resolve before AGPL-04 production readiness): per-user Kimai API tokens, Redis-backed nonce store, persistent mapping store (SQLite/Postgres), and a real-Kimai contract test (currently mock-only).
+Carried gaps (to resolve before AGPL-04 production readiness): per-user OpenSign session tokens (currently uses master key), persistent mapping store (in-memory), real-OpenSign container contract test (mock-only), webhook dispatch to Scentic (AGPL-03).
 
-Scentic core was NOT modified (read-only inspection only). OpenSign was NOT modified (AGPL-02 scope).
+Scentic core was NOT modified (read-only inspection only). OpenSign upstream was NOT modified (at pinned SHA `f72624fa26211fe00776453d99a67120a4f5e060`).
 
+See `docs/AGPL_02_CLOSEOUT.md` for the AGPL-02 closeout.
+See `docs/AGPL_02_EVIDENCE.md` for executed evidence.
 See `docs/AGPL_01_CLOSEOUT.md` for the AGPL-01 closeout.
-See `docs/AGPL_01_EVIDENCE.md` for executed evidence.
 See `docs/SCENTIC_AGPL_INTEGRATION_PLAN.md` for the complete plan.
-See `docs/NEXT_STEPS.md` for implementation roadmap (AGPL-02 is next).
+See `docs/NEXT_STEPS.md` for implementation roadmap (AGPL-03 is next).

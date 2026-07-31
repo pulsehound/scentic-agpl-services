@@ -73,6 +73,8 @@
   - **Signer URL isolation test:** Attempt to use Firm A's signer URL from a Firm B context. Assert rejection by OpenSign ACLs.
   - **Mutation test:** Remove the tenant scope filter (mutation) and assert the leakage test fails.
 
+> **AGPL-02 mitigation note:** T-02 is mitigated in the AGPL-02 implementation by the **firm-scoped mapping store** (`gateway/src/mappings/`). Every OpenSign workflow, signer, and tenant mapping is keyed by `firmId`, and the OpenSign service resolves `firmId → opensignTenantId` from the mapping before any upstream call. Cross-firm lookups are rejected at the mapping layer before the OpenSign client is reached, and the mapping store inherits the AGPL-01 cross-firm leakage prevention (a mapping for Firm A cannot be resolved from a Firm B context). Per-firm post-filtering of OpenSign responses (the planned control §1.2) is a carried gap for AGPL-04, once per-user session tokens and a persistent mapping store land.
+
 ## T-03 Webhook spoofing (forged gateway → Scentic webhooks)
 
 - **Severity:** CRITICAL
@@ -370,6 +372,8 @@
   - **Leak-detection test:** Simulate the master key appearing in a log (gitleaks custom rule). Assert CI fails.
   - **Network-isolation test:** Attempt to use the master key from a non-gateway host. Assert network-level rejection (T-08).
   - **Privilege test:** Use a per-Firm session token to attempt an operation reserved for the master key (e.g. tenant creation). Assert rejection.
+
+> **AGPL-02 mitigation note:** T-16 is partially mitigated in AGPL-02 by **using the master key only for provisioning-style operations** (admin login, tenant creation, user creation). The OpenSign client (`gateway/src/opensign/opensign-client.ts`) authenticates with the master key for all current operations, which is a carried gap: the production target is to use per-user/per-firm session tokens for routine document operations and restrict the master key to tenant/user provisioning only (see `docs/AGPL_02_CLOSEOUT.md` §5). The master key is never logged, never sent to Scentic, and is subject to the production config validation in `gateway/src/config.ts` (must be a strong non-placeholder value when `OPENSIGN_ENABLED=true`). Network isolation (T-08) prevents the master key from being used from outside the gateway network. Full T-16 closure (master key used **only** for provisioning, routine ops on per-firm tokens) is an AGPL-04 production-readiness requirement.
 
 ---
 

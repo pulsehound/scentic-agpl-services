@@ -6,6 +6,8 @@ import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 import { KimaiClient } from './kimai/kimai-client.js';
 import { KimaiService } from './kimai/kimai-service.js';
+import { OpenSignClient } from './opensign/opensign-client.js';
+import { OpenSignService } from './opensign/opensign-service.js';
 import { InMemoryMappingStore } from './mappings/mapping-store.js';
 import { InMemoryEventOutbox } from './events/outbox.js';
 
@@ -32,15 +34,34 @@ async function main() {
     adminApiToken: config.kimaiAdminApiToken,
   });
 
+  // OpenSign service (optional, only if enabled)
+  let opensignService: OpenSignService | undefined;
+  if (config.opensignEnabled) {
+    const opensignClient = new OpenSignClient({
+      baseUrl: config.opensignBaseUrl,
+      appId: config.opensignAppId,
+      masterKey: config.opensignMasterKey,
+      adminEmail: config.opensignAdminEmail,
+      adminPassword: config.opensignAdminPassword,
+    });
+    opensignService = new OpenSignService(opensignClient, mappingStore, outbox, {
+      enabled: config.opensignEnabled,
+      pollIntervalSeconds: config.opensignPollIntervalSeconds,
+      completionTimeoutSeconds: config.opensignCompletionTimeoutSeconds,
+    });
+  }
+
   const app = createApp({
     config,
     kimaiService,
+    opensignService,
     upstreamSources: { kimaiSha: KIMAI_SHA, opensignSha: OPENSIGN_SHA },
   });
 
   const server = app.listen(config.port, () => {
     console.log(`[gateway] Listening on port ${config.port} (env: ${config.env})`);
     console.log(`[gateway] Kimai base URL: ${config.kimaiBaseUrl}`);
+    console.log(`[gateway] OpenSign enabled: ${config.opensignEnabled}`);
     console.log(`[gateway] Gateway version: ${config.gatewayVersion}`);
   });
 

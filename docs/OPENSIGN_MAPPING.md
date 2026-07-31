@@ -5,6 +5,85 @@
 **Audience:** Gateway implementers, Scentic core integration engineers, security reviewers, release-gatekeeper.
 **Upstream reference:** OpenSign (Parse Server), REST API at `/app/functions`, session-token auth, `contracts_Document` model, no native webhooks, completed PDFs via `SignedUrl`/`CertificateUrl` presigned URLs.
 
+> **AGPL-02 update:** Verified API details from `vendor/opensign/` source inspection are recorded in §18. The planning content in §1–§17 remains the long-term design; §18 captures what was actually confirmed and implemented in AGPL-02. Where §18 and earlier sections conflict, §18 is authoritative for the AGPL-02 implementation.
+
+---
+
+## 18. Verified API details (AGPL-02 source inspection)
+
+This section records the OpenSign API surface verified by reading the vendored OpenSign source at the pinned SHA `f72624fa26211fe00776453d99a67120a4f5e060`.
+
+### 18.1 API base and transport
+
+- **API base:** `<host>/api/app` (Parse Server REST). The gateway constructs calls as `${baseUrl}/functions/<name>` (Cloud Functions) and `${baseUrl}/classes/<className>` (direct Parse CRUD), where `baseUrl` is `OPENSIGN_BASE_URL` (e.g., `http://opensign:8081/app`).
+- **Transport:** HTTPS in production (private network URL enforced by `gateway/src/config.ts`).
+
+### 18.2 Authentication
+
+- Headers: `X-Parse-Application-Id` (= `OPENSIGN_APP_ID`) on every call.
+- Privileged operations: `X-Parse-Master-Key` (= `OPENSIGN_MASTER_KEY`).
+- User-scoped operations: `X-Parse-Session-Token` (obtained via `POST /login`).
+- The gateway currently authenticates with the master key for all operations (admin login → session token held in the client). Per-user session tokens are a carried gap (see `docs/AGPL_02_CLOSEOUT.md` §5).
+
+### 18.3 Key Cloud Functions and REST endpoints (verified)
+
+| Operation | Call | Notes |
+|-----------|------|-------|
+| Login | `POST /login` | `username` (email) + `password`. Returns `sessionToken` + `objectId`. |
+| Create tenant | `POST /classes/partners_Tenant` | Fields: `TenantName`, `EmailAddress`, `IsActive`. |
+| Get tenant | `GET /classes/partners_Tenant/<id>` | Direct Parse CRUD (master key). |
+| Add user | `adduser` Cloud Function | Params: `name`, `email`, `password`, `role`, `tenantId`, `organization`, `team`. |
+| Get user id | `getUserId` Cloud Function | Params: `email`. |
+| Upload file | `savefile` Cloud Function | Params: `fileBase64`, `fileName`. Returns `{ url }`. |
+| Create document | `createdocumentfromapp` Cloud Function | Wraps a `document` object (see §18.4). Returns `{ objectId }`. |
+| Get document | `getDocument` Cloud Function | Params: `docId`. Returns the `contracts_Document` with signer state. |
+| Link contact to doc | `linkcontacttodoc` Cloud Function | Params: `docId`, `email`, `name`, `phone`, `jobTitle`, `company`. |
+| Decline document | `declinedoc` Cloud Function | Params: `docId`, `userId`, `reason`. Returns boolean. |
+| Get signed URL | `getsignedurl` Cloud Function | Params: `docId`, `url`. Returns `{ url }` (short-lived presigned). |
+| Generate certificate | `generatecertificate` Cloud Function | Params: `docId`. Returns `{ url }`. |
+
+### 18.4 Document model — `contracts_Document`
+
+- Created via `createdocumentfromapp` with a `document` payload:
+  - `Name` (visible document title — sanitize per T-09).
+  - `URL` (PDF URL from `savefile`).
+  - `ExtUserPtr` (Pointer to the sending user).
+  - `Signers` (array of Pointer to `contracts_Users`).
+  - `Placeholders` (per-signer placement config).
+  - `TimeToCompleteDays` (default 15), `SendinOrder`, `IsEnableOTP`, `NotifyOnSignatures`.
+  - `AutomaticReminders: true`, `RemindOnceInEvery: 5` (automatic reminder cadence — see §18.6).
+- Status is **not** an enum. Completion state is derived from three booleans on `contracts_Document`:
+  - `IsCompleted` — all signers signed.
+  - `IsDeclined` — a signer declined (or sender cancelled via `declinedoc`).
+  - `IsArchive` — document archived.
+- The gateway derives the Scentic workflow status enum (`DRAFT`, `SENT`, `IN_PROGRESS`, `COMPLETED`, `DECLINED`, `EXPIRED`, `VOIDED`, `FAILED`) from these booleans + per-signer state, matching the table in §7.2.
+
+### 18.5 No native webhooks — confirmed
+
+OpenSign emits no webhooks on document status changes. Confirmed by source inspection: there is no outbound webhook dispatcher in `apps/OpenSignServer`. The gateway therefore polls `getDocument` per active workflow on `OPENSIGN_POLL_INTERVAL_SECONDS` (default 30s) and records outbox events on transitions. Webhook dispatch to Scentic is AGPL-03 scope.
+
+### 18.6 No void/cancel function — `declinedoc` is closest
+
+There is no `voidDocument` / `cancelDocument` Cloud Function. The closest available operation is `declinedoc`, which marks the document as declined by a user. The gateway's `cancel` endpoint maps to `declinedoc` as the best available cancel-equivalent. This is documented as a known limitation; the resulting Scentic status is `VOIDED` (gateway-derived) even though OpenSign records `IsDeclined=true`.
+
+### 18.7 No manual reminder function — automatic only
+
+There is no `sendReminder` Cloud Function. Manual reminders would require calling `sendmailv3` directly, which is not a stable public API. Reminders are **automatic** and configured per-document via `AutomaticReminders: true` + `RemindOnceInEvery: <days>` on `createdocumentfromapp`. The gateway's `remind` endpoint is wired but returns `501 NOT_SUPPORTED` (see `docs/API_CONTRACTS.md` §6.3.8).
+
+### 18.8 PFX certificates for digital signing
+
+OpenSign applies the final digital signature / audit stamp to completed PDFs using a PFX (PKCS#12) certificate. The certificate is configured globally or per-tenant via `OPENSIGN_PFX_BASE64` / `OPENSIGN_PASS_PHRASE` (see `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` and `docs/DEPLOYMENT.md`). Per-tenant PFX is supported by OpenSign but not yet wired through the gateway (carried gap).
+
+### 18.9 License inconsistency — AGPL-3.0 (root) vs MIT (package.json)
+
+The OpenSign root `LICENSE` file is the full GNU Affero General Public License v3.0 (AGPL-3.0) text. However, `apps/OpenSignServer/package.json` declares `"license": "MIT"`. This is an inconsistency in the upstream project. Scentic treats OpenSign **conservatively as AGPL-3.0** for all source-offer and license-compliance purposes. See `docs/SOURCE_OFFER.md` for the full note.
+
+### 18.10 AGPL-02 implementation status summary
+
+- **Implemented in the gateway:** OpenSign client (`opensign-client.ts`), OpenSign service (`opensign-service.ts`), 11 signature routes (`routes/signature.ts`), mapping store extensions (Firm/User/Workflow/Signer), 12 OpenSign event types in the outbox, config/env validation.
+- **Not implemented (carried gaps):** per-user session tokens (master key used for all ops), persistent mapping store (in-memory), real-OpenSign container contract test (mock-only), webhook dispatch to Scentic (AGPL-03).
+- **OpenSign upstream:** NOT MODIFIED, still at pinned SHA `f72624fa26211fe00776453d99a67120a4f5e060`.
+
 ---
 
 ## 1. Mapping principles

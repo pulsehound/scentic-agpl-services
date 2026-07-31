@@ -21,7 +21,8 @@ This document describes the naming convention for secrets stored in GCloud Secre
 
 | Secret name | Purpose | Rotation |
 |-------------|---------|----------|
-| `agpl-opensign-master-key` | Parse Server MASTER_KEY | On compromise |
+| `agpl-opensign-master-key` | Parse Server MASTER_KEY (used by the gateway for OpenSign operations in AGPL-02; production target: provisioning only) | On compromise |
+| `agpl-opensign-admin-password` | OpenSign admin account password (gateway logs in with this to obtain a session token) | 180 days |
 | `agpl-opensign-app-id` | Parse Server APP_ID | Fixed (not secret, but managed) |
 | `agpl-opensign-pfx-base64` | PFX certificate for PDF signing | On certificate expiry |
 | `agpl-opensign-pass-phrase` | PFX passphrase | With PFX rotation |

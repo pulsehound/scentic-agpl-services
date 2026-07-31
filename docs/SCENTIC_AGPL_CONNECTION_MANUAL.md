@@ -67,6 +67,32 @@ The canonical list is in `.env.example`. Summary:
 
 All secrets are mounted from GCloud Secret Manager in production (see `docs/DEPLOYMENT.md` §5).
 
+### 4.1 OpenSign configuration (AGPL-02 verified)
+
+The following gateway-side env vars configure the OpenSign integration implemented in AGPL-02. They are read by `gateway/src/config.ts` and validated in production (see `docs/DEPLOYMENT.md` for the deployment env template).
+
+| Variable | Required? | Default | Purpose |
+|---|---|---|---|
+| `OPENSIGN_ENABLED` | No | `false` | Master switch for the OpenSign integration. When `false`, the OpenSign client/service are not initialized and signature routes return `503`. When `true`, production validation enforces all `OPENSIGN_*` requirements below. |
+| `OPENSIGN_BASE_URL` | Yes (when enabled) | `http://localhost:8080/app` | OpenSign Parse Server REST base URL. Must be a **private network URL** in production (RFC 1918 / localhost / `*.local` / `*.internal`). The gateway appends `/functions/<name>` and `/classes/<className>`. |
+| `OPENSIGN_APP_ID` | Yes (when enabled) | `opensign` | Parse `X-Parse-Application-Id` header value. |
+| `OPENSIGN_MASTER_KEY` | Yes (when enabled) | (dev: `dev-master-key`) | Parse `X-Parse-Master-Key` header value. Used for all OpenSign operations in AGPL-02 (per-user session tokens are a carried gap). **Server-side only; never sent to Scentic; never logged.** Must be a strong non-placeholder value in production. |
+| `OPENSIGN_ADMIN_EMAIL` | Yes (when enabled) | `admin@opensign.local` | OpenSign admin account email used by the gateway to log in and obtain a session token. |
+| `OPENSIGN_ADMIN_PASSWORD` | Yes (when enabled) | (dev: `dev-password`) | OpenSign admin account password. Must be a strong non-placeholder value in production. |
+| `OPENSIGN_POLL_INTERVAL_SECONDS` | No | `30` | Interval between polls of `getDocument` for active (non-terminal) workflows. Lower values reduce completion-detection latency at the cost of more upstream calls. |
+| `OPENSIGN_COMPLETION_TIMEOUT_SECONDS` | No | `86400` (24h) | Maximum wall-clock time the gateway will keep polling a workflow before marking it `FAILED`/`EXPIRED` if it has not reached a terminal state. |
+
+**Production validation (enforced by `gateway/src/config.ts` when `NODE_ENV=production` and `OPENSIGN_ENABLED=true`):**
+
+- `OPENSIGN_BASE_URL` must be set and must be a private network URL.
+- `OPENSIGN_MASTER_KEY` must be set and must not be a placeholder (`changeme`, `dev-secret`, `placeholder`, `xxx`, `test`, empty).
+- `OPENSIGN_ADMIN_EMAIL` must be set.
+- `OPENSIGN_ADMIN_PASSWORD` must be set and must not be a placeholder.
+
+**OpenSign-server-side env vars** (set on the OpenSign container, not the gateway — see `docs/DEPLOYMENT.md` §3.3 and `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` §6): `APP_ID`, `MASTER_KEY`, `SERVER_URL`, `MONGO_URL`, `S3_*` / `DO_*`, `MAILGUN_*` / `SMTP_*`, `PFX_CERTIFICATE` / `OPENSIGN_PFX_BASE64`, `PFX_PASSWORD` / `OPENSIGN_PASS_PHRASE`.
+
+> Note: `OPENSIGN_POLL_INTERVAL_MS` (listed in §4 above) is the AGPL-00 planning name. AGPL-02 implements the gateway-side poll interval as `OPENSIGN_POLL_INTERVAL_SECONDS` (seconds, default 30). Use `OPENSIGN_POLL_INTERVAL_SECONDS` for the gateway; the OpenSign server itself has no poll-interval env.
+
 ---
 
 ## 5. Kimai setup steps

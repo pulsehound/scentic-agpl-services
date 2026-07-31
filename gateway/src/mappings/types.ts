@@ -148,3 +148,101 @@ export interface ExportTimeEntriesParams {
   endDate?: string;
   format?: 'csv' | 'xlsx' | 'pdf';
 }
+
+// ── OpenSign mapping types ──────────────────────────────────────────────
+
+export interface OpenSignFirmMapping {
+  id: string;
+  scenticFirmId: string;
+  opensignTenantId: string;
+  opensignTenantName: string;
+  status: MappingStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OpenSignUserMapping {
+  id: string;
+  scenticFirmId: string;
+  scenticUserId: string;
+  opensignUserId: string;
+  opensignEmail: string;
+  opensignSessionToken: string; // encrypted at rest in production
+  status: MappingStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OpenSignDocumentMapping {
+  id: string;
+  scenticFirmId: string;
+  scenticMatterId: string;
+  scenticDocumentId: string;
+  scenticDocumentVersionId: string;
+  scenticPhysicalFileId: string;
+  opensignDocumentId: string;
+  opensignStatus: string;
+  status: MappingStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OpenSignWorkflowMapping {
+  id: string;
+  scenticFirmId: string;
+  scenticSignatureWorkflowId: string;
+  scenticMatterId: string;
+  scenticDocumentId: string;
+  scenticDocumentVersionId: string;
+  opensignDocumentId: string;
+  opensignWorkflowId: string;
+  opensignStatus: string;
+  status: MappingStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OpenSignSignerMapping {
+  id: string;
+  scenticFirmId: string;
+  scenticSignatureWorkflowId: string;
+  scenticSignerId: string;
+  opensignSignerId: string;
+  signerEmailHash: string; // SHA-256 hash, never store raw email in logs
+  status: MappingStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// OpenSign sync params
+
+export interface SyncOpenSignFirmParams {
+  scenticFirmId: string;
+  firmName: string;
+}
+
+export interface SyncOpenSignUserParams {
+  scenticFirmId: string;
+  scenticUserId: string;
+  email: string;
+  name: string;
+}
+
+export interface CreateOpenSignWorkflowParams {
+  scenticFirmId: string;
+  scenticSignatureWorkflowId: string;
+  scenticMatterId: string;
+  scenticDocumentId: string;
+  scenticDocumentVersionId: string;
+  scenticPhysicalFileId: string;
+  documentName: string;
+  documentBase64: string;
+  signers: Array<{
+    scenticSignerId: string;
+    email: string;
+    name: string;
+    role: string;
+    order: number;
+  }>;
+  sendNow: boolean;
+}

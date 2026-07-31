@@ -93,8 +93,11 @@ export function createScenticAuthMiddleware(authConfig: AuthConfig) {
       return next(unauthorized('Invalid request signature'));
     }
 
-    // Verify path Firm ID matches signed Firm ID
-    const pathFirmId = req.params['firmId'];
+    // Verify path Firm ID matches signed Firm ID.
+    // When middleware is mounted at app level (app.use), req.params is empty
+    // because route params haven't been resolved yet. Extract firmId from the
+    // path using a regex pattern that matches /api/v1/firms/:firmId/...
+    const pathFirmId = req.params['firmId'] ?? extractFirmIdFromPath(req.path);
     if (pathFirmId && pathFirmId !== firmId) {
       return next(firmScopeViolation('Path firm ID does not match authenticated firm ID'));
     }
@@ -115,3 +118,13 @@ export function createScenticAuthMiddleware(authConfig: AuthConfig) {
 }
 
 export { clearContext };
+
+/**
+ * Extract the firmId from a path that matches the pattern
+ * /api/v1/firms/:firmId/... or /api/v1/firms/:firmId (at end).
+ * Returns null if no firmId is found.
+ */
+function extractFirmIdFromPath(path: string): string | null {
+  const match = path.match(/^\/api\/v1\/firms\/([^/]+)/);
+  return match ? match[1] : null;
+}

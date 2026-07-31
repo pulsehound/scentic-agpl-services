@@ -12,9 +12,28 @@
 | This repository (`scentic-agpl-services`) | **AGPL-3.0** | `LICENSE` at repo root |
 | Gateway code (Node.js/Express, original to this repo) | **AGPL-3.0** | `gateway/` |
 | Kimai | **AGPL-3.0-or-later** | `vendor/kimai/` (upstream: https://github.com/kimai/kimai) |
-| OpenSign | **AGPL-3.0** | `vendor/opensign/` (upstream: https://github.com/OpenSignLabs/OpenSign) |
+| OpenSign | **AGPL-3.0** (treated conservatively; see §1.1) | `vendor/opensign/` (upstream: https://github.com/OpenSignLabs/OpenSign) |
 
 AGPL-3.0 requires that anyone who conveys the software, or lets users interact with it over a network, must offer those users the complete corresponding source code, including any modifications, under AGPL-3.0. This document defines how Scentic satisfies that obligation for the AGPL services stack.
+
+### 1.1 OpenSign license inconsistency
+
+The vendored OpenSign source at `vendor/opensign/` carries **two conflicting license declarations**:
+
+- `vendor/opensign/LICENSE` — the full GNU Affero General Public License v3.0 (AGPL-3.0) text.
+- `vendor/opensign/apps/OpenSignServer/package.json` — `"license": "MIT"`.
+
+This is an inconsistency in the upstream OpenSign project itself (present at the pinned upstream SHA `f72624fa26211fe00776453d99a67120a4f5e060`). Scentic treats OpenSign **conservatively as AGPL-3.0** for all source-offer, license-compliance, and contamination-analysis purposes, because:
+
+1. The root `LICENSE` file is unambiguously the AGPL-3.0 text, and AGPL-3.0 is the license declared in OpenSign's public repository metadata and README.
+2. AGPL-3.0 is the stricter of the two; treating the project as AGPL-3.0 satisfies both AGPL-3.0 and MIT obligations.
+3. The `MIT` declaration in `package.json` appears to be an upstream packaging error and does not override the root `LICENSE`.
+
+**Actions taken:**
+
+- The `GET /source-offer` response and `docs/SOURCE_OFFER.md` list OpenSign as `AGPL-3.0`.
+- `docs/SECURITY_THREAT_MODEL.md` (T-15) treats OpenSign as AGPL-3.0 for contamination analysis.
+- This inconsistency is recorded here so reviewers and downstream consumers are aware that the upstream project's own declarations conflict. If the upstream project resolves the inconsistency in a future release, this section should be updated to reflect the resolved license.
 
 ---
 

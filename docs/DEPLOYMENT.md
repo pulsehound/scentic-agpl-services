@@ -196,6 +196,27 @@ Deploy all AGPL-licensed services into a **new, dedicated GCP project** (working
   - No secrets in `.env` files committed to git (only `.env.example` with placeholders).
   - No secrets baked into container images.
 
+### 5.1 OpenSign gateway env vars (AGPL-02)
+
+The gateway reads the following OpenSign env vars (validated by `gateway/src/config.ts` when `OPENSIGN_ENABLED=true` in production). Add these to the gateway's Cloud Run env template, sourcing secrets from Secret Manager:
+
+| Variable | Source | Notes |
+|---|---|---|
+| `OPENSIGN_ENABLED` | plain env | `true` to enable the OpenSign integration. When `false`, signature routes return `503`. |
+| `OPENSIGN_BASE_URL` | plain env | OpenSign Parse REST base URL, e.g. `http://opensign.internal:8081/app`. **Must be a private network URL in production.** |
+| `OPENSIGN_APP_ID` | plain env or Secret Manager | Parse `X-Parse-Application-Id`. Not secret, but managed. |
+| `OPENSIGN_MASTER_KEY` | **Secret Manager** (`agpl-opensign-master-key`) | Parse `X-Parse-Master-Key`. Strong, non-placeholder. Used for all OpenSign operations in AGPL-02. |
+| `OPENSIGN_ADMIN_EMAIL` | plain env | OpenSign admin account email used by the gateway to log in. |
+| `OPENSIGN_ADMIN_PASSWORD` | **Secret Manager** (`agpl-opensign-admin-password`) | OpenSign admin account password. Strong, non-placeholder. |
+| `OPENSIGN_POLL_INTERVAL_SECONDS` | plain env | Poll interval for `getDocument` (default `30`). |
+| `OPENSIGN_COMPLETION_TIMEOUT_SECONDS` | plain env | Max poll duration before a workflow is marked failed/expired (default `86400`). |
+
+**OpenSign-server-side env vars** (set on the OpenSign container, not the gateway): `APP_ID`, `MASTER_KEY`, `SERVER_URL`, `MONGO_URL`, `S3_*` / `DO_*`, `MAILGUN_*` / `SMTP_*`, `OPENSIGN_PFX_BASE64`, `OPENSIGN_PASS_PHRASE`. See §3.3 and `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` §6.
+
+### 5.2 Production validation
+
+When `NODE_ENV=production` and `OPENSIGN_ENABLED=true`, `gateway/src/config.ts` rejects the deployment if any of the following are missing or placeholder: `OPENSIGN_BASE_URL` (must be private), `OPENSIGN_MASTER_KEY`, `OPENSIGN_ADMIN_EMAIL`, `OPENSIGN_ADMIN_PASSWORD`. The gateway will fail to start rather than run with weak OpenSign credentials.
+
 ---
 
 ## 6. Docker Compose for local / dev
