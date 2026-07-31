@@ -2,7 +2,7 @@
 
 > **Phase:** AGPL-02 — OpenSign integration foundation
 > **Date:** 2026-07-31
-> **Commit SHA:** `<FILL_AFTER_COMMIT>`
+> **Commit SHA:** `fd53268`
 
 All evidence below corresponds to the AGPL-02 commit. Placeholder sections (`<...>`) are filled in by the executing agent at commit time.
 
