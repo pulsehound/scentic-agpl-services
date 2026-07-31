@@ -2,7 +2,7 @@
 
 > **Phase:** AGPL-01 — Gateway skeleton + Kimai integration foundation
 > **Status:** GATEWAY SKELETON + KIMAI INTEGRATION FOUNDATION COMPLETE
-> **Commit SHA:** `<FILL_AFTER_COMMIT>`
+> **Commit SHA:** `0cff0cf`
 > **Date:** 2026-07-31
 
 ---

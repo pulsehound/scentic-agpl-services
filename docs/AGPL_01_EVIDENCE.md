@@ -2,7 +2,7 @@
 
 > **Phase:** AGPL-01 — Gateway skeleton + Kimai integration foundation
 > **Date:** 2026-07-31
-> **Commit SHA:** `<FILL_AFTER_COMMIT>`
+> **Commit SHA:** `0cff0cf`
 
 All evidence below corresponds to the AGPL-01 commit. Placeholder sections (`<...>`) are filled in by the executing agent at commit time.
 
@@ -108,7 +108,7 @@ Repository: `C:\AIprojects\factoryai\scentic-agpl-services`
 Command (after commit): `git status --porcelain`
 
 ```
-<POST_COMMIT_STATUS_PLACEHOLDER>
+(working tree clean after commit 0cff0cf)
 ```
 
 Expected: clean working tree (all AGPL-01 work committed).
