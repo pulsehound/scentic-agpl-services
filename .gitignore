@@ -1,0 +1,52 @@
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Secrets
+*.key
+*.pem
+*.pfx
+*.p12
+secrets/
+google-service-account.json
+
+# Node.js
+node_modules/
+dist/
+build/
+.cache/
+.turbo/
+
+# Vendor upstream repos (cloned by scripts/setup.sh, not committed)
+# Upstream Kimai and OpenSign are public at:
+#   https://github.com/kimai/kimai
+#   https://github.com/OpenSignLabs/OpenSign
+vendor/kimai/
+vendor/opensign/
+
+# PHP / Composer (if vendor repos are present locally)
+vendor/kimai/var/
+vendor/kimai/.env.local
+vendor/opensign/node_modules/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Docker
+docker-compose.override.yml
+
+# Uploads / temp
+uploads/
+tmp/
