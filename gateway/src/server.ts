@@ -9,8 +9,7 @@ import { KimaiService } from './kimai/kimai-service.js';
 import { OpenSignClient } from './opensign/opensign-client.js';
 import { OpenSignService } from './opensign/opensign-service.js';
 import { WebhookDispatcher, createWebhookDispatcherConfig } from './events/webhook-dispatcher.js';
-import { InMemoryMappingStore } from './mappings/mapping-store.js';
-import { InMemoryEventOutbox } from './events/outbox.js';
+import { createStoreBundle, createStoreConfigFromEnv } from './storage/store-factory.js';
 
 // Upstream source SHAs (pinned in docs/UPSTREAM_SOURCES.md)
 const KIMAI_SHA = '7c2ed4b07cca2e15b1ab4cc5947afdf899a76401';
@@ -25,8 +24,9 @@ async function main() {
     username: config.kimaiAdminUsername,
   });
 
-  const mappingStore = new InMemoryMappingStore();
-  const outbox = new InMemoryEventOutbox();
+  // Durable store bundle (memory, sqlite, or postgres)
+  const storeBundle = createStoreBundle(createStoreConfigFromEnv(process.env as Record<string, string | undefined>));
+  const { mappingStore, nonceStore, outbox } = storeBundle;
 
   const kimaiService = new KimaiService(kimaiClient, mappingStore, outbox, {
     useConfidentialLabels: config.useConfidentialLabels,
@@ -67,7 +67,11 @@ async function main() {
     opensignService,
     webhookDispatcher,
     mappingStore,
+    nonceStore,
     upstreamSources: { kimaiSha: KIMAI_SHA, opensignSha: OPENSIGN_SHA },
+    storeType: storeBundle.storeType,
+    nonceStoreType: storeBundle.nonceStoreType,
+    outboxStoreType: storeBundle.outboxStoreType,
   });
 
   const server = app.listen(config.port, () => {
@@ -75,17 +79,24 @@ async function main() {
     console.log(`[gateway] Kimai base URL: ${config.kimaiBaseUrl}`);
     console.log(`[gateway] OpenSign enabled: ${config.opensignEnabled}`);
     console.log(`[gateway] Gateway version: ${config.gatewayVersion}`);
+    console.log(`[gateway] Store type: ${storeBundle.storeType} (nonce: ${storeBundle.nonceStoreType}, outbox: ${storeBundle.outboxStoreType})`);
   });
 
   // Graceful shutdown
   process.on('SIGTERM', () => {
     console.log('[gateway] SIGTERM received, shutting down...');
-    server.close(() => process.exit(0));
+    server.close(() => {
+      storeBundle.close?.();
+      process.exit(0);
+    });
   });
 
   process.on('SIGINT', () => {
     console.log('[gateway] SIGINT received, shutting down...');
-    server.close(() => process.exit(0));
+    server.close(() => {
+      storeBundle.close?.();
+      process.exit(0);
+    });
   });
 }
 

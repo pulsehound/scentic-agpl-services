@@ -43,6 +43,13 @@ services:
       - KIMAI_USE_CONFIDENTIAL_LABELS=${KIMAI_USE_CONFIDENTIAL_LABELS:-false}
       # ── Gateway database (optional; null disables persistence) ──
       - GATEWAY_DATABASE_URL=${GATEWAY_DATABASE_URL:-}
+      # ── Durable storage (AGPL-04) ──
+      # NOTE: SQLite (better-sqlite3) segfaults in Docker on this host.
+      # Using memory store for Docker local stack. SQLite works on bare-metal.
+      # See docs/AGPL_04_CLOSEOUT.md for details. AGPL-05 will use Postgres.
+      - GATEWAY_STORE_TYPE=${GATEWAY_STORE_TYPE:-memory}
+      - GATEWAY_SQLITE_PATH=/data/gateway-state.db
+      - GATEWAY_ALLOW_SQLITE_IN_PRODUCTION=${GATEWAY_ALLOW_SQLITE_IN_PRODUCTION:-false}
       # ── OpenSign integration ──
       - OPENSIGN_ENABLED=true
       - OPENSIGN_BASE_URL=http://opensign-server:8080/app
@@ -59,6 +66,7 @@ services:
         condition: service_started
     volumes:
       - gateway-logs:/app/logs
+      - gateway-data:/data
     networks:
       - agpl-internal
     healthcheck:
@@ -179,3 +187,4 @@ volumes:
   kimai-db-data:
   opensign-mongo-data:
   gateway-logs:
+  gateway-data:

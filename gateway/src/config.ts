@@ -35,6 +35,11 @@ export interface GatewayConfig {
   opensignAdminPassword: string;
   opensignPollIntervalSeconds: number;
   opensignCompletionTimeoutSeconds: number;
+  // Storage
+  storeType: string;
+  sqlitePath: string;
+  allowSqliteInProduction: boolean;
+  redisUrl: string | null;
 }
 
 const PLACEHOLDER_VALUES = new Set([
@@ -171,6 +176,11 @@ export function loadConfig(env: Record<string, string | undefined>): GatewayConf
     opensignAdminPassword: opensignAdminPassword || 'dev-password',
     opensignPollIntervalSeconds: parseInt(env['OPENSIGN_POLL_INTERVAL_SECONDS'] ?? '30', 10),
     opensignCompletionTimeoutSeconds: parseInt(env['OPENSIGN_COMPLETION_TIMEOUT_SECONDS'] ?? '86400', 10),
+    // Storage
+    storeType: env['GATEWAY_STORE_TYPE'] ?? 'memory',
+    sqlitePath: env['GATEWAY_SQLITE_PATH'] ?? './gateway-state.db',
+    allowSqliteInProduction: (env['GATEWAY_ALLOW_SQLITE_IN_PRODUCTION'] ?? 'false').toLowerCase() === 'true',
+    redisUrl: env['GATEWAY_REDIS_URL'] ?? null,
   };
 }
 

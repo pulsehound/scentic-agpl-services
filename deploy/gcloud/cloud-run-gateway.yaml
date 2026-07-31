@@ -1,0 +1,153 @@
+# Cloud Run service manifest — scentic-agpl-gateway
+#
+# REFERENCE MANIFEST ONLY. Do not apply until authorized by the project owner.
+# No GCP project has been provisioned. Replace PROJECT_ID, REGION, and TAG.
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Applies with:
+#   gcloud run services replace cloud-run-gateway.yaml \
+#     --region=REGION --project=PROJECT_ID
+#
+# See deploy/gcloud/README.md and deploy/gcloud/deploy-commands.md.
+
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: scentic-agpl-gateway
+  # Replace PROJECT_ID and REGION before applying.
+  namespace: "PROJECT_ID"
+  labels:
+    app: scentic-agpl-gateway
+    component: gateway
+    license: AGPL-3.0
+  annotations:
+    run.googleapis.com/ingress: internal
+    # Allow an Internal Load Balancer in front (optional). Internal-only remains the default.
+    run.googleapis.com/ingress-status: internal
+spec:
+  template:
+    metadata:
+      annotations:
+        # Autoscaling: min 1 avoids cold starts on internal calls; max 3 caps spend.
+        autoscaling.knative.dev/min-scale: "1"
+        autoscaling.knative.dev/max-scale: "3"
+        # Per-instance resource limits.
+        run.googleapis.com/cpu-limit: "1"
+        run.googleapis.com/memory-limit: "512Mi"
+        # VPC connector for private networking to Kimai / OpenSign / Cloud SQL.
+        # Replace CONNECTOR_NAME and REGION before applying.
+        run.googleapis.com/vpc-access-connector: projects/PROJECT_ID/regions/REGION/connectors/CONNECTOR_NAME
+        # Route all egress through the VPC connector (private networking only).
+        run.googleapis.com/vpc-access-egress: private-ip-only
+        # Use the gateway runtime service account (least privilege — see service-accounts.md).
+        # Replace PROJECT_ID and GATEWAY_SA before applying.
+        run.googleapis.com/execution-environment: gen1
+    spec:
+      serviceAccountName: GATEWAY_SA@PROJECT_ID.iam.gserviceaccount.com
+      containerConcurrency: 80
+      timeoutSeconds: 300
+      containers:
+        - name: gateway
+          # Replace PROJECT_ID and TAG before applying. TAG must be a real,
+          # pinned image digest or immutable tag — never :latest in production.
+          image: gcr.io/PROJECT_ID/scentic-agpl-gateway:TAG
+          ports:
+            - containerPort: 3101
+          # Liveness/readiness probe on the gateway health endpoint.
+          # /health is public on the gateway (no auth) and reports upstream deps.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3101
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3101
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          env:
+            # Non-secret env (plain). All secrets are referenced from Secret Manager below.
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "3101"
+            - name: LOG_LEVEL
+              value: "info"
+            - name: GATEWAY_PORT
+              value: "3101"
+            # Durable store. Production uses Postgres (Cloud SQL). SQLite is
+            # rejected in production unless GATEWAY_ALLOW_SQLITE_IN_PRODUCTION=true
+            # (NOT recommended; single-instance only). See docs/AGPL_04_CLOSEOUT.md
+            # and gateway/src/storage/store-factory.ts.
+            - name: GATEWAY_STORE_TYPE
+              value: "postgres"
+            - name: GATEWAY_ALLOW_SQLITE_IN_PRODUCTION
+              value: "false"
+            # Cloud SQL Postgres connection (private IP). The value below is a
+            # plain env reference; the password/secret components come from
+            # Secret Manager in the secret volume mounts section.
+            - name: GATEWAY_DATABASE_URL
+              # Replace with the real Cloud SQL private-IP connection string.
+              # Format: postgres://USER:PASSWORD@PRIVATE_IP:5432/gateway
+              # Password should be injected from Secret Manager, not baked in.
+              value: "postgres://gateway@CLOUD_SQL_PRIVATE_IP:5432/gateway"
+            # Redis URL for the nonce/idempotency store (AGPL-05 production path).
+            # Left empty here; populated from Secret Manager when Redis is provisioned.
+            - name: GATEWAY_REDIS_URL
+              value: ""
+            # Kimai / OpenSign base URLs (private network URLs only).
+            - name: KIMAI_BASE_URL
+              value: "http://kimai.agpl.internal:8001"
+            - name: OPENSIGN_ENABLED
+              value: "true"
+            - name: OPENSIGN_BASE_URL
+              value: "http://opensign.agpl.internal:8081/app"
+            - name: OPENSIGN_APP_ID
+              value: "opensign"
+            - name: OPENSIGN_POLL_INTERVAL_SECONDS
+              value: "30"
+            - name: OPENSIGN_COMPLETION_TIMEOUT_SECONDS
+              value: "86400"
+            # Webhook dispatch target on Scentic core (private URL).
+            - name: SCENTIC_WEBHOOK_TARGET_URL
+              value: "http://scentic-core.internal/api/agpl/webhooks/events"
+            - name: SCENTIC_GATEWAY_INTERNAL_BASE_URL
+              value: "http://gateway.agpl.internal:3101"
+            # Secrets sourced from Secret Manager (see secret-manager.md).
+            - name: SCENTIC_SHARED_HMAC_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: SCENTIC_SHARED_HMAC_SECRET
+                  key: latest
+            - name: SCENTIC_WEBHOOK_HMAC_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: SCENTIC_WEBHOOK_HMAC_SECRET
+                  key: latest
+            - name: KIMAI_ADMIN_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: KIMAI_ADMIN_API_TOKEN
+                  key: latest
+            - name: OPENSIGN_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: OPENSIGN_MASTER_KEY
+                  key: latest
+            - name: OPENSIGN_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: OPENSIGN_ADMIN_PASSWORD
+                  key: latest
+          # Cloud SQL connection volume (optional — Cloud Run supports the
+          # Cloud SQL proxy via the run.googleapis.com/cloudsql-instances
+          # annotation when using a Unix socket. Here we use a private-IP
+          # connection string in GATEWAY_DATABASE_URL instead.)
+          volumes: []

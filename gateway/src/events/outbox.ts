@@ -46,6 +46,7 @@ export interface EventOutbox {
   markSent(eventId: string): void;
   markFailed(eventId: string): void;
   clear(): void;
+  getAll(): OutboxEvent[];
 }
 
 export class InMemoryEventOutbox implements EventOutbox {

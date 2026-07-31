@@ -76,17 +76,18 @@ See `docs/SOURCE_OFFER.md` for full details.
 
 ## Status
 
-**Phase AGPL-03: LOCAL DEPLOYMENT + CONNECTION INTERFACE READY**
+**Phase AGPL-04: DURABLE STORAGE + STORE FACTORY + DOCKER HARDENING + GCLOUD MANIFESTS**
 
-The gateway skeleton, Kimai integration foundation (AGPL-01), OpenSign integration foundation (AGPL-02), and AGPL-03 (local deployment + connection interface) are delivered. AGPL-03 adds a webhook dispatcher (`gateway/src/events/webhook-dispatcher.ts`) that signs outbound webhooks to Scentic with HMAC-SHA256, retries with exponential backoff, and is disabled safely when the target URL/secret is not configured; a webhook signer (`gateway/src/events/webhook-signer.ts`) with `X-Gateway-*` headers and constant-time verification; a local docker-compose stack (`deploy/docker-compose.yml`) running gateway + Kimai + OpenSign + MongoDB + MariaDB; and the complete Scentic ↔ AGPL interface documentation (`docs/SCENTIC_INTERFACE_SPEC.md`, `docs/SCENTIC_CORE_REQUIRED_CHANGES.md`, `docs/SCENTIC_ENV_VARS_REQUIRED.md`).
+AGPL-01 (Kimai integration), AGPL-02 (OpenSign integration), AGPL-03 (local deployment + connection interface), and AGPL-04 (durable storage + GCloud manifests) are delivered. AGPL-04 adds a durable SQLite store (`gateway/src/storage/sqlite-store.ts`) implementing MappingStore + NonceStore + EventOutbox with Firm-scoped tables; a store factory (`gateway/src/storage/store-factory.ts`) with production validation (memory rejected in production, SQLite requires explicit allow flag, Postgres not yet implemented); Docker deployment hardening (`.dockerignore`, `Dockerfile.gateway` with native module compilation); and GCloud deployment manifests (`deploy/gcloud/` — Cloud Run, Secret Manager, service accounts, VPC, deploy commands — manifests only, not deployed).
 
-**Scentic core was NOT modified.** AGPL-03 is documentation-only on the Scentic side: the full set of Scentic-core changes (new `AGPL_GATEWAY` signature provider type, env-schema validation, webhook receiver route, time-tracking proxy routes, provider-health entry, audit events) is specified in `docs/SCENTIC_CORE_REQUIRED_CHANGES.md` for Yair to land when he decides to integrate. No Scentic proprietary file was edited (read-only inspection only). OpenSign and Kimai upstream remain unmodified.
+**Scentic core was NOT modified.** AGPL-04 is gateway + docs only.
 
-Carried gaps (to resolve before AGPL-04 production readiness): Scentic-core-side implementation of `docs/SCENTIC_CORE_REQUIRED_CHANGES.md` (lands on Yair's approval), per-user Kimai/OpenSign tokens (currently admin/master-key fallback), persistent mapping/nonce/idempotency stores (in-memory), real-Kimai and real-OpenSign container contract tests (mock-only), production deployment (AGPL-04).
+Carried gaps (to resolve before production readiness): Postgres production store adapter (AGPL-05), Redis nonce/idempotency store for multi-instance (AGPL-05), real GCloud deployment (AGPL-05, gated on authorization), real-Kimai/OpenSign container contract tests (AGPL-05), Scentic-core-side implementation of `docs/SCENTIC_CORE_REQUIRED_CHANGES.md` (lands on Yair's approval).
 
+See `docs/AGPL_04_CLOSEOUT.md` for the AGPL-04 closeout.
+See `docs/AGPL_04_EVIDENCE.md` for executed evidence.
 See `docs/AGPL_03_CLOSEOUT.md` for the AGPL-03 closeout.
-See `docs/AGPL_03_EVIDENCE.md` for executed evidence.
 See `docs/AGPL_02_CLOSEOUT.md` for the AGPL-02 closeout.
 See `docs/AGPL_01_CLOSEOUT.md` for the AGPL-01 closeout.
 See `docs/SCENTIC_AGPL_INTEGRATION_PLAN.md` for the complete plan.
-See `docs/NEXT_STEPS.md` for implementation roadmap (AGPL-04 is next).
+See `docs/NEXT_STEPS.md` for implementation roadmap (AGPL-05 is next).

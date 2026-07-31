@@ -6,6 +6,7 @@ import express from 'express';
 import type { GatewayConfig } from './config.js';
 import { createScenticAuthMiddleware } from './auth/scentic-auth.js';
 import { InMemoryNonceStore } from './auth/hmac.js';
+import type { NonceStore } from './auth/hmac.js';
 import { createHealthRouter, createSourceOfferRouter } from './routes/health.js';
 import { createMappingsRouter } from './routes/mappings.js';
 import { createTimeRouter } from './routes/time.js';
@@ -27,8 +28,9 @@ export interface AppDeps {
   mappingStore: MappingStore;
   upstreamSources: { kimaiSha: string; opensignSha: string };
   storeType?: 'memory' | 'sqlite' | 'postgres';
-  nonceStoreType?: 'memory' | 'redis';
+  nonceStoreType?: 'memory' | 'sqlite' | 'redis';
   outboxStoreType?: 'memory' | 'sqlite' | 'postgres';
+  nonceStore?: NonceStore;
 }
 
 export function createApp(deps: AppDeps): express.Application {
@@ -45,7 +47,7 @@ export function createApp(deps: AppDeps): express.Application {
   });
 
   // Auth middleware
-  const nonceStore = new InMemoryNonceStore();
+  const nonceStore = deps.nonceStore ?? new InMemoryNonceStore();
   const authMiddleware = createScenticAuthMiddleware({
     hmacSecret: config.hmacSecret,
     nonceStore,

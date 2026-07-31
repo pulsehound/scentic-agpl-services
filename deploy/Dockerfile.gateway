@@ -1,25 +1,32 @@
 # scentic-agpl-services — Gateway Dockerfile (LOCAL DEVELOPMENT ONLY)
 # Builds the Gateway service for the local docker-compose stack.
-# NOT for production. Production uses Cloud Run (see deploy/cloud-run/).
-#
-# Multi-stage not strictly necessary for local dev, but kept lean.
+# NOT for production. Production uses Cloud Run (see deploy/gcloud/).
 
-FROM node:20-slim
+FROM node:20-alpine
 
-WORKDIR /app
+WORKDIR /app/gateway
 
-# Copy workspace manifests first for better layer caching
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY gateway/package.json gateway/
+# Install build tools for native modules (better-sqlite3)
+RUN apk add --no-cache python3 make g++
 
-# Enable pnpm via corepack and install deps (frozen lockfile for reproducibility)
-RUN corepack enable pnpm && pnpm install --frozen-lockfile
+# Copy gateway package.json and install deps with npm
+COPY gateway/package.json ./
+RUN npm install
+
+# Force compile better-sqlite3 from source (Alpine/musl needs compilation)
+RUN cd node_modules/better-sqlite3 && rm -rf build prebuilds && npx --yes node-gyp configure && npx --yes node-gyp build
+
+# Verify native module compiled
+RUN test -f node_modules/better-sqlite3/build/Release/better_sqlite3.node
 
 # Copy gateway source and build
-COPY gateway/ gateway/
-RUN pnpm --filter gateway build
+COPY gateway/ ./
+RUN ./node_modules/.bin/tsc
+
+# Copy non-TS assets (schema.sql) to dist
+RUN cp src/storage/schema.sql dist/storage/schema.sql
 
 EXPOSE 3101
 
 # Run compiled output
-CMD ["node", "gateway/dist/server.js"]
+CMD ["node", "dist/server.js"]

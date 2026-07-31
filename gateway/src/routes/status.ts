@@ -19,7 +19,7 @@ export interface StatusDeps {
   webhookDispatcher?: WebhookDispatcher;
   mappingStore: MappingStore;
   storeType: 'memory' | 'sqlite' | 'postgres';
-  nonceStoreType: 'memory' | 'redis';
+  nonceStoreType: 'memory' | 'sqlite' | 'redis';
   outboxStoreType: 'memory' | 'sqlite' | 'postgres';
 }
 
