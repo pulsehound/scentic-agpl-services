@@ -1,6 +1,8 @@
 # AGPL Services — Next Steps & Implementation Roadmap
 
-> **Status:** Planning document (AGPL-00). Tracks the phased implementation of the Scentic AGPL services stack (gateway + Kimai + OpenSign) and the required Scentic core changes.
+> **Status:** Planning document. Tracks the phased implementation of the Scentic AGPL services stack (gateway + Kimai + OpenSign) and the required Scentic core changes.
+>
+> **Current phase:** AGPL-01 COMPLETE — AGPL-02 (OpenSign integration) is next.
 
 ---
 
@@ -22,6 +24,8 @@ Not yet done (handed off to the phases below): gateway implementation, Kimai/Ope
 
 ## 2. AGPL-01 — Gateway skeleton + Kimai integration
 
+**STATUS: COMPLETE** — Gateway skeleton + Kimai integration foundation delivered. See `docs/AGPL_01_CLOSEOUT.md` and `docs/AGPL_01_EVIDENCE.md`.
+
 ### Deliverables
 
 - Create the gateway Node.js/Express application in `gateway/` (TypeScript or JavaScript per repo convention; lint, format, tests).
@@ -40,6 +44,27 @@ Not yet done (handed off to the phases below): gateway implementation, Kimai/Ope
   - Map Scentic user/matter/activity to Kimai user/project/activity.
 - Implement `GET /health` (with `deps.kimai`), `POST /auth/verify`, and the mapping + time routes per `docs/API_CONTRACTS.md`.
 
+### What was delivered in AGPL-01
+
+- Gateway Node.js/Express/TypeScript app with Vitest (35 tests).
+- HMAC service-to-service auth (timestamp, nonce, signature, firm scoping, constant-time compare).
+- In-memory mapping store (Firm, User, Client, Matter, Activity, TimeEntry) with cross-firm leakage prevention.
+- Kimai API client (endpoints verified against `vendor/kimai/` source).
+- Kimai service with firm-scoped operations and confidential label mode.
+- REST endpoints: health, source-offer, firm init, user/client/matter/activity sync, time entry CRUD, export, admin.
+- Event outbox for future webhook dispatch to Scentic.
+- Upstream source pinning (`docs/UPSTREAM_SOURCES.md`).
+- Config/env validation with production checks.
+- Scentic core: NOT MODIFIED (read-only inspection only).
+- OpenSign: NOT MODIFIED (AGPL-02 scope).
+
+### Remaining gaps (carry forward to AGPL-04)
+
+- Per-user Kimai API token (currently uses `KIMAI_ADMIN_API_TOKEN` fallback).
+- In-memory nonce store (production needs Redis).
+- In-memory mapping store (production needs SQLite/Postgres).
+- No real-Kimai contract test yet (mock only).
+
 ### Tests
 
 - Unit tests for Kimai client (mocked Kimai HTTP).
@@ -54,11 +79,13 @@ Not yet done (handed off to the phases below): gateway implementation, Kimai/Ope
 - `GET /health` returns `deps.kimai=ok` against a real Kimai container.
 - Mapping + time-entry contract tests pass against real Kimai.
 
+> **Note:** Real-Kimai contract test is a carried gap (mock-only in AGPL-01); it must land before AGPL-04 production readiness.
+
 ---
 
-## 3. AGPL-02 — OpenSign integration
+## 3. AGPL-02 — OpenSign integration  ← NEXT
 
-> **Parallelizable with AGPL-01** (see §7).
+> **Parallelizable with AGPL-01** (see §7). AGPL-01 is now COMPLETE; AGPL-02 is the active next phase.
 
 ### Deliverables
 
@@ -173,9 +200,9 @@ Not yet done (handed off to the phases below): gateway implementation, Kimai/Ope
 ```
 AGPL-00 (DONE)
    |
-   +---> AGPL-01 (Gateway skeleton + Kimai)  \
-   |                                          +--> AGPL-03 (Scentic adapters) --> AGPL-04 (Deploy) --> AGPL-05 (Source offer)
-   +---> AGPL-02 (OpenSign integration)      /
+   +---> AGPL-01 (Gateway skeleton + Kimai)  [COMPLETE]  \
+   |                                                      +--> AGPL-03 (Scentic adapters) --> AGPL-04 (Deploy) --> AGPL-05 (Source offer)
+   +---> AGPL-02 (OpenSign integration)  [NEXT]          /
 ```
 
 - **AGPL-01 and AGPL-02 can run in parallel** — they touch separate gateway modules (`gateway/src/kimai/` vs `gateway/src/opensign/` + `gateway/src/signatures/`).

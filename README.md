@@ -76,9 +76,15 @@ See `docs/SOURCE_OFFER.md` for full details.
 
 ## Status
 
-**Phase AGPL-00: DISCOVERY / ARCHITECTURE / WORKSPACE SETUP**
+**Phase AGPL-01: GATEWAY SKELETON + KIMAI INTEGRATION FOUNDATION COMPLETE**
 
-This is a planning and workspace setup phase. No integration is implemented yet. No deployment is ready. No production readiness is claimed.
+The gateway skeleton and Kimai integration foundation are implemented in `gateway/` (Node.js/Express/TypeScript with Vitest tests). This includes HMAC service-to-service auth, an in-memory mapping store, a Kimai API client, Kimai service with firm-scoped operations and confidential label mode, REST endpoints (health, source-offer, firm init, sync, time entry CRUD, export, admin), an event outbox, upstream source pinning, and strict config/env validation.
 
+Carried gaps (to resolve before AGPL-04 production readiness): per-user Kimai API tokens, Redis-backed nonce store, persistent mapping store (SQLite/Postgres), and a real-Kimai contract test (currently mock-only).
+
+Scentic core was NOT modified (read-only inspection only). OpenSign was NOT modified (AGPL-02 scope).
+
+See `docs/AGPL_01_CLOSEOUT.md` for the AGPL-01 closeout.
+See `docs/AGPL_01_EVIDENCE.md` for executed evidence.
 See `docs/SCENTIC_AGPL_INTEGRATION_PLAN.md` for the complete plan.
-See `docs/NEXT_STEPS.md` for implementation roadmap.
+See `docs/NEXT_STEPS.md` for implementation roadmap (AGPL-02 is next).

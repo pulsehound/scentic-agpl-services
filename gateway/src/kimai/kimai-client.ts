@@ -1,0 +1,327 @@
+/**
+ * Kimai REST API client.
+ *
+ * Verified endpoints from Kimai source inspection (config/routes.yaml, src/API/):
+ * - GET /api/status — system status (version, info)
+ * - GET/POST /api/timesheets — list/create timesheets
+ * - GET/PATCH/DELETE /api/timesheets/{id} — get/update/delete timesheet
+ * - GET/POST /api/customers — list/create customers
+ * - GET/POST /api/projects — list/create projects
+ * - GET/POST /api/activities — list/create activities
+ * - GET/POST /api/users — list/create users (SUPER_ADMIN required for create)
+ * - GET/POST /api/teams — list/create teams
+ * - POST /api/export — export timesheets
+ *
+ * Auth: Bearer token via Authorization header (Kimai access tokens).
+ * Alternative (deprecated): X-AUTH-USER + X-AUTH-TOKEN headers.
+ *
+ * Security:
+ * - Never log request/response bodies (may contain confidential descriptions)
+ * - Wrap all upstream errors safely
+ * - Timeout all requests
+ */
+
+import { wrapUpstreamError, upstreamUnavailable, type GatewayError } from '../http/errors.js';
+
+export interface KimaiClientConfig {
+  baseUrl: string;
+  apiToken: string;
+  username: string;
+  timeoutMs?: number;
+}
+
+export interface KimaiCustomer {
+  id: number;
+  name: string;
+  number?: string;
+  visible: boolean;
+  team?: number;
+}
+
+export interface KimaiProject {
+  id: number;
+  name: string;
+  customer: number;
+  visible: boolean;
+  orderNumber?: string;
+}
+
+export interface KimaiActivity {
+  id: number;
+  name: string;
+  project?: number;
+  visible: boolean;
+}
+
+export interface KimaiUser {
+  id: number;
+  username: string;
+  email: string;
+  firstname?: string;
+  lastname?: string;
+  enabled: boolean;
+}
+
+export interface KimaiTeam {
+  id: number;
+  name: string;
+  teamlead?: number;
+}
+
+export interface KimaiTimesheet {
+  id: number;
+  begin: string;
+  end?: string;
+  duration?: number;
+  activity: number;
+  project: number;
+  user: number;
+  description?: string;
+  exported?: boolean;
+}
+
+export interface KimaiStatus {
+  version: string;
+  versionId?: number;
+}
+
+type KimaiResult<T> = { success: true; data: T } | { success: false; error: GatewayError };
+
+export class KimaiClient {
+  private config: KimaiClientConfig;
+  private token: string;
+
+  constructor(config: KimaiClientConfig) {
+    this.config = config;
+    this.token = config.apiToken;
+  }
+
+  setToken(token: string): void {
+    this.token = token;
+  }
+
+  private async request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    tokenOverride?: string,
+  ): Promise<KimaiResult<T>> {
+    const url = `${this.config.baseUrl}${path}`;
+    const token = tokenOverride ?? this.token;
+
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs ?? 30_000);
+
+      const headers: Record<string, string> = {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      };
+
+      const response = await fetch(url, {
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        // Never expose raw upstream error body
+        if (response.status === 401 || response.status === 403) {
+          return { success: false, error: wrapUpstreamError('Kimai', `${method} ${path}`, 'auth failed') };
+        }
+        if (response.status === 404) {
+          return { success: false, error: wrapUpstreamError('Kimai', `${method} ${path}`, 'not found') };
+        }
+        if (response.status >= 500) {
+          return { success: false, error: upstreamUnavailable(`Kimai ${method} ${path} returned ${response.status}`) };
+        }
+        return { success: false, error: wrapUpstreamError('Kimai', `${method} ${path}`, `status ${response.status}`) };
+      }
+
+      const data = await response.json() as T;
+      return { success: true, data };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      if (message.includes('aborted')) {
+        return { success: false, error: upstreamUnavailable(`Kimai ${method} ${path} timed out`) };
+      }
+      return { success: false, error: upstreamUnavailable(`Kimai ${method} ${path} failed: connection error`) };
+    }
+  }
+
+  // ── Status / Health ───────────────────────────────────────────────────
+
+  async getStatus(): Promise<KimaiResult<KimaiStatus>> {
+    return this.request<KimaiStatus>('GET', '/api/status');
+  }
+
+  // ── Teams ─────────────────────────────────────────────────────────────
+
+  async listTeams(): Promise<KimaiResult<KimaiTeam[]>> {
+    return this.request<KimaiTeam[]>('GET', '/api/teams');
+  }
+
+  async createTeam(name: string): Promise<KimaiResult<KimaiTeam>> {
+    return this.request<KimaiTeam>('POST', '/api/teams', { name });
+  }
+
+  // ── Users ─────────────────────────────────────────────────────────────
+
+  async listUsers(): Promise<KimaiResult<KimaiUser[]>> {
+    return this.request<KimaiUser[]>('GET', '/api/users');
+  }
+
+  async createUser(params: {
+    username: string;
+    email: string;
+    firstname?: string;
+    lastname?: string;
+    password?: string;
+  }): Promise<KimaiResult<KimaiUser>> {
+    return this.request<KimaiUser>('POST', '/api/users', params);
+  }
+
+  async updateUser(id: number, params: Partial<{
+    email: string;
+    firstname: string;
+    lastname: string;
+    enabled: boolean;
+  }>): Promise<KimaiResult<KimaiUser>> {
+    return this.request<KimaiUser>('PATCH', `/api/users/${id}`, params);
+  }
+
+  // ── Customers ─────────────────────────────────────────────────────────
+
+  async listCustomers(teamId?: number): Promise<KimaiResult<KimaiCustomer[]>> {
+    const query = teamId ? `?team=${teamId}` : '';
+    return this.request<KimaiCustomer[]>('GET', `/api/customers${query}`);
+  }
+
+  async createCustomer(params: {
+    name: string;
+    number?: string;
+    visible?: boolean;
+    team?: number;
+  }): Promise<KimaiResult<KimaiCustomer>> {
+    return this.request<KimaiCustomer>('POST', '/api/customers', {
+      name: params.name,
+      number: params.number,
+      visible: params.visible ?? true,
+      team: params.team,
+    });
+  }
+
+  // ── Projects ──────────────────────────────────────────────────────────
+
+  async listProjects(customerId?: number, teamId?: number): Promise<KimaiResult<KimaiProject[]>> {
+    const params = new URLSearchParams();
+    if (customerId) params.set('customer', String(customerId));
+    if (teamId) params.set('team', String(teamId));
+    const query = params.toString() ? `?${params.toString()}` : '';
+    return this.request<KimaiProject[]>('GET', `/api/projects${query}`);
+  }
+
+  async createProject(params: {
+    name: string;
+    customer: number;
+    visible?: boolean;
+    orderNumber?: string;
+    team?: number;
+  }): Promise<KimaiResult<KimaiProject>> {
+    return this.request<KimaiProject>('POST', '/api/projects', {
+      name: params.name,
+      customer: params.customer,
+      visible: params.visible ?? true,
+      orderNumber: params.orderNumber,
+      team: params.team,
+    });
+  }
+
+  // ── Activities ────────────────────────────────────────────────────────
+
+  async listActivities(projectId?: number): Promise<KimaiResult<KimaiActivity[]>> {
+    const query = projectId ? `?project=${projectId}` : '';
+    return this.request<KimaiActivity[]>('GET', `/api/activities${query}`);
+  }
+
+  async createActivity(params: {
+    name: string;
+    project?: number;
+    visible?: boolean;
+  }): Promise<KimaiResult<KimaiActivity>> {
+    return this.request<KimaiActivity>('POST', '/api/activities', {
+      name: params.name,
+      project: params.project,
+      visible: params.visible ?? true,
+    });
+  }
+
+  // ── Timesheets ────────────────────────────────────────────────────────
+
+  async listTimesheets(params: {
+    user?: number;
+    project?: number;
+    begin?: string;
+    end?: string;
+    size?: number;
+    page?: number;
+  }): Promise<KimaiResult<KimaiTimesheet[]>> {
+    const qs = new URLSearchParams();
+    if (params.user) qs.set('user', String(params.user));
+    if (params.project) qs.set('project', String(params.project));
+    if (params.begin) qs.set('begin', params.begin);
+    if (params.end) qs.set('end', params.end);
+    if (params.size) qs.set('size', String(params.size));
+    if (params.page) qs.set('page', String(params.page));
+    const query = qs.toString() ? `?${qs.toString()}` : '';
+    return this.request<KimaiTimesheet[]>('GET', `/api/timesheets${query}`);
+  }
+
+  async createTimesheet(params: {
+    begin: string;
+    end?: string;
+    duration?: number;
+    activity: number;
+    project: number;
+    user: number;
+    description?: string;
+  }, tokenOverride?: string): Promise<KimaiResult<KimaiTimesheet>> {
+    return this.request<KimaiTimesheet>('POST', '/api/timesheets', params, tokenOverride);
+  }
+
+  async getTimesheet(id: number): Promise<KimaiResult<KimaiTimesheet>> {
+    return this.request<KimaiTimesheet>('GET', `/api/timesheets/${id}`);
+  }
+
+  async updateTimesheet(id: number, params: Partial<{
+    begin: string;
+    end: string;
+    duration: number;
+    description: string;
+    exported: boolean;
+  }>): Promise<KimaiResult<KimaiTimesheet>> {
+    return this.request<KimaiTimesheet>('PATCH', `/api/timesheets/${id}`, params);
+  }
+
+  async deleteTimesheet(id: number): Promise<KimaiResult<void>> {
+    return this.request<void>('DELETE', `/api/timesheets/${id}`);
+  }
+
+  // ── Export ────────────────────────────────────────────────────────────
+
+  async exportTimesheets(params: {
+    format?: string;
+    begin?: string;
+    end?: string;
+    user?: number[];
+    project?: number[];
+  }): Promise<KimaiResult<{ url?: string; content?: string }>> {
+    // Kimai export endpoint may return a file URL or binary content
+    // The exact API shape needs verification against the Kimai version
+    return this.request<{ url?: string; content?: string }>('POST', '/api/export', params);
+  }
+}
