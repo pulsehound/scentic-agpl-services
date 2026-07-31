@@ -76,16 +76,17 @@ See `docs/SOURCE_OFFER.md` for full details.
 
 ## Status
 
-**Phase AGPL-02: OPENSIGN INTEGRATION FOUNDATION COMPLETE**
+**Phase AGPL-03: LOCAL DEPLOYMENT + CONNECTION INTERFACE READY**
 
-The gateway skeleton, Kimai integration foundation (AGPL-01), and OpenSign integration foundation (AGPL-02) are implemented in `gateway/` (Node.js/Express/TypeScript with Vitest tests). AGPL-02 adds an OpenSign API client (Parse Server REST, endpoints verified against `vendor/opensign/` source), an OpenSign service with firm-scoped operations and a polling completion-detection model, 11 signature REST endpoints, extended mapping store (OpenSign Firm/User/Workflow/Signer), 12 OpenSign event types in the outbox, and config/env validation for OpenSign. AGPL-01 fixes carried in: auth middleware path-firm check (`extractFirmIdFromPath`), bodyless request canonical hash documented. OpenSign unsupported operations documented (manual reminders `NOT_SUPPORTED`, no native void/cancel — uses `declinedoc`, no native webhooks — polling).
+The gateway skeleton, Kimai integration foundation (AGPL-01), OpenSign integration foundation (AGPL-02), and AGPL-03 (local deployment + connection interface) are delivered. AGPL-03 adds a webhook dispatcher (`gateway/src/events/webhook-dispatcher.ts`) that signs outbound webhooks to Scentic with HMAC-SHA256, retries with exponential backoff, and is disabled safely when the target URL/secret is not configured; a webhook signer (`gateway/src/events/webhook-signer.ts`) with `X-Gateway-*` headers and constant-time verification; a local docker-compose stack (`deploy/docker-compose.yml`) running gateway + Kimai + OpenSign + MongoDB + MariaDB; and the complete Scentic ↔ AGPL interface documentation (`docs/SCENTIC_INTERFACE_SPEC.md`, `docs/SCENTIC_CORE_REQUIRED_CHANGES.md`, `docs/SCENTIC_ENV_VARS_REQUIRED.md`).
 
-Carried gaps (to resolve before AGPL-04 production readiness): per-user OpenSign session tokens (currently uses master key), persistent mapping store (in-memory), real-OpenSign container contract test (mock-only), webhook dispatch to Scentic (AGPL-03).
+**Scentic core was NOT modified.** AGPL-03 is documentation-only on the Scentic side: the full set of Scentic-core changes (new `AGPL_GATEWAY` signature provider type, env-schema validation, webhook receiver route, time-tracking proxy routes, provider-health entry, audit events) is specified in `docs/SCENTIC_CORE_REQUIRED_CHANGES.md` for Yair to land when he decides to integrate. No Scentic proprietary file was edited (read-only inspection only). OpenSign and Kimai upstream remain unmodified.
 
-Scentic core was NOT modified (read-only inspection only). OpenSign upstream was NOT modified (at pinned SHA `f72624fa26211fe00776453d99a67120a4f5e060`).
+Carried gaps (to resolve before AGPL-04 production readiness): Scentic-core-side implementation of `docs/SCENTIC_CORE_REQUIRED_CHANGES.md` (lands on Yair's approval), per-user Kimai/OpenSign tokens (currently admin/master-key fallback), persistent mapping/nonce/idempotency stores (in-memory), real-Kimai and real-OpenSign container contract tests (mock-only), production deployment (AGPL-04).
 
+See `docs/AGPL_03_CLOSEOUT.md` for the AGPL-03 closeout.
+See `docs/AGPL_03_EVIDENCE.md` for executed evidence.
 See `docs/AGPL_02_CLOSEOUT.md` for the AGPL-02 closeout.
-See `docs/AGPL_02_EVIDENCE.md` for executed evidence.
 See `docs/AGPL_01_CLOSEOUT.md` for the AGPL-01 closeout.
 See `docs/SCENTIC_AGPL_INTEGRATION_PLAN.md` for the complete plan.
-See `docs/NEXT_STEPS.md` for implementation roadmap (AGPL-03 is next).
+See `docs/NEXT_STEPS.md` for implementation roadmap (AGPL-04 is next).

@@ -1,6 +1,6 @@
 # Scentic ↔ AGPL Gateway Connection Manual (DRAFT)
 
-> **Status:** Draft (AGPL-00). Interfaces are defined in `docs/API_CONTRACTS.md`; the Scentic-side `AGPL_GATEWAY` provider type is not yet implemented (planned for AGPL-03).
+> **Status:** Updated for AGPL-03. The gateway + Kimai + OpenSign integration is implemented and runnable locally (see §12). The Scentic-side `AGPL_GATEWAY` provider type is **documentation only** (see `docs/SCENTIC_CORE_REQUIRED_CHANGES.md`); the gateway is exercisable via its own REST surface and a manual webhook receiver.
 > **Audience:** Operators integrating the Scentic core with the AGPL services stack (Kimai, OpenSign, gateway).
 
 ---
@@ -225,15 +225,162 @@ Run these in order after deployment:
 
 The authoritative gateway API surface (paths, request/response schemas, error codes) is defined in:
 
-- `docs/API_CONTRACTS.md`
+- `docs/API_CONTRACTS.md` (planning contract surface)
+- `docs/SCENTIC_INTERFACE_SPEC.md` (implemented interface: 27 Scentic→Gateway routes + 21 webhook events + HMAC rules)
 
-This manual references those endpoints by path only; always consult `docs/API_CONTRACTS.md` for exact field names, types, and error semantics before implementing a client.
+This manual references those endpoints by path only; always consult `docs/SCENTIC_INTERFACE_SPEC.md` for the implemented surface and `docs/API_CONTRACTS.md` for the full planning contract before implementing a client.
+
+---
+
+## 12. Local deployment (AGPL-03)
+
+This section describes how to run the full AGPL stack locally for development and connection testing. **This is not production-ready** (see §12.7). The Scentic-side provider is documentation-only (see `docs/SCENTIC_CORE_REQUIRED_CHANGES.md`); local testing exercises the gateway directly plus a manual webhook receiver.
+
+### 12.1 Architecture overview (local)
+
+```
+Scentic core (local, optional)        <-- webhook receiver (manual harness or future AGPL_GATEWAY provider)
+  ^                                     |
+  | webhook (HMAC, X-Gateway-*)         |
+  |                                     v
+  +--- gateway (Node/Express, :3101) ---+
+        |              |
+        v              v
+      Kimai          OpenSign
+   (Apache, :8001)  (Parse Server, :8080)
+        |              |
+        v              v
+   MariaDB (:3306)  MongoDB (:27017)
+                     MinIO (:9000)  [OpenSign file storage]
+```
+
+Components:
+
+- **gateway** — the AGPL bridge service (`gateway/`, Node.js/Express/TypeScript).
+- **Kimai** — AGPL time-tracking (PHP/Symfony/Apache) + MariaDB.
+- **OpenSign** — AGPL e-signature (Parse Server) + MongoDB + MinIO (S3-compatible file storage).
+- **databases** — MariaDB (Kimai) and MongoDB (OpenSign) as named volumes.
+
+### 12.2 Local deployment setup
+
+**Prerequisites:** Docker + Docker Compose, Node 20+, pnpm.
+
+1. **Clone and install the gateway:**
+   ```bash
+   git clone https://github.com/pulsehound/scentic-agpl-services
+   cd scentic-agpl-services
+   pnpm install
+   ```
+2. **Copy env templates:**
+   ```bash
+   cp .env.example .env
+   cp deploy/env.example deploy/.env
+   ```
+   Edit `.env` and `deploy/.env` to set dev secrets (see `docs/SCENTIC_ENV_VARS_REQUIRED.md` §5 for the Scentic-side dev values, and the docker-compose file for the gateway-side dev defaults). The dev defaults in `deploy/docker-compose.yml` are acceptable for local use.
+3. **Start the stack:**
+   ```bash
+   docker compose -f deploy/docker-compose.yml up -d
+   ```
+   This starts gateway, Kimai, Kimai DB, OpenSign server, OpenSign frontend, and MongoDB.
+4. **Startup order** is enforced by `depends_on` in the compose file:
+   - `kimai-db` → `kimai`
+   - `opensign-mongo` → `opensign-server` → `opensign-frontend`
+   - `kimai` + `opensign-server` → `gateway`
+5. **Initialize Kimai** (first run only):
+   ```bash
+   docker compose -f deploy/docker-compose.yml exec kimai bin/console kimai:install -n
+   docker compose -f deploy/docker-compose.yml exec kimai bin/console kimai:user:create susan_super --super-admin
+   ```
+   Then create a Kimai API token via the UI (Profile → API) and set `KIMAI_ADMIN_API_TOKEN` in `.env`.
+6. **Verify OpenSign** is reachable at `http://localhost:8080/app` and the frontend at `http://localhost:3000`.
+
+### 12.3 Health check commands
+
+```bash
+# Gateway health (no auth)
+curl http://localhost:3101/health
+# Expected: 200 with deps.kimai + deps.opensign reachable
+
+# Gateway status
+curl http://localhost:3101/api/v1/status
+
+# Kimai provider health (HMAC required — use the gateway test helper or signed curl)
+curl http://localhost:3101/api/v1/providers/kimai/health \
+  -H "X-Scentic-Timestamp: $(date +%s)000" \
+  -H "X-Scentic-Nonce: $(uuidgen)" \
+  -H "X-Scentic-Firm-Id: firm-test-001" \
+  -H "X-Scentic-Signature: <computed-hmac>"
+
+# OpenSign provider health (HMAC required)
+curl http://localhost:3101/api/v1/providers/opensign/health
+```
+
+For HMAC-signed requests, use the gateway's test helper utilities (`gateway/src/auth/hmac.ts` exports `computeSignature`) or the contract test scripts in `scripts/`.
+
+### 12.4 Contract test commands
+
+```bash
+# Gateway unit + integration tests (Vitest)
+pnpm --filter gateway test
+
+# Typecheck
+pnpm --filter gateway typecheck
+
+# Build
+pnpm --filter gateway build
+
+# Run the webhook dispatcher smoke test (if configured)
+pnpm --filter gateway test:run -- src/tests/webhook-dispatcher.test.ts
+```
+
+Real-Kimai / real-OpenSign container contract tests are a carried gap (mock-only in AGPL-01/02/03); they must land before AGPL-04 production readiness.
+
+### 12.5 Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---------|--------------|-----|
+| `GET /health` returns `deps.kimai=down` | Kimai not yet installed or DB not ready | Run `kimai:install -n`; wait for `kimai-db` healthcheck; verify `DATABASE_URL`. |
+| `GET /health` returns `deps.opensign=down` | OpenSign server still booting or MongoDB not ready | Wait for `opensign-mongo` + `opensign-server` healthchecks; check `MONGODB_URI`. |
+| `401 UNAUTHORIZED` on signed requests | Wrong HMAC secret, stale timestamp, or wrong canonical string | Confirm `SCENTIC_SHARED_HMAC_SECRET` matches between Scentic/dev caller and gateway; check clock skew (±5 min); verify the canonical string per `docs/SCENTIC_INTERFACE_SPEC.md` §3.1. For bodyless requests, ensure body hash = `JSON.stringify({}) = '{}'`. |
+| `503 UNAVAILABLE` on signature routes | `OPENSIGN_ENABLED=false` | Set `OPENSIGN_ENABLED=true` and provide `OPENSIGN_MASTER_KEY`/`OPENSIGN_ADMIN_PASSWORD`. |
+| `501 NOT_SUPPORTED` on `/remind` | OpenSign has no manual reminder API | Expected; use automatic per-doc reminders (`AutomaticReminders`). |
+| Webhook not delivered | `SCENTIC_WEBHOOK_TARGET_URL` or `SCENTIC_WEBHOOK_HMAC_SECRET` unset on gateway | Set both in `deploy/.env`; the dispatcher is disabled when either is missing. |
+| Port conflict on 3101/8001/8080/3000 | Another process using the port | Change the host port mapping in `deploy/docker-compose.yml`. |
+
+### 12.6 What is NOT production-ready
+
+The local deployment is for development and connection testing only. The following are **not** production-ready:
+
+- **In-memory stores:** the gateway uses in-memory mapping, nonce, and idempotency stores. A process restart loses mapping state. Production needs SQLite/Postgres (mapping) and Redis (nonce/idempotency).
+- **Dev secrets:** the docker-compose dev defaults (`dev-master-key`, `dev-token`, `dev-webhook-secret`) are placeholders. Production requires strong secrets from Secret Manager (see `docs/SCENTIC_ENV_VARS_REQUIRED.md` §3).
+- **Mock-only upstream tests:** no real-Kimai or real-OpenSign container contract test exists yet (carried gap for AGPL-04).
+- **Per-user upstream tokens:** the gateway uses `KIMAI_ADMIN_API_TOKEN` and the OpenSign master key for all operations. Per-user tokens are a carried gap.
+- **No TLS:** local uses plain HTTP. Production requires TLS (VPC peering + Internal Load Balancer, or Cloud Run `--ingress=internal`).
+- **No persistence guarantees:** docker volumes are local; no backup/restore tested.
+- **No monitoring/alerting:** local has no uptime checks or dashboards.
+- **Webhook dispatch to a real Scentic receiver:** the Scentic-side `AGPL_GATEWAY` provider and webhook receiver are documentation-only (AGPL-03). Local webhook testing uses a manual receiver harness.
+
+### 12.7 How to keep Scentic proprietary core separate
+
+The AGPL boundary is enforced by repo + network isolation, not by code sharing:
+
+1. **Separate repositories.** Scentic core lives in `scentic.ai` (proprietary); the AGPL stack lives in `scentic-agpl-services` (AGPL-3.0). No `@scentic/*` package is imported into the gateway (verified by the `no-@scentic-imports` scan in `gateway/src/tests/docs-scans.test.ts`).
+2. **API-only integration.** Scentic core talks to the gateway exclusively over REST + webhooks. No AGPL source is copied into Scentic core. The Scentic-side `AgplGatewaySignatureProvider` (proposed, documentation-only) is a proprietary client that calls the gateway's HTTP API — it does not import gateway code.
+3. **Network isolation.** In production the gateway is internal-only (Cloud Run `--ingress=internal` or an Internal Load Balancer). Scentic reaches it via VPC peering, never over the public internet. `SCENTIC_AGPL_GATEWAY_URL` must pass `isPrivateUrl()`.
+4. **No shared secrets across the boundary.** The HMAC and webhook secrets are shared values, but they are not Scentic proprietary data — they are integration credentials stored in both systems' Secret Managers independently.
+5. **Source-offer compliance.** The AGPL repo's `docs/SOURCE_OFFER.md` and `GET /source-offer` satisfy AGPL-3.0 Section 13 for the gateway + Kimai + OpenSign. Scentic proprietary core is explicitly excluded from the source offer.
+6. **License scan gate.** The repo scans for any `@scentic/*` import or proprietary path reference in tracked files and fails CI on a match (AGPL-05 scope; partial checks already in `gateway/src/tests/docs-scans.test.ts`).
+
+For the full separation policy, see `docs/SOURCE_OFFER.md`.
 
 ---
 
 ## References
 
-- `docs/DEPLOYMENT.md` — AGPL services deployment.
+- `docs/DEPLOYMENT.md` — AGPL services deployment (production + local).
 - `docs/SOURCE_OFFER.md` — AGPL source-offer compliance.
 - `docs/NEXT_STEPS.md` — implementation roadmap (AGPL-03 lands the Scentic-side changes).
+- `docs/SCENTIC_INTERFACE_SPEC.md` — implemented interface (27 routes + 21 webhooks).
+- `docs/SCENTIC_CORE_REQUIRED_CHANGES.md` — Scentic-side changes (documentation only).
+- `docs/SCENTIC_ENV_VARS_REQUIRED.md` — Scentic-side env vars.
 - `.env.example` — gateway environment variable list.

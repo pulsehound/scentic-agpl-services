@@ -1,7 +1,7 @@
 # AGPL Services Deployment Plan
 
-> **Status:** Planning document (AGPL-00). No production deployment yet.
-> **Scope:** Deployment of the Scentic AGPL services stack — Kimai, OpenSign, and the Scentic↔AGPL gateway — on Google Cloud Platform (GCP).
+> **Status:** Planning document (AGPL-00) + local deployment verified (AGPL-03). No production deployment yet. The local docker-compose stack is runnable; production GCP deployment is AGPL-04 scope.
+> **Scope:** Deployment of the Scentic AGPL services stack — Kimai, OpenSign, and the Scentic↔AGPL gateway — on Google Cloud Platform (GCP), plus local development deployment.
 > **Out of scope:** Scentic proprietary core (already deployed in its own GCP project).
 
 ---
@@ -221,7 +221,7 @@ When `NODE_ENV=production` and `OPENSIGN_ENABLED=true`, `gateway/src/config.ts` 
 
 ## 6. Docker Compose for local / dev
 
-Outline of `docker-compose.yml` for running the full stack locally. (Authoritative file lives at the repo root; this is the planned shape.)
+The authoritative local docker-compose file is `deploy/docker-compose.yml` (verified runnable in AGPL-03). It runs the full stack: gateway, Kimai + MariaDB, OpenSign server + frontend, MongoDB. The outline below reflects the implemented service set; always consult `deploy/docker-compose.yml` for the exact, current configuration.
 
 ```yaml
 version: "3.9"
@@ -319,11 +319,44 @@ volumes:
 Local bring-up steps:
 
 1. `cp .env.example .env` and fill dev values.
-2. `docker compose up -d`
-3. `docker compose exec kimai bin/console kimai:install -n`
-4. `docker compose exec kimai bin/console kimai:user:create susan_super --super-admin`
+2. `docker compose -f deploy/docker-compose.yml up -d`
+3. `docker compose -f deploy/docker-compose.yml exec kimai bin/console kimai:install -n`
+4. `docker compose -f deploy/docker-compose.yml exec kimai bin/console kimai:user:create susan_super --super-admin`
 5. Create Kimai API token via the UI (Profile → API).
 6. Create OpenSign app/tenant and verify the gateway `GET /health`.
+
+### 6.1 Local deployment (AGPL-03 verified)
+
+The full local bring-up procedure — architecture overview, setup, health checks, contract test commands, troubleshooting, "what is NOT production-ready", and "how to keep Scentic proprietary core separate" — is documented in `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` §12. That section is the canonical local deployment guide; the steps above are the short form.
+
+**Verified local service ports** (from `deploy/docker-compose.yml`):
+
+| Service | Port | Notes |
+|---------|------|-------|
+| gateway | `3101` | `GET /health` (public), `GET /api/v1/status` (public), HMAC-signed routes under `/api/v1/...` |
+| kimai | `8001` | Kimai UI + API |
+| opensign-server | `8080` | Parse Server REST (`/app`) |
+| opensign-frontend | `3000` | OpenSign React UI |
+| opensign-mongo | `27018` → 27017 | MongoDB for OpenSign |
+
+**Local health checks:**
+
+```bash
+curl http://localhost:3101/health        # gateway + deps
+curl http://localhost:3101/api/v1/status # gateway status
+curl http://localhost:8001/              # Kimai login page (200)
+curl http://localhost:8080/app           # OpenSign Parse (200)
+```
+
+**Local contract tests:**
+
+```bash
+pnpm --filter gateway test        # Vitest (unit + integration)
+pnpm --filter gateway typecheck   # tsc --noEmit
+pnpm --filter gateway build       # tsc → dist/
+```
+
+**What is NOT production-ready (local stack):** in-memory mapping/nonce/idempotency stores (lost on restart), dev placeholder secrets, mock-only upstream tests, admin/master-key fallback for upstream auth, plain HTTP (no TLS), no persistence/backup, no monitoring/alerting. See `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` §12.6.
 
 ---
 
@@ -437,6 +470,12 @@ Local bring-up steps:
 
 - `.env.example` — canonical environment variable list.
 - `docs/SOURCE_OFFER.md` — AGPL source-offer compliance.
-- `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` — operator connection manual.
+- `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` — operator connection manual (§12 local deployment).
+- `docs/SCENTIC_INTERFACE_SPEC.md` — implemented interface (27 routes + 21 webhooks + HMAC rules).
+- `docs/SCENTIC_CORE_REQUIRED_CHANGES.md` — Scentic-side changes (documentation only).
+- `docs/SCENTIC_ENV_VARS_REQUIRED.md` — Scentic-side env vars.
 - `docs/NEXT_STEPS.md` — implementation roadmap.
-- `docs/API_CONTRACTS.md` — gateway API contracts (referenced).
+- `docs/API_CONTRACTS.md` — gateway API contracts (planning surface).
+- `deploy/docker-compose.yml` — local docker-compose stack.
+- `deploy/env.example` — deployment env template.
+- `deploy/secrets.example.md` — Secret Manager naming convention.

@@ -1,72 +1,127 @@
 # scentic-agpl-services — Local Development Docker Compose
-# For local development only. Not for production.
+# LOCAL DEVELOPMENT ONLY — NOT FOR PRODUCTION.
+#
+# Env var names below match gateway/src/config.ts strict validation.
 # Production deployment: see docs/DEPLOYMENT.md
-
-version: "3.8"
+#
+# Usage:
+#   scripts/local-up.sh        # start the stack
+#   scripts/local-healthcheck.sh
+#   scripts/local-down.sh
+#   scripts/local-reset.sh     # DESTRUCTIVE: deletes volumes
 
 services:
   # ── Gateway ────────────────────────────────────────────────────────────
+  # Bridges Scentic core with Kimai and OpenSign.
+  # Env var names must match gateway/src/config.ts exactly.
   gateway:
     build:
-      context: ../gateway
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: deploy/Dockerfile.gateway
     ports:
       - "3101:3101"
     environment:
+      # ── Node / runtime ──
       - NODE_ENV=development
       - GATEWAY_PORT=3101
-      - SCENTIC_SERVICE_TOKEN=${SCENTIC_SERVICE_TOKEN:-dev-token}
-      - GATEWAY_WEBHOOK_SECRET=${GATEWAY_WEBHOOK_SECRET:-dev-webhook-secret}
-      - SCENTIC_CORE_URL=${SCENTIC_CORE_URL:-http://host.docker.internal:3100}
-      - KIMAI_API_BASE_URL=http://kimai:80
-      - OPENSIGN_SERVER_URL=http://opensign-server:8080/app
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      # ── HMAC secrets (shared with Scentic core) ──
+      # Scentic → Gateway request signing
+      - SCENTIC_SHARED_HMAC_SECRET=${SCENTIC_SHARED_HMAC_SECRET:-dev-shared-hmac-secret}
+      # Gateway → Scentic webhook signing
+      - SCENTIC_WEBHOOK_HMAC_SECRET=${SCENTIC_WEBHOOK_HMAC_SECRET:-dev-webhook-hmac-secret}
+      # ── Webhook dispatch target (Scentic core) ──
+      - SCENTIC_WEBHOOK_TARGET_URL=${SCENTIC_WEBHOOK_TARGET_URL:-http://host.docker.internal:3100/api/agpl/webhooks}
+      # ── Gateway base URLs ──
+      - SCENTIC_GATEWAY_PUBLIC_BASE_URL=http://localhost:3101
+      - SCENTIC_GATEWAY_INTERNAL_BASE_URL=http://gateway:3101
+      # ── Kimai integration ──
+      - KIMAI_BASE_URL=http://kimai:80
+      - KIMAI_ADMIN_USERNAME=${KIMAI_ADMIN_USERNAME:-admin}
+      - KIMAI_ADMIN_API_TOKEN=${KIMAI_ADMIN_API_TOKEN:-dev-api-token}
+      - KIMAI_DEFAULT_ACTIVITY_NAME=${KIMAI_DEFAULT_ACTIVITY_NAME:-General}
+      - KIMAI_USE_CONFIDENTIAL_LABELS=${KIMAI_USE_CONFIDENTIAL_LABELS:-false}
+      # ── Gateway database (optional; null disables persistence) ──
+      - GATEWAY_DATABASE_URL=${GATEWAY_DATABASE_URL:-}
+      # ── OpenSign integration ──
+      - OPENSIGN_ENABLED=true
+      - OPENSIGN_BASE_URL=http://opensign-server:8080/app
       - OPENSIGN_APP_ID=${OPENSIGN_APP_ID:-opensign-dev}
       - OPENSIGN_MASTER_KEY=${OPENSIGN_MASTER_KEY:-dev-master-key}
+      - OPENSIGN_ADMIN_EMAIL=${OPENSIGN_ADMIN_EMAIL:-admin@opensign.local}
+      - OPENSIGN_ADMIN_PASSWORD=${OPENSIGN_ADMIN_PASSWORD:-dev-password}
+      - OPENSIGN_POLL_INTERVAL_SECONDS=${OPENSIGN_POLL_INTERVAL_SECONDS:-30}
+      - OPENSIGN_COMPLETION_TIMEOUT_SECONDS=${OPENSIGN_COMPLETION_TIMEOUT_SECONDS:-86400}
     depends_on:
-      - kimai
-      - opensign-server
+      kimai:
+        condition: service_started
+      opensign-server:
+        condition: service_started
+    volumes:
+      - gateway-logs:/app/logs
     networks:
       - agpl-internal
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3101/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
-  # ── Kimai ──────────────────────────────────────────────────────────────
+  # ── Kimai database (MariaDB) ───────────────────────────────────────────
   kimai-db:
     image: mariadb:10.11
     environment:
       - MYSQL_DATABASE=kimai
       - MYSQL_USER=kimai
-      - MYSQL_PASSWORD=kimai_password
-      - MYSQL_ROOT_PASSWORD=root_password
+      - MYSQL_PASSWORD=${KIMAI_DB_PASSWORD:-dev-kimai-db-password}
+      - MYSQL_ROOT_PASSWORD=${KIMAI_DB_ROOT_PASSWORD:-dev-root-password}
     volumes:
       - kimai-db-data:/var/lib/mysql
     networks:
       - agpl-internal
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
+  # ── Kimai (Apache) ─────────────────────────────────────────────────────
   kimai:
     image: kimai/kimai2:apache
     ports:
       - "8001:80"
     environment:
-      - DATABASE_URL=mysql://kimai:kimai_password@kimai-db:3306/kimai?charset=utf8mb4&serverVersion=10.11.4-MariaDB
+      - DATABASE_URL=mysql://kimai:${KIMAI_DB_PASSWORD:-dev-kimai-db-password}@kimai-db:3306/kimai?charset=utf8mb4&serverVersion=10.11.4-MariaDB
       - APP_ENV=prod
-      - APP_SECRET=${KIMAI_APP_SECRET:-dev-secret}
-      - MAILER_FROM=kimai@scentic-test.com
-      - MAILER_URL=null://null
+      - APP_SECRET=${KIMAI_APP_SECRET:-dev-app-secret}
+      - MAILER_FROM=kimai@scentic.local
+      - MAILER_URL=smtp://mailhog:1025
       - CORS_ALLOW_ORIGIN=.*
     depends_on:
-      - kimai-db
+      kimai-db:
+        condition: service_started
     networks:
       - agpl-internal
 
-  # ── OpenSign ───────────────────────────────────────────────────────────
+  # ── OpenSign MongoDB ───────────────────────────────────────────────────
   opensign-mongo:
-    image: mongo:latest
+    image: mongo:6
     ports:
       - "27018:27017"
     volumes:
       - opensign-mongo-data:/data/db
     networks:
       - agpl-internal
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
+  # ── OpenSign Parse Server ──────────────────────────────────────────────
   opensign-server:
     image: opensign/opensignserver:main
     ports:
@@ -80,24 +135,39 @@ services:
       - USE_LOCAL=TRUE
       - PFX_BASE64=${OPENSIGN_PFX_BASE64:-}
       - PASS_PHRASE=${OPENSIGN_PASS_PHRASE:-}
-      # Email (configure for real testing)
-      # - MAILGUN_API_KEY=
-      # - MAILGUN_DOMAIN=
-      # - MAILGUN_SENDER=
+      # Local email testing via MailHog SMTP
+      - SMTP_ENABLE=true
+      - SMTP_HOST=mailhog
+      - SMTP_PORT=1025
+      - SMTP_USER_EMAIL=opensign@scentic.local
+      - SMTP_PASS=
     depends_on:
-      - opensign-mongo
+      opensign-mongo:
+        condition: service_started
     networks:
       - agpl-internal
 
+  # ── OpenSign frontend ──────────────────────────────────────────────────
   opensign-frontend:
     image: opensign/opensign:main
     ports:
       - "3000:3000"
     environment:
-      - REACT_APP_SERVERURL=http://localhost:8080/api/app
+      - REACT_APP_SERVERURL=http://localhost:8080/app
       - REACT_APP_APPID=${OPENSIGN_APP_ID:-opensign-dev}
     depends_on:
       - opensign-server
+    networks:
+      - agpl-internal
+
+  # ── MailHog (local email catcher for OpenSign testing) ─────────────────
+  # LOCAL DEVELOPMENT ONLY. Captures all outbound email for inspection.
+  # UI: http://localhost:8025  SMTP: 1025
+  mailhog:
+    image: mailhog/mailhog:latest
+    ports:
+      - "8025:8025"   # Web UI
+      - "1025:1025"   # SMTP
     networks:
       - agpl-internal
 
@@ -108,3 +178,4 @@ networks:
 volumes:
   kimai-db-data:
   opensign-mongo-data:
+  gateway-logs:

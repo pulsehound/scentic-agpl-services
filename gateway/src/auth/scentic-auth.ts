@@ -32,7 +32,7 @@ export interface AuthConfig {
 }
 
 // Routes that don't require HMAC auth
-const PUBLIC_ROUTES = new Set(['/health', '/source']);
+const PUBLIC_ROUTES = new Set(['/health', '/source', '/api/v1/status']);
 
 export function createScenticAuthMiddleware(authConfig: AuthConfig) {
   return (req: Request, res: Response, next: NextFunction) => {

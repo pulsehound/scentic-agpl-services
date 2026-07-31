@@ -11,8 +11,11 @@ import { createMappingsRouter } from './routes/mappings.js';
 import { createTimeRouter } from './routes/time.js';
 import { createAdminRouter } from './routes/admin.js';
 import { createSignatureRouter } from './routes/signature.js';
+import { createStatusRouter, type StatusDeps } from './routes/status.js';
 import type { KimaiService } from './kimai/kimai-service.js';
 import type { OpenSignService } from './opensign/opensign-service.js';
+import type { WebhookDispatcher } from './events/webhook-dispatcher.js';
+import type { MappingStore } from './mappings/mapping-store.js';
 import type { GatewayError } from './http/errors.js';
 import { clearContext } from './http/request-context.js';
 
@@ -20,11 +23,16 @@ export interface AppDeps {
   config: GatewayConfig;
   kimaiService: KimaiService;
   opensignService?: OpenSignService;
+  webhookDispatcher?: WebhookDispatcher;
+  mappingStore: MappingStore;
   upstreamSources: { kimaiSha: string; opensignSha: string };
+  storeType?: 'memory' | 'sqlite' | 'postgres';
+  nonceStoreType?: 'memory' | 'redis';
+  outboxStoreType?: 'memory' | 'sqlite' | 'postgres';
 }
 
 export function createApp(deps: AppDeps): express.Application {
-  const { config, kimaiService, opensignService, upstreamSources } = deps;
+  const { config, kimaiService, opensignService, webhookDispatcher, mappingStore, upstreamSources } = deps;
   const app = express();
 
   // Parse JSON bodies (limit to 10MB for document uploads in future)
@@ -47,6 +55,18 @@ export function createApp(deps: AppDeps): express.Application {
   // Public routes (no auth)
   app.use(createHealthRouter(config));
   app.use(createSourceOfferRouter(config, upstreamSources));
+
+  // Status route (public for local health monitoring)
+  app.use(createStatusRouter({
+    config,
+    kimaiService,
+    opensignService,
+    webhookDispatcher,
+    mappingStore,
+    storeType: deps.storeType ?? 'memory',
+    nonceStoreType: deps.nonceStoreType ?? 'memory',
+    outboxStoreType: deps.outboxStoreType ?? 'memory',
+  }));
 
   // Authenticated routes
   app.use(authMiddleware);

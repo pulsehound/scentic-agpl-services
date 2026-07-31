@@ -8,6 +8,7 @@ import { KimaiClient } from './kimai/kimai-client.js';
 import { KimaiService } from './kimai/kimai-service.js';
 import { OpenSignClient } from './opensign/opensign-client.js';
 import { OpenSignService } from './opensign/opensign-service.js';
+import { WebhookDispatcher, createWebhookDispatcherConfig } from './events/webhook-dispatcher.js';
 import { InMemoryMappingStore } from './mappings/mapping-store.js';
 import { InMemoryEventOutbox } from './events/outbox.js';
 
@@ -51,10 +52,21 @@ async function main() {
     });
   }
 
+  // Webhook dispatcher
+  const webhookDispatcher = new WebhookDispatcher(
+    createWebhookDispatcherConfig({
+      targetUrl: config.webhookTargetUrl,
+      hmacSecret: config.webhookHmacSecret,
+    }),
+    outbox,
+  );
+
   const app = createApp({
     config,
     kimaiService,
     opensignService,
+    webhookDispatcher,
+    mappingStore,
     upstreamSources: { kimaiSha: KIMAI_SHA, opensignSha: OPENSIGN_SHA },
   });
 

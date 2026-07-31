@@ -1,0 +1,25 @@
+# scentic-agpl-services — Gateway Dockerfile (LOCAL DEVELOPMENT ONLY)
+# Builds the Gateway service for the local docker-compose stack.
+# NOT for production. Production uses Cloud Run (see deploy/cloud-run/).
+#
+# Multi-stage not strictly necessary for local dev, but kept lean.
+
+FROM node:20-slim
+
+WORKDIR /app
+
+# Copy workspace manifests first for better layer caching
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY gateway/package.json gateway/
+
+# Enable pnpm via corepack and install deps (frozen lockfile for reproducibility)
+RUN corepack enable pnpm && pnpm install --frozen-lockfile
+
+# Copy gateway source and build
+COPY gateway/ gateway/
+RUN pnpm --filter gateway build
+
+EXPOSE 3101
+
+# Run compiled output
+CMD ["node", "gateway/dist/server.js"]

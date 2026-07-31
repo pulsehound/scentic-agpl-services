@@ -2,7 +2,7 @@
 
 > **Status:** Planning document. Tracks the phased implementation of the Scentic AGPL services stack (gateway + Kimai + OpenSign) and the required Scentic core changes.
 >
-> **Current phase:** AGPL-02 COMPLETE — AGPL-03 (Scentic-side provider adapters) is next.
+> **Current phase:** AGPL-03 COMPLETE — AGPL-04 (Deployment and production readiness) is next.
 
 ---
 
@@ -142,37 +142,56 @@ Not yet done (handed off to the phases below): gateway implementation, Kimai/Ope
 
 ---
 
-## 4. AGPL-03 — Scentic-side provider adapters  ← NEXT
+## 4. AGPL-03 — Scentic-side provider adapters
 
-> **Depends on AGPL-01 and AGPL-02** (both now COMPLETE).
+**STATUS: COMPLETE** — Local deployment + connection interface documentation delivered. See `docs/AGPL_03_CLOSEOUT.md` and `docs/AGPL_03_EVIDENCE.md`.
 
-### Deliverables (Scentic core changes — separate repository)
+> **Depends on AGPL-01 and AGPL-02** (both COMPLETE).
 
-- **New `SignatureProviderType`** — add `AGPL_GATEWAY` to the Scentic signature provider type union.
-- **New provider implementation** in `packages/signature/` — implements the Scentic signature provider interface by calling the AGPL gateway (create/send/status/cancel/download).
-- **Env-schema validation** — add `SCENTIC_AGPL_GATEWAY_URL`, `SCENTIC_AGPL_SERVICE_TOKEN`, `SCENTIC_AGPL_WEBHOOK_SECRET`, `SCENTIC_AGPL_SIGNATURE_PROVIDER_TYPE` to `env-schema.ts` with correct types and secret-marking.
-- **Provider health service** — register the gateway in `provider-health-service.ts` so `GET /health` and the admin UI surface gateway status.
-- **Time tracking API routes** (new feature) — Scentic routes that proxy time-entry CRUD to the gateway for the calling user's Firm. Enforce Scentic authorization (firm/user scope) before calling the gateway.
-- **Webhook receiver** — `POST /api/agpl/webhooks/events` with HMAC verification, idempotent persist, and dispatch to the signature status update pipeline.
+### Scope note (revised at closeout)
 
-### Tests (Scentic core)
+AGPL-03 was originally scoped to land Scentic-core-side code (provider type, env-schema, webhook receiver, time-tracking routes, provider-health entry). At closeout, AGPL-03 was reframed as **local deployment + connection interface documentation only**. No Scentic proprietary core file was modified (read-only inspection). The full Scentic-side change specification is documented in `docs/SCENTIC_CORE_REQUIRED_CHANGES.md` for Yair to land when he decides to integrate.
 
-- Unit tests for the `AGPL_GATEWAY` provider (mocked gateway).
-- env-schema validation tests (valid/invalid `SCENTIC_AGPL_*`).
-- Provider health service tests (gateway up/down propagation).
-- Authorization tests: a user may only act within their Firm; cross-firm requests rejected.
-- Webhook receiver tests (valid HMAC accepted, invalid rejected, duplicate idempotent).
-- End-to-end test: Scentic → gateway → Kimai/OpenSign → webhook → Scentic status update.
+### Deliverables (gateway side — delivered)
 
-### Exit criteria
+- **Webhook dispatcher** (`gateway/src/events/webhook-dispatcher.ts`): HMAC-SHA256 signed outbound webhooks to `{SCENTIC_WEBHOOK_TARGET_URL}`, exponential backoff retry, idempotency key per event, disabled safely when target URL/secret not configured, no document contents/signing links/raw signer emails in payloads.
+- **Webhook signer** (`gateway/src/events/webhook-signer.ts`): canonical-string HMAC signing with `X-Gateway-*` headers (`sha256=` prefix, constant-time verify by receiver).
+- **Webhook types** (`gateway/src/events/webhook-types.ts`): `WebhookPayload`, `WebhookHeaders`, dispatch status types.
+- **Local deployment** (`deploy/docker-compose.yml` + `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` §12): full stack (gateway + Kimai + OpenSign + MongoDB + MariaDB) runnable locally.
+- **Interface documentation** (new): `docs/SCENTIC_INTERFACE_SPEC.md` (27 Scentic→Gateway routes + 21 webhook events + HMAC rules both directions + error codes + retry + data minimization + multi-firm mapping), `docs/SCENTIC_CORE_REQUIRED_CHANGES.md` (Scentic-side changes, documentation only), `docs/SCENTIC_ENV_VARS_REQUIRED.md` (Scentic-side env vars).
 
-- `AGPL_GATEWAY` is selectable as a signature provider in Scentic.
-- A signature workflow can be initiated from Scentic, completed in OpenSign, and the status reflected back in Scentic via webhook.
-- Time entries can be created/listed from Scentic through the gateway into Kimai.
+### Deliverables (Scentic core side — documentation only, NOT applied)
+
+All described in `docs/SCENTIC_CORE_REQUIRED_CHANGES.md`:
+
+- **New `SignatureProviderType`** — add `AGPL_GATEWAY` to the Scentic signature provider type union + Prisma enum.
+- **New provider implementation** — `AgplGatewaySignatureProvider` implementing the 8-method `SignatureProvider` interface by calling the gateway.
+- **Env-schema validation** — `SCENTIC_AGPL_*` vars with production checks.
+- **Provider health service** — `AGPL_GATEWAY` entry in `ProviderTypeHealth` + `checkProviderConfig()` + `allProviders`.
+- **Time tracking API routes** — proxy routes with Scentic authorization enforced before gateway calls.
+- **Webhook receiver** — `POST /api/agpl/webhooks` with HMAC verification, idempotent persist, firm-scope check.
+- **Audit events** — new `AuditEventType` values for AGPL operations.
+
+### Exit criteria (revised)
+
+- ✅ Gateway webhook dispatcher implemented and unit-tested (HMAC signing, retry, idempotency, disabled-state).
+- ✅ Local docker-compose bring-up documented and verified.
+- ✅ Full Scentic ↔ Gateway interface documented (27 routes + 21 webhooks + HMAC both directions).
+- ✅ Scentic-side change spec documented (documentation only, no core edits).
+- ⏳ `AGPL_GATEWAY` selectable as a signature provider in Scentic — **deferred to Yair's integration decision** (documentation provided).
+- ⏳ End-to-end Scentic → gateway → Kimai/OpenSign → webhook → Scentic — **deferred to AGPL-04** (requires Scentic-side implementation + real upstream containers).
+
+### Remaining gaps (carried forward to AGPL-04)
+
+- Scentic-core-side implementation of `docs/SCENTIC_CORE_REQUIRED_CHANGES.md` (lands when Yair approves).
+- Real-Kimai and real-OpenSign container contract tests (mock-only so far).
+- Per-user upstream tokens (Kimai + OpenSign).
+- Persistent mapping/nonce/idempotency stores (SQLite/Postgres + Redis).
+- Production deployment (AGPL-04).
 
 ---
 
-## 5. AGPL-04 — Deployment and production readiness
+## 5. AGPL-04 — Deployment and production readiness  ← NEXT
 
 > **Depends on AGPL-03** (see §7).
 
@@ -222,30 +241,31 @@ Not yet done (handed off to the phases below): gateway implementation, Kimai/Ope
 AGPL-00 (DONE)
    |
    +---> AGPL-01 (Gateway skeleton + Kimai)  [COMPLETE]  \
-   |                                                      +--> AGPL-03 (Scentic adapters) [NEXT] --> AGPL-04 (Deploy) --> AGPL-05 (Source offer)
+   |                                                      +--> AGPL-03 (Local deploy + connection interface) [COMPLETE] --> AGPL-04 (Deploy) [NEXT] --> AGPL-05 (Source offer)
    +---> AGPL-02 (OpenSign integration)  [COMPLETE]      /
 ```
 
-- **AGPL-01 and AGPL-02 ran in parallel** — they touch separate gateway modules (`gateway/src/kimai/` vs `gateway/src/opensign/` + `gateway/src/signatures/`). Both are now COMPLETE.
-- **AGPL-03 depends on both AGPL-01 and AGPL-02** — Scentic adapters require both Kimai and OpenSign surfaces to exist in the gateway.
-- **AGPL-04 depends on AGPL-03** — production deployment is only meaningful once the Scentic side can actually use the gateway.
+- **AGPL-01 and AGPL-02 ran in parallel** — they touch separate gateway modules (`gateway/src/kimai/` vs `gateway/src/opensign/` + `gateway/src/signatures/`). Both are COMPLETE.
+- **AGPL-03 depends on both AGPL-01 and AGPL-02** — the connection interface requires both Kimai and OpenSign surfaces to exist in the gateway. AGPL-03 delivered local deployment + interface documentation + the webhook dispatcher; Scentic-core-side code is documented but not applied (lands when Yair approves).
+- **AGPL-04 depends on AGPL-03** — production deployment is only meaningful once the connection interface is defined and the Scentic side can actually use the gateway.
 - **AGPL-05 depends on AGPL-04** — source-offer verification runs against the deployed, built images.
 
 ---
 
 ## 8. Scentic core changes required
 
-These changes happen in the **Scentic core repository** (separate from this repo), tracked here for cross-team visibility:
+These changes happen in the **Scentic core repository** (separate from this repo), tracked here for cross-team visibility. **AGPL-03 documented all of these in `docs/SCENTIC_CORE_REQUIRED_CHANGES.md` but did NOT apply any of them** (read-only inspection of `scentic.ai`). They land when Yair approves integration.
 
-| Change | Location (Scentic core) | Phase |
-|---|---|---|
-| New `SignatureProviderType` value `AGPL_GATEWAY` | signature provider type union | AGPL-03 |
-| `AGPL_GATEWAY` provider implementation | `packages/signature/` | AGPL-03 |
-| Env-schema validation for `SCENTIC_AGPL_*` vars | `env-schema.ts` | AGPL-03 |
-| Gateway entry in provider health service | `provider-health-service.ts` | AGPL-03 |
-| Time tracking API routes (new feature) | Scentic API routes | AGPL-03 |
-| Webhook receiver `POST /api/agpl/webhooks/events` | Scentic API routes | AGPL-03 |
-| Scentic `.env` additions (see connection manual §3) | deployment config | AGPL-03 / AGPL-04 |
+| Change | Location (Scentic core) | Phase | Status |
+|---|---|---|---|
+| New `SignatureProviderType` value `AGPL_GATEWAY` | signature provider type union + Prisma enum | AGPL-03 | Documented (not applied) |
+| `AGPL_GATEWAY` provider implementation | `packages/signature/` | AGPL-03 | Documented (not applied) |
+| Env-schema validation for `SCENTIC_AGPL_*` vars | `env-schema.ts` | AGPL-03 | Documented (not applied) |
+| Gateway entry in provider health service | `provider-health-service.ts` | AGPL-03 | Documented (not applied) |
+| Time tracking API routes (new feature) | Scentic API routes | AGPL-03 | Documented (not applied) |
+| Webhook receiver `POST /api/agpl/webhooks` | Scentic API routes | AGPL-03 | Documented (not applied) |
+| New `AuditEventType` values for AGPL ops | `schema.prisma` | AGPL-03 | Documented (not applied) |
+| Scentic `.env` additions (see `docs/SCENTIC_ENV_VARS_REQUIRED.md`) | deployment config | AGPL-03 / AGPL-04 | Documented (not applied) |
 
 ---
 
@@ -256,7 +276,7 @@ These changes happen in the **Scentic core repository** (separate from this repo
 | **OpenSign has no native webhooks.** | Completion detection relies on gateway polling; higher latency and more moving parts than a push model. | Accepted workaround: gateway polls at `OPENSIGN_POLL_INTERVAL_MS` and dispatches HMAC-signed webhooks to Scentic. Revisit if OpenSign adds webhooks upstream. |
 | **License compatibility verification.** | AGPL-3.0 (this repo + OpenSign) vs AGPL-3.0-or-later (Kimai) must be confirmed compatible, and all transitive dependencies must be AGPL-compatible. | License scan in CI (AGPL-05); manual review at each release. Track in `docs/SOURCE_OFFER.md`. |
 | **GCP project provisioning.** | `scentic-agpl-prod` project, billing, VPC peering, and IAM require admin action outside this repo. | BLOCKED on cloud admin until AGPL-04. Document required provisioning in `docs/DEPLOYMENT.md` and request the minimum admin action needed. |
-| **Scentic core change dependency.** | AGPL-03 requires edits to a separate repository (Scentic core). | Coordinate cross-repo; gate AGPL-04 on AGPL-03 landing in Scentic core. |
+| **Scentic core change dependency.** | AGPL-03 Scentic-side code lives in a separate repository (Scentic core). | AGPL-03 delivered the Scentic-side change spec as documentation only (`docs/SCENTIC_CORE_REQUIRED_CHANGES.md`); coordinate with Yair to land the implementation; gate AGPL-04 production cutover on the Scentic-side landing. |
 | **MongoDB Atlas vs self-hosted.** | Atlas adds a managed-service dependency and cost; self-hosting adds ops burden. | Decision deferred to AGPL-04 based on cost/ops trade-off; both paths documented in `docs/DEPLOYMENT.md`. |
 | **PFX certificate for PDF signing.** | Production signing requires a real certificate; dev requires a throwaway cert. | Provision a production certificate before AGPL-04 production cutover; use a dev cert for local/CI. |
 | **Kimai API token model.** | Per-user Kimai API tokens must be provisioned and rotated; per-firm service tokens are simpler but reduce per-user attribution. | Decide token model in AGPL-01; store tokens in Secret Manager; rotate every 90 days. |
@@ -265,9 +285,14 @@ These changes happen in the **Scentic core repository** (separate from this repo
 
 ## References
 
-- `docs/DEPLOYMENT.md` — GCloud deployment plan.
+- `docs/DEPLOYMENT.md` — GCloud deployment plan + local deployment.
 - `docs/SOURCE_OFFER.md` — AGPL source-offer compliance.
-- `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` — operator connection manual.
-- `docs/API_CONTRACTS.md` — gateway API contracts (referenced).
+- `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` — operator connection manual (incl. §12 local deployment).
+- `docs/SCENTIC_INTERFACE_SPEC.md` — implemented interface (27 routes + 21 webhooks + HMAC rules).
+- `docs/SCENTIC_CORE_REQUIRED_CHANGES.md` — Scentic-side changes (documentation only).
+- `docs/SCENTIC_ENV_VARS_REQUIRED.md` — Scentic-side env vars.
+- `docs/AGPL_03_CLOSEOUT.md` — AGPL-03 closeout.
+- `docs/AGPL_03_EVIDENCE.md` — AGPL-03 executed evidence.
+- `docs/API_CONTRACTS.md` — gateway API contracts (planning surface).
 - `.env.example` — environment variable list.
 - `factory/STATE.md` (Scentic core) — phase gate state, where AGPL-* progress is recorded.

@@ -17,6 +17,7 @@ import { InMemoryEventOutbox } from '../events/outbox.js';
 import { KimaiService } from '../kimai/kimai-service.js';
 import { OpenSignClient } from '../opensign/opensign-client.js';
 import { OpenSignService } from '../opensign/opensign-service.js';
+import { WebhookDispatcher, createWebhookDispatcherConfig } from '../events/webhook-dispatcher.js';
 import { createApp } from '../app.js';
 import { InMemoryNonceStore } from '../auth/hmac.js';
 
@@ -260,6 +261,7 @@ export interface TestApp {
   service: KimaiService;
   opensignClient?: MockOpenSignClient;
   opensignService?: OpenSignService;
+  webhookDispatcher?: WebhookDispatcher;
 }
 
 export interface MakeAppOpts {
@@ -269,6 +271,7 @@ export interface MakeAppOpts {
   outbox?: InMemoryEventOutbox;
   opensignClient?: MockOpenSignClient;
   enableOpenSign?: boolean;
+  enableWebhook?: boolean;
   upstreamSources?: { kimaiSha: string; opensignSha: string };
 }
 
@@ -307,14 +310,29 @@ export function makeApp(opts: MakeAppOpts = {}): TestApp {
     });
   }
 
+  // Webhook dispatcher (optional)
+  let webhookDispatcher: WebhookDispatcher | undefined;
+  const enableWebhook = opts.enableWebhook ?? (!!config.webhookTargetUrl && !!config.webhookHmacSecret);
+  if (enableWebhook) {
+    webhookDispatcher = new WebhookDispatcher(
+      createWebhookDispatcherConfig({
+        targetUrl: config.webhookTargetUrl,
+        hmacSecret: config.webhookHmacSecret,
+      }),
+      outbox,
+    );
+  }
+
   const app = createApp({
     config,
     kimaiService: service,
     opensignService,
+    webhookDispatcher,
+    mappingStore: store,
     upstreamSources,
   });
 
-  return { app, store, outbox, client, config, service, opensignClient, opensignService };
+  return { app, store, outbox, client, config, service, opensignClient, opensignService, webhookDispatcher };
 }
 
 // ─── Signed request helper ──────────────────────────────────────────────────

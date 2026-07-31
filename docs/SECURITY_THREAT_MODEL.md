@@ -1,6 +1,6 @@
 # Scentic ↔ AGPL Gateway Security Threat Model
 
-**Status:** AGPL-00 planning document — not yet implemented.
+**Status:** AGPL-00 planning document + AGPL-02 mitigation notes (T-02, T-16) + AGPL-03 mitigation notes (T-03 webhook dispatch). The gateway side is implemented; Scentic-core-side mitigations are documentation-only until Yair lands the receiver.
 **Scope:** Threat model for the integration between the proprietary Scentic core and the AGPL-licensed `scentic-agpl-services` gateway (Kimai time tracking + OpenSign e-signature).
 **Audience:** Gateway implementers, Scentic core integration engineers, security reviewers, `security-auditor` droid, `release-gatekeeper`.
 **Method:** Each threat is scored for severity and paired with proposed controls and proposed tests. Tests are mandatory evidence for gate closure; controls alone are not evidence.
@@ -97,6 +97,16 @@
   - **Constant-time test:** Verify the signature comparison is constant-time (timing analysis or code inspection + property test).
   - **Replay test:** Replay a valid webhook after the timestamp window. Assert rejection (see T-04).
   - **Forged-completion test:** Attempt to forge an `opensign.workflow.completed` event for a workflow that is not actually completed in OpenSign. Assert Scentic rejects (because no signed PDF can be fetched from the gateway) and the workflow remains non-complete.
+
+> **AGPL-03 mitigation note (webhook dispatch security):** T-03 is mitigated on the gateway (sender) side by the implemented webhook dispatcher + signer in `gateway/src/events/`. Specifically:
+> - **HMAC signing** (`gateway/src/events/webhook-signer.ts`): every outbound webhook is signed with `SCENTIC_WEBHOOK_HMAC_SECRET` using HMAC-SHA256 over the canonical string `[body, timestamp, nonce, eventId, firmId, correlationId].join('\n')`. The signature is sent as `X-Gateway-Signature: sha256=<hex>` (prefix included). The secret is never logged or sent over the wire.
+> - **Timestamp + nonce + idempotency** (`gateway/src/events/webhook-types.ts`, `webhook-signer.ts`): every webhook carries `X-Gateway-Timestamp` (epoch ms), `X-Gateway-Nonce` (UUIDv4), `X-Gateway-Event-Id`, and `Idempotency-Key` (`evt-<eventId>`). These give the Scentic receiver the inputs for replay protection (T-04): ±5 min timestamp tolerance, nonce uniqueness, and idempotent deduplication.
+> - **Firm scope in the webhook itself**: `X-Gateway-Firm-Id` is sent as a header AND mirrored in `payload.scenticFirmId`; the Scentic receiver must verify both match the targeted workflow's `firmId` (reject on mismatch with `403`), preventing a captured Firm A webhook from being applied to Firm B.
+> - **Secret separation**: `SCENTIC_WEBHOOK_HMAC_SECRET` (gateway → Scentic webhooks) is distinct from `SCENTIC_SHARED_HMAC_SECRET` (Scentic → gateway requests). The two are stored in separate Secret Manager secrets and rotated independently (90-day cadence; dual-secret overlap window).
+> - **Safe payloads**: `WebhookPayload.safeSummary` and `payload` never contain PDF bytes, raw signer emails (hashed only), or confidential matter names; a forged webhook that survives signature verification still cannot inject a signed PDF (the receiver must fetch bytes via a short-lived, service-token-authenticated gateway URL that the forged event cannot produce).
+> - **Disabled-state safety**: the dispatcher is disabled when `SCENTIC_WEBHOOK_TARGET_URL` or `SCENTIC_WEBHOOK_HMAC_SECRET` is unset; no unsigned webhooks are ever sent.
+>
+> The **receiver-side** mitigations (constant-time verify against the raw body, timestamp/nonce checks, idempotent dedup, firm-scope enforcement) are Scentic-core responsibilities documented in `docs/SCENTIC_CORE_REQUIRED_CHANGES.md` §3 and §9, and `docs/SCENTIC_INTERFACE_SPEC.md` §2.3. They are documentation-only until Yair lands the Scentic-side webhook receiver.
 
 ## T-04 Replay attacks (replayed API calls or webhooks)
 

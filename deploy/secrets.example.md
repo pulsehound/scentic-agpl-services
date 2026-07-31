@@ -4,10 +4,14 @@ This document describes the naming convention for secrets stored in GCloud Secre
 
 ## Gateway secrets
 
+The gateway uses **two distinct HMAC secrets** that MUST be different values, stored in separate Secret Manager secrets, and rotated independently (90-day cadence). See `docs/SCENTIC_INTERFACE_SPEC.md` §3.3 (key separation) and `docs/SCENTIC_ENV_VARS_REQUIRED.md` §4 (rotation).
+
 | Secret name | Purpose | Rotation |
 |-------------|---------|----------|
-| `agpl-gateway-service-token` | Service-to-service auth token (Scentic → Gateway) | 90 days |
-| `agpl-gateway-webhook-secret` | HMAC signing secret for webhooks (Gateway → Scentic) | 90 days |
+| `agpl-gateway-service-token` (alias: `agpl-shared-hmac-secret`) | Shared HMAC secret used to verify Scentic → Gateway requests (`X-Scentic-Signature`). Env: `SCENTIC_SHARED_HMAC_SECRET` / `SCENTIC_SERVICE_TOKEN`. | 90 days |
+| `agpl-gateway-webhook-secret` (alias: `agpl-webhook-hmac-secret`) | HMAC signing secret for Gateway → Scentic webhooks (`X-Gateway-Signature: sha256=<hex>`). Env: `SCENTIC_WEBHOOK_HMAC_SECRET` / `GATEWAY_WEBHOOK_SECRET`. Distinct from the service token. | 90 days |
+
+> **AGPL-03 note:** the webhook dispatcher (`gateway/src/events/webhook-dispatcher.ts`) is disabled when either `SCENTIC_WEBHOOK_TARGET_URL` or `SCENTIC_WEBHOOK_HMAC_SECRET` is unset — no unsigned webhooks are ever sent. Rotation uses the dual-secret overlap window documented in `docs/SCENTIC_ENV_VARS_REQUIRED.md` §4. The two gateway secrets must never share the same value.
 
 ## Kimai secrets
 
