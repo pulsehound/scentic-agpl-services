@@ -2,7 +2,7 @@
 
 > **Phase:** AGPL-04 — Durable storage, store factory, Docker hardening, GCloud manifests
 > **Date:** 2026-07-31
-> **Commit SHA:** `(filled at commit time)`
+> **Commit SHA:** `e01a2d4`
 
 All evidence below corresponds to the AGPL-04 commit. Placeholder sections (`__*__`) are filled in by the executing agent at commit time. **Evidence must correspond to the current commit — never copy an earlier passing result after code has changed.**
 

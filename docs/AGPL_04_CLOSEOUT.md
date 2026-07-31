@@ -2,7 +2,7 @@
 
 > **Phase:** AGPL-04 — Durable storage, store factory, Docker hardening, and GCloud deployment manifests
 > **Status:** DURABLE STORAGE + STORE FACTORY + DOCKER HARDENING + GCLOUD MANIFESTS READY (NOT DEPLOYED)
-> **Commit SHA:** `(filled at commit time)`
+> **Commit SHA:** `e01a2d4`
 > **Date:** 2026-07-31
 
 ---
