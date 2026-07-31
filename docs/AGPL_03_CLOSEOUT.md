@@ -2,7 +2,7 @@
 
 > **Phase:** AGPL-03 — Local deployment + connection interface
 > **Status:** LOCAL DEPLOYMENT + CONNECTION INTERFACE READY
-> **Commit SHA:** `<FILL_AFTER_COMMIT>`
+> **Commit SHA:** `f7e73ba`
 > **Date:** 2026-07-31
 
 ---
