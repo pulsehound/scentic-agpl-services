@@ -27,6 +27,10 @@ export interface OpenSignClientConfig {
 export class OpenSignClient {
   private config: OpenSignClientConfig;
   private sessionToken: string | null = null;
+  /** The admin's _User id, from login. Documents are created by somebody. */
+  private adminUserId: string | null = null;
+  /** The admin's contracts_Users id. OpenSign's own user record, not the Parse one. */
+  private adminExtUserId: string | null = null;
 
   constructor(config: OpenSignClientConfig) {
     this.config = config;
@@ -139,7 +143,11 @@ export class OpenSignClient {
     if (this.sessionToken) return { success: true, data: { sessionToken: this.sessionToken } };
 
     const first = await this.login(this.config.adminEmail, this.config.adminPassword);
-    if (first.success) return { success: true, data: { sessionToken: first.data!.sessionToken } };
+    if (first.success) {
+      this.adminUserId = first.data!.objectId;
+      await this.loadAdminExtUser();
+      return { success: true, data: { sessionToken: first.data!.sessionToken } };
+    }
 
     // No administrator yet. A freshly provisioned OpenSign has an empty
     // database and no way in: adduser and every other user function require an
@@ -151,7 +159,31 @@ export class OpenSignClient {
 
     const second = await this.login(this.config.adminEmail, this.config.adminPassword);
     if (!second.success) return { success: false, error: second.error };
+    this.adminUserId = second.data!.objectId;
+    await this.loadAdminExtUser();
     return { success: true, data: { sessionToken: second.data!.sessionToken } };
+  }
+
+  /**
+   * Find the admin's contracts_Users record.
+   *
+   * OpenSign keeps its own user row alongside Parse's _User and the two are not
+   * interchangeable: a document's ExtUserPtr points at contracts_Users while
+   * CreatedBy points at _User. Sending the same id for both is accepted by
+   * Parse and produces a document belonging to nobody.
+   */
+  private async loadAdminExtUser(): Promise<void> {
+    if (!this.adminUserId) return;
+    const where = encodeURIComponent(
+      JSON.stringify({ UserId: { __type: 'Pointer', className: '_User', objectId: this.adminUserId } }),
+    );
+    const result = await this.restCall<{ results?: Array<{ objectId: string }> }>(
+      'GET',
+      `/classes/contracts_Users?where=${where}`,
+      undefined,
+      true,
+    );
+    this.adminExtUserId = result.success ? result.data?.results?.[0]?.objectId ?? null : null;
   }
 
   /**
@@ -259,12 +291,27 @@ export class OpenSignClient {
     isEnableOTP?: boolean;
     notifyOnSignatures?: boolean;
   }): Promise<OpenSignResult<{ objectId: string }>> {
+    const session = await this.ensureAdminSession();
+    if (!session.success) return { success: false, error: session.error };
+
+    // The caller's pointer when it names somebody, the admin's otherwise. A
+    // pointer with an empty objectId — which is what the caller sends when no
+    // signer has been synced — is not a null pointer, it is a broken one, and
+    // Parse rejects the save with a 400 that names nothing.
+    const extUserPtr =
+      params.extUserPtr.objectId
+        ? params.extUserPtr
+        : { objectId: this.adminExtUserId ?? '', __type: 'Pointer', className: 'contracts_Users' };
+
     return this.callFunction<{ objectId: string }>('createdocumentfromapp', {
       document: {
         Name: params.name,
         URL: params.url,
         Type: '',
-        ExtUserPtr: params.extUserPtr,
+        ExtUserPtr: extUserPtr,
+        // Read by createDocumentFromApp and never sent. Without it the document
+        // is saved with no creator, which OpenSign refuses.
+        CreatedBy: { objectId: this.adminUserId ?? '', __type: 'Pointer', className: '_User' },
         Signers: params.signers,
         Placeholders: params.placeholders,
         TimeToCompleteDays: params.timeToCompleteDays ?? 15,
@@ -274,7 +321,10 @@ export class OpenSignClient {
         AutomaticReminders: true,
         RemindOnceInEvery: 5,
       },
-    }, true);
+      // Session, not master key. createDocumentFromApp requires request.user,
+      // and a master-key call is privileged but userless — the same trap as
+      // savefile, answered with 209 rather than anything about the document.
+    }, false);
   }
 
   async getDocument(docId: string): Promise<OpenSignResult<OpenSignDocument>> {
