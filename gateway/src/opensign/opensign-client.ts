@@ -303,7 +303,7 @@ export class OpenSignClient {
         ? params.extUserPtr
         : { objectId: this.adminExtUserId ?? '', __type: 'Pointer', className: 'contracts_Users' };
 
-    return this.callFunction<{ objectId: string }>('createdocumentfromapp', {
+    const created = await this.callFunction<{ objectId: string }>('createdocumentfromapp', {
       document: {
         Name: params.name,
         URL: params.url,
@@ -325,6 +325,33 @@ export class OpenSignClient {
       // and a master-key call is privileged but userless — the same trap as
       // savefile, answered with 209 rather than anything about the document.
     }, false);
+
+    if (!created.success) return created;
+
+    // createDocumentFromApp saves no ACL, and linkContactToDoc calls
+    // docRes.getACL().setReadAccess() unconditionally. On a document created
+    // through the app flow that is null, and the resulting TypeError is caught
+    // and discarded inside linkContactToDoc — which then returns undefined
+    // rather than failing. The two upstream functions cannot be used together
+    // until one exists, so it is written here.
+    await this.setDocumentAcl(created.data!.objectId);
+    return created;
+  }
+
+  /**
+   * The document ACL the signing flow expects to find.
+   *
+   * Only the creator, at this point. linkContactToDoc widens it to each signer
+   * as they are attached, which is what it was reaching for when it found null.
+   */
+  private async setDocumentAcl(docId: string): Promise<void> {
+    if (!this.adminUserId) return;
+    await this.restCall(
+      'PUT',
+      `/classes/contracts_Document/${docId}`,
+      { ACL: { [this.adminUserId]: { read: true, write: true } } },
+      true,
+    );
   }
 
   async getDocument(docId: string): Promise<OpenSignResult<OpenSignDocument>> {
@@ -339,7 +366,29 @@ export class OpenSignClient {
     jobTitle?: string;
     company?: string;
   }): Promise<OpenSignResult<{ objectId: string }>> {
-    return this.callFunction<{ objectId: string }>('linkcontacttodoc', params, true);
+    const session = await this.ensureAdminSession();
+    if (!session.success) return { success: false, error: session.error };
+
+    const result = await this.callFunction<{ contactId?: string }>('linkcontacttodoc', params, false);
+    if (!result.success) return { success: false, error: result.error };
+
+    // Two things upstream does that the caller cannot see. It answers with
+    // `contactId`, not `objectId`. And when contact creation throws it catches
+    // the error, logs it, and returns nothing — so a 200 with an empty body is
+    // a failure, not a success with a missing field. Reading .objectId off that
+    // undefined was the crash this replaces.
+    const contactId = result.data?.contactId;
+    if (!contactId) {
+      return {
+        success: false,
+        error: {
+          code: 'OPENSIGN_API_ERROR',
+          message: 'OpenSign linked no contact for this signer',
+        },
+      };
+    }
+
+    return { success: true, data: { objectId: contactId } };
   }
 
   async declineDocument(params: { docId: string; userId: string; reason?: string }): Promise<OpenSignResult<boolean>> {

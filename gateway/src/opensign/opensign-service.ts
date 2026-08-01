@@ -212,7 +212,12 @@ export class OpenSignService {
       signers: [],
       placeholders: params.signers.map(s => ({
         Role: s.role.toLowerCase(),
-        email: s.email,
+        // Lowercased to match. linkContactToDoc lowercases the address it is
+        // given and compares it against this one exactly; a signer entered as
+        // "Name@Firm.com" finds no placeholder, and the mismatch surfaces as
+        // OPERATION_FORBIDDEN "unauthorized" rather than as anything to do with
+        // an address.
+        email: s.email.trim().toLowerCase(),
         placeHolder: [],
       })),
       timeToCompleteDays: 15,
@@ -231,7 +236,7 @@ export class OpenSignService {
     for (const signer of params.signers) {
       const linkResult = await this.client.linkContactToDoc({
         docId: opensignDocId,
-        email: signer.email,
+        email: signer.email.trim().toLowerCase(),
         name: signer.name,
       });
       if (!linkResult.success) {
@@ -243,15 +248,27 @@ export class OpenSignService {
           payload: { operation: 'linkContactToDoc', signerId: signer.scenticSignerId },
           safeSummary: `OpenSign signer link failed for signer ${signer.scenticSignerId}`,
         });
-      } else {
+      } else if (linkResult.data) {
         const emailHash = createHash('sha256').update(signer.email).digest('hex');
         await this.store.upsertOpenSignSignerMapping(
           params.scenticFirmId,
           params.scenticSignatureWorkflowId,
           signer.scenticSignerId,
-          linkResult.data!.objectId,
+          linkResult.data.objectId,
           emailHash,
         );
+      } else {
+        // Reported success with nothing to record. Treated as the failure it is
+        // rather than dereferenced — this exact line, with a non-null
+        // assertion on it, is what turned a swallowed upstream error into an
+        // unexplained 500 for the person sending the document.
+        await this.outbox.publish({
+          eventType: 'OPENSIGN_SYNC_FAILED',
+          scenticFirmId: params.scenticFirmId,
+          correlationId,
+          payload: { operation: 'linkContactToDoc', signerId: signer.scenticSignerId },
+          safeSummary: `OpenSign returned no contact for signer ${signer.scenticSignerId}`,
+        });
       }
     }
 
