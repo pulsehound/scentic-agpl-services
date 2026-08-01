@@ -50,3 +50,11 @@ docker-compose.override.yml
 # Uploads / temp
 uploads/
 tmp/
+
+# Terraform working directory: provider binaries are large and re-downloaded
+# by `terraform init`. The lock file is committed; the plugins are not.
+deploy/terraform/.terraform/
+deploy/terraform/*.tfstate
+deploy/terraform/*.tfstate.*
+deploy/terraform/*.tfvars
+deploy/terraform/tfplan*

@@ -1,0 +1,61 @@
+# Gateway image for Cloud Run.
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Distinct from Dockerfile.gateway, which is marked development-only, installs
+# dev dependencies into the runtime layer and exposes the compose port. This one
+# is what actually runs in front of client documents.
+#
+# Three differences that matter:
+#
+#   - two stages, so the TypeScript compiler and its dependencies do not ship;
+#   - a non-root user, because a process that never needs to write to its own
+#     image should not be able to;
+#   - listens on PORT, which is what Cloud Run injects. The gateway reads
+#     GATEWAY_PORT, so the entrypoint bridges the two rather than assuming they
+#     agree — a mismatch there is a container that starts, passes no health
+#     check, and reports nothing useful.
+
+FROM node:20-alpine AS build
+
+WORKDIR /app/gateway
+
+COPY gateway/package.json ./
+RUN npm install
+
+COPY gateway/ ./
+RUN ./node_modules/.bin/tsc
+
+# SQL that is loaded at runtime rather than compiled in.
+RUN cp src/storage/postgres-schema.sql dist/storage/postgres-schema.sql \
+ && cp src/storage/schema.sql dist/storage/schema.sql
+
+# Drop everything the build needed and nothing the runtime does.
+RUN npm prune --omit=dev
+
+FROM node:20-alpine AS runtime
+
+# curl for the container's own health probing; tini so signals reach node and a
+# Cloud Run scale-down is a clean shutdown rather than a kill.
+RUN apk add --no-cache tini
+
+WORKDIR /app/gateway
+
+COPY --from=build --chown=node:node /app/gateway/node_modules ./node_modules
+COPY --from=build --chown=node:node /app/gateway/dist ./dist
+COPY --from=build --chown=node:node /app/gateway/package.json ./package.json
+
+# The AGPL source offer travels with the image. Anyone who reaches this service
+# over a network is entitled to its Corresponding Source, and the surest place
+# for that statement is inside the thing they are talking to.
+LABEL org.opencontainers.image.licenses="AGPL-3.0-or-later"
+LABEL org.opencontainers.image.source="https://github.com/pulsehound/scentic-agpl-services"
+
+USER node
+
+ENV NODE_ENV=production
+
+# Cloud Run sets PORT; the gateway reads GATEWAY_PORT. Bridged here so neither
+# has to know about the other.
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["sh", "-c", "GATEWAY_PORT=${PORT:-8080} node dist/server.js"]
