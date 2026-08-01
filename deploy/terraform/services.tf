@@ -536,3 +536,21 @@ resource "google_cloud_run_v2_service_iam_member" "gateway_caller" {
   role     = "roles/run.invoker"
   member   = "serviceAccount:${var.scentic_runtime_service_account}"
 }
+
+# The gateway is the only identity permitted to call Kimai.
+#
+# Missing until now, and Kimai's IAM policy was empty as a result: *nobody* could
+# invoke it. Cloud Run refused every request with 403 before Kimai saw it, the
+# gateway's Kimai client reported that as "auth failed", and firm initialisation
+# came back 502 — which reads like Kimai being broken rather than never having
+# been called.
+#
+# Internal ingress and IAM are not the same control and neither implies the
+# other. Ingress says which networks may reach the service; this says which
+# identity may invoke it. Kimai had the first and not the second.
+resource "google_cloud_run_v2_service_iam_member" "kimai_caller" {
+  name     = google_cloud_run_v2_service.kimai.name
+  location = google_cloud_run_v2_service.kimai.location
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.agpl_runtime.email}"
+}

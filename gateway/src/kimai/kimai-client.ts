@@ -32,6 +32,7 @@
  */
 
 import { wrapUpstreamError, upstreamUnavailable, type GatewayError } from '../http/errors.js';
+import { getIdentityToken, audienceFor } from '../gcp/identity-token.js';
 
 export interface KimaiClientConfig {
   baseUrl: string;
@@ -137,6 +138,21 @@ export class KimaiClient {
         // token, so it has to travel with every request.
         headers['X-AUTH-USER'] = this.config.username;
         headers['X-AUTH-TOKEN'] = token;
+      }
+
+      // Kimai's credentials above are read by Kimai. On Cloud Run, Kimai is
+      // behind an IAM check that runs first and reads only this header, so
+      // without it the request is refused before Kimai is reached — reported
+      // below as "auth failed", which points at the Kimai token rather than at
+      // the identity that never authenticated.
+      //
+      // Only in the legacy scheme: 'bearer' already uses Authorization for
+      // Kimai's own token, and overwriting it would break the case that works.
+      // Those two schemes cannot both be satisfied on one header, so a bearer
+      // deployment behind IAM would need Kimai's token moved elsewhere.
+      if ((this.config.authMode ?? 'legacy') !== 'bearer') {
+        const identityToken = await getIdentityToken(audienceFor(this.config.baseUrl));
+        if (identityToken) headers['Authorization'] = `Bearer ${identityToken}`;
       }
 
       const response = await fetch(url, {
