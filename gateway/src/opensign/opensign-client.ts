@@ -127,6 +127,62 @@ export class OpenSignClient {
     }
   }
 
+  /**
+   * A logged-in administrator session, established on demand.
+   *
+   * The admin credentials were configured and never used to authenticate
+   * anything: the only login in the stack happened while syncing a user, whose
+   * session was stored against that user and not available to document
+   * operations.
+   */
+  private async ensureAdminSession(): Promise<OpenSignResult<{ sessionToken: string }>> {
+    if (this.sessionToken) return { success: true, data: { sessionToken: this.sessionToken } };
+
+    const first = await this.login(this.config.adminEmail, this.config.adminPassword);
+    if (first.success) return { success: true, data: { sessionToken: first.data!.sessionToken } };
+
+    // No administrator yet. A freshly provisioned OpenSign has an empty
+    // database and no way in: adduser and every other user function require an
+    // authenticated admin, so the first one cannot be made through them. That
+    // deadlock is normally broken by a human at the sign-up page, which a stack
+    // meant to be rebuilt from its configuration cannot rely on.
+    const bootstrap = await this.createFirstAdmin();
+    if (!bootstrap.success) return { success: false, error: bootstrap.error };
+
+    const second = await this.login(this.config.adminEmail, this.config.adminPassword);
+    if (!second.success) return { success: false, error: second.error };
+    return { success: true, data: { sessionToken: second.data!.sessionToken } };
+  }
+
+  /**
+   * Create the very first administrator.
+   *
+   * addadmin is the only user-creating function that does not itself require a
+   * session, and it takes its fields nested under `userDetails` — passed flat
+   * it fails with "Cannot read properties of undefined (reading 'email')",
+   * which looks like a missing field rather than a wrongly shaped payload.
+   *
+   * Called only after a login attempt has failed, so an existing installation
+   * is never touched.
+   */
+  private async createFirstAdmin(): Promise<OpenSignResult<unknown>> {
+    return this.callFunction<unknown>(
+      'addadmin',
+      {
+        userDetails: {
+          name: 'Scentic Integration',
+          email: this.config.adminEmail,
+          password: this.config.adminPassword,
+          phone: '',
+          company: 'Scentic',
+          jobTitle: 'Integration',
+          role: 'contracts_Admin',
+        },
+      },
+      true,
+    );
+  }
+
   // ── Tenant operations ─────────────────────────────────────────────────
 
   async getTenant(tenantId: string): Promise<OpenSignResult<OpenSignTenant>> {
@@ -161,8 +217,31 @@ export class OpenSignClient {
 
   // ── Document operations ───────────────────────────────────────────────
 
+  /**
+   * Put the document bytes into OpenSign's own storage.
+   *
+   * Uses a *session*, not the master key. OpenSign's savefile cloud function
+   * reads request.user, and the master key does not populate it — Parse treats
+   * a master-key call as privileged but userless, so the function answers
+   * "User is not authenticated" (code 209) no matter how correct the key is.
+   * That reads as a bad master key when the master key was never the problem.
+   *
+   * Retried once on failure with a fresh login. Sessions expire, and a
+   * signature request refused hours later because a token aged out would look
+   * like an intermittent fault in the signing service.
+   */
   async uploadFile(fileBase64: string, fileName: string): Promise<OpenSignResult<{ url: string }>> {
-    return this.callFunction<{ url: string }>('savefile', { fileBase64, fileName }, true);
+    const session = await this.ensureAdminSession();
+    if (!session.success) return { success: false, error: session.error };
+
+    const first = await this.callFunction<{ url: string }>('savefile', { fileBase64, fileName }, false);
+    if (first.success) return first;
+
+    this.sessionToken = null;
+    const retry = await this.ensureAdminSession();
+    if (!retry.success) return first;
+
+    return this.callFunction<{ url: string }>('savefile', { fileBase64, fileName }, false);
   }
 
   async createDocument(params: {
