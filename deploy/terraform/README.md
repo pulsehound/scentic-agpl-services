@@ -58,6 +58,23 @@ gcloud services enable sqladmin.googleapis.com compute.googleapis.com \
   secretmanager.googleapis.com run.googleapis.com --project="$PROJECT"
 ```
 
+## The mail credential
+
+Signature invitations go to the people signing, who are usually the other side
+of a transaction rather than Scentic users. The sender address is therefore
+client-facing and needs a domain with SPF and DKIM configured, or the
+invitations land in spam and the signing simply never happens.
+
+The password is never passed to Terraform. Create it once, as its owner:
+
+```bash
+printf '%s' '<smtp-password-or-api-key>' |   gcloud secrets create agpl-smtp-password --replication-policy=automatic --data-file=-
+```
+
+Terraform references it by name and the service reads it at start-up. A
+`sensitive` Terraform variable would still be written to `terraform.tfstate` in
+plaintext and would still have had to travel to whoever ran the apply.
+
 ## Apply
 
 ```bash

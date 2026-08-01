@@ -168,6 +168,18 @@ resource "google_project_iam_member" "agpl_runtime_sql" {
   member  = "serviceAccount:${google_service_account.agpl_runtime.email}"
 }
 
+# The SMTP credential is created by its owner rather than generated here, so it
+# is read by name and granted separately.
+data "google_secret_manager_secret" "smtp_password" {
+  secret_id = var.smtp_password_secret
+}
+
+resource "google_secret_manager_secret_iam_member" "agpl_runtime_smtp" {
+  secret_id = data.google_secret_manager_secret.smtp_password.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.agpl_runtime.email}"
+}
+
 # Scentic's own runtime must read the two HMAC secrets — they are one shared
 # value each, held by both sides of the boundary.
 resource "google_secret_manager_secret_iam_member" "scentic_runtime_hmac" {

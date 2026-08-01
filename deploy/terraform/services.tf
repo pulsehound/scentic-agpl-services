@@ -186,8 +186,20 @@ resource "google_cloud_run_v2_service" "opensign" {
         value = var.smtp_user
       }
       env {
-        name  = "SMTP_PASS"
-        value = var.smtp_password
+        name = "SMTP_PASS"
+        # Read at start-up from Secret Manager rather than baked into the service
+        # configuration, where it would be visible to anyone who can describe the
+        # service and would sit in Terraform state in plaintext.
+        value_source {
+          secret_key_ref {
+            secret  = var.smtp_password_secret
+            version = "latest"
+          }
+        }
+      }
+      env {
+        name  = "SMTP_USER_NAME"
+        value = var.smtp_from_address
       }
 
       ports {

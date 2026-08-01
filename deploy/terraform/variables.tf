@@ -119,7 +119,30 @@ variable "smtp_user" {
   type = string
 }
 
-variable "smtp_password" {
-  type      = string
-  sensitive = true
+variable "smtp_password_secret" {
+  description = <<-EOT
+    Secret Manager entry holding the SMTP password, by name — never the password
+    itself.
+
+    A `sensitive` variable still lands in terraform.tfstate in plaintext, still
+    passes through whoever runs the apply, and would have had to be sent to
+    somebody to get here. Referencing it means the credential is created once, by
+    its owner, and read only by the service that sends the mail.
+
+    Create it with:
+      printf '%s' '<api-key>' | gcloud secrets create agpl-smtp-password         --replication-policy=automatic --data-file=-
+  EOT
+  type        = string
+  default     = "agpl-smtp-password"
+}
+
+variable "smtp_from_address" {
+  description = <<-EOT
+    The address signature invitations come from.
+
+    Client-facing: the recipient is usually a counterparty, not a Scentic user.
+    It should be on a domain with SPF and DKIM set up for the sending provider,
+    or the invitations arrive in spam and the signing never happens.
+  EOT
+  type        = string
 }
