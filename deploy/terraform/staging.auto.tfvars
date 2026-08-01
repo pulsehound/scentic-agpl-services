@@ -16,7 +16,7 @@ admin_email                     = "yair@scentic.com"
 
 # Pinned to a tag, not :latest. A revision must be traceable to the commit it
 # was built from.
-gateway_image = "us-east1-docker.pkg.dev/causal-hour-502018-c8/scentic-agpl/gateway:fe4e8fa"
+gateway_image = "us-east1-docker.pkg.dev/causal-hour-502018-c8/scentic-agpl/gateway:5ad9224"
 
 # The address signature invitations come from. Verified for the sending provider
 # — SPF and DKIM on scentic.com — or the mail is delivered to spam when it is
