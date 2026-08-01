@@ -24,6 +24,14 @@
 # signature metadata — who signed what, when — with a third party.
 
 terraform {
+  # A floor, not a pin, and worth knowing what it does not protect against: a
+  # saved plan file cannot be read by a different Terraform version than wrote
+  # it, minor releases included. Two people on 1.13 and 1.15 both satisfy this
+  # constraint and still cannot hand each other a plan — the apply fails with
+  # "plan files cannot be transferred between different Terraform versions",
+  # after the review of that plan has already happened.
+  #
+  # So whoever plans should also apply, or both should run the same version.
   required_version = ">= 1.9"
   required_providers {
     google = {
