@@ -391,6 +391,51 @@ export class OpenSignClient {
     return { success: true, data: { objectId: contactId } };
   }
 
+  /**
+   * Tell a signer there is something waiting for them.
+   *
+   * Composed here rather than delegated. OpenSign builds this mail inside its
+   * own send flows, which are not reachable as an API — so a document created
+   * through the integration is created, linked, and then sits there silently.
+   * `sendNow` was accepted and carried through every layer without anything
+   * ever acting on it.
+   *
+   * The wording is deliberately plain. This arrives at a counterparty who has
+   * no account and no relationship with the software, and it should read as a
+   * message from the firm rather than from a product.
+   */
+  async sendSigningInvitation(params: {
+    docId: string;
+    documentName: string;
+    recipientEmail: string;
+    recipientName: string;
+    contactId: string;
+    senderName: string;
+    extUserId: string;
+    publicUrl: string;
+  }): Promise<OpenSignResult<unknown>> {
+    const link = signingUrlFor(params.publicUrl, params.docId, params.recipientEmail, params.contactId);
+    const safe = (value: string) =>
+      value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+    const html = `<p>Hello ${safe(params.recipientName)},</p>` +
+      `<p>${safe(params.senderName)} has sent you a document to sign: <strong>${safe(params.documentName)}</strong>.</p>` +
+      `<p><a href="${safe(link)}">Open the document to review and sign it</a></p>` +
+      `<p>If the link does not open, copy this address into your browser:<br>${safe(link)}</p>`;
+
+    return this.callFunction<unknown>(
+      'sendmailv3',
+      {
+        extUserId: params.extUserId,
+        recipient: params.recipientEmail,
+        subject: `${params.documentName} — signature requested`,
+        from: params.senderName,
+        html,
+      },
+      true,
+    );
+  }
+
   async declineDocument(params: { docId: string; userId: string; reason?: string }): Promise<OpenSignResult<boolean>> {
     return this.callFunction<boolean>('declinedoc', params, true);
   }
@@ -461,4 +506,17 @@ export function storageSafeFilename(original: string): string {
   const base = /^[A-Za-z0-9_]/.test(stem) ? stem : `document${stem ? `-${stem}` : ''}`;
 
   return ext ? `${base}.${ext}` : `${base}.pdf`;
+}
+
+/**
+ * The link a signer follows, in the form OpenSign's own sender builds it.
+ *
+ * base64 of "<documentId>/<email>/<contactId>", appended to the frontend's
+ * /login route. The contact id is what ties the opened link back to a specific
+ * signer on the document; without it the link identifies a document and an
+ * address and OpenSign cannot tell which placeholder is being signed.
+ */
+export function signingUrlFor(publicUrl: string, docId: string, email: string, contactId: string): string {
+  const token = Buffer.from(`${docId}/${email}/${contactId}`).toString('base64');
+  return `${publicUrl.replace(/\/+$/, '')}/login/${token}`;
 }

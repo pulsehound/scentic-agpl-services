@@ -47,6 +47,7 @@ async function main() {
       adminPassword: config.opensignAdminPassword,
     });
     opensignService = new OpenSignService(opensignClient, mappingStore, outbox, {
+      publicUrl: config.opensignPublicUrl,
       enabled: config.opensignEnabled,
       pollIntervalSeconds: config.opensignPollIntervalSeconds,
       completionTimeoutSeconds: config.opensignCompletionTimeoutSeconds,

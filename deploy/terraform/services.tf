@@ -246,8 +246,22 @@ resource "google_cloud_run_v2_service" "opensign_server" {
         name  = "SMTP_PORT"
         value = tostring(var.smtp_port)
       }
+      # The two names are the wrong way round from what they look like, and
+      # OpenSign reads them literally:
+      #
+      #   SMTP_USERNAME    the account used to authenticate. Auth is only
+      #                    attached when this AND SMTP_PASS are both present,
+      #                    so leaving it unset does not fall back to anything —
+      #                    it sends with no credentials at all.
+      #
+      #   SMTP_USER_EMAIL  the address mail is sent *from*, despite the name
+      #                    reading like a login.
+      #
+      # SMTP_USER_NAME, which is what was set before, is read nowhere in the
+      # application. Between them these meant unauthenticated mail sent from an
+      # address of "resend".
       env {
-        name  = "SMTP_USER_EMAIL"
+        name  = "SMTP_USERNAME"
         value = var.smtp_user
       }
       env {
@@ -260,7 +274,7 @@ resource "google_cloud_run_v2_service" "opensign_server" {
         }
       }
       env {
-        name  = "SMTP_USER_NAME"
+        name  = "SMTP_USER_EMAIL"
         value = var.smtp_from_address
       }
 
@@ -525,6 +539,14 @@ resource "google_cloud_run_v2_service" "gateway" {
       env {
         name  = "OPENSIGN_APP_ID"
         value = var.opensign_app_id
+      }
+      # Where a signer opens the document: the frontend, not the API. Signing
+      # links go to counterparties with no account and no VPN, so this is the
+      # one OpenSign address that has to be publicly reachable — and pointing it
+      # at the API base produces links that resolve to JSON.
+      env {
+        name  = "OPENSIGN_PUBLIC_URL"
+        value = google_cloud_run_v2_service.opensign.uri
       }
       env {
         name = "OPENSIGN_MASTER_KEY"

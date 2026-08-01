@@ -44,6 +44,8 @@ export interface OpenSignServiceConfig {
   enabled: boolean;
   pollIntervalSeconds: number;
   completionTimeoutSeconds: number;
+  /** Where a signer opens the document. The frontend, not the API. */
+  publicUrl: string;
 }
 
 type ServiceResult<T> = { success: true; data: T } | { success: false; error: GatewayError };
@@ -257,6 +259,37 @@ export class OpenSignService {
           linkResult.data.objectId,
           emailHash,
         );
+
+        // The document exists and the signer is attached to it. Until this
+        // call, nothing told them so: sendNow was accepted at the route,
+        // carried through the types, and acted on nowhere, so every send
+        // succeeded and every signer waited for an email that was never
+        // composed.
+        //
+        // A failure here is recorded, not raised. The document is filed and the
+        // signer is linked — the work is done and re-sending is a normal
+        // action, so an unreachable mail provider must not undo it.
+        if (params.sendNow) {
+          const invited = await this.client.sendSigningInvitation({
+            docId: opensignDocId,
+            documentName: params.documentName,
+            recipientEmail: signer.email.trim().toLowerCase(),
+            recipientName: signer.name,
+            contactId: linkResult.data.objectId,
+            senderName: params.senderName || 'Your legal team',
+            extUserId: extUserPtr.objectId,
+            publicUrl: this.config.publicUrl,
+          });
+          if (!invited.success) {
+            await this.outbox.publish({
+              eventType: 'OPENSIGN_SYNC_FAILED',
+              scenticFirmId: params.scenticFirmId,
+              correlationId,
+              payload: { operation: 'sendSigningInvitation', signerId: signer.scenticSignerId },
+              safeSummary: `OpenSign invitation could not be sent for signer ${signer.scenticSignerId}`,
+            });
+          }
+        }
       } else {
         // Reported success with nothing to record. Treated as the failure it is
         // rather than dereferenced — this exact line, with a non-null

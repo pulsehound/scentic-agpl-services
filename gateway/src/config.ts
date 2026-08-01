@@ -37,6 +37,14 @@ export interface GatewayConfig {
   // OpenSign
   opensignEnabled: boolean;
   opensignBaseUrl: string;
+  /**
+   * Where a signer opens the document — the frontend, not the API.
+   *
+   * Signing links go to people with no account and no VPN, so this is the one
+   * OpenSign address that must be publicly reachable and must not be the
+   * internal API base.
+   */
+  opensignPublicUrl: string;
   opensignAppId: string;
   opensignMasterKey: string;
   opensignAdminEmail: string;
@@ -130,6 +138,10 @@ export function loadConfig(env: Record<string, string | undefined>): GatewayConf
   // OpenSign config
   const opensignEnabled = (env['OPENSIGN_ENABLED'] ?? 'false').toLowerCase() === 'true';
   const opensignBaseUrl = env['OPENSIGN_BASE_URL'] ?? '';
+  // Falls back to the API origin, which is wrong but harmless: a link that goes
+  // nowhere useful is better than a crash while sending, and the misconfiguration
+  // is visible the moment somebody opens one.
+  const opensignPublicUrl = env['OPENSIGN_PUBLIC_URL'] ?? opensignBaseUrl;
   const opensignAppId = env['OPENSIGN_APP_ID'] ?? 'opensign';
   const opensignMasterKey = env['OPENSIGN_MASTER_KEY'] ?? '';
   const opensignAdminEmail = env['OPENSIGN_ADMIN_EMAIL'] ?? '';
@@ -207,6 +219,7 @@ export function loadConfig(env: Record<string, string | undefined>): GatewayConf
     // OpenSign
     opensignEnabled,
     opensignBaseUrl: opensignBaseUrl || 'http://localhost:8080/app',
+    opensignPublicUrl: opensignPublicUrl || 'http://localhost:3000',
     opensignAppId,
     opensignMasterKey: opensignMasterKey || 'dev-master-key',
     opensignAdminEmail: opensignAdminEmail || 'admin@opensign.local',

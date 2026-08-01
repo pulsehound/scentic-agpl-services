@@ -107,6 +107,11 @@ export function makeMockOpenSignClient(overrides: Record<string, ReturnType<type
       },
     })),
     linkContactToDoc: vi.fn(async () => ({ success: true, data: { objectId: 'contact-1' } })),
+    // Sending the invitation is part of creating a workflow, so the double has
+    // to answer it. Its absence is what these tests caught: the service called
+    // a method the fake did not have, which is the same shape of fault as
+    // calling a field the far side does not return.
+    sendSigningInvitation: vi.fn(async () => ({ success: true, data: {} })),
     declineDocument: vi.fn(async () => ({ success: true, data: true })),
     getSignedUrl: vi.fn(async () => ({ success: true, data: { url: 'http://opensign/signed/test.pdf' } })),
     generateCertificate: vi.fn(async () => ({ success: true, data: { url: 'http://opensign/cert/test.pdf' } })),

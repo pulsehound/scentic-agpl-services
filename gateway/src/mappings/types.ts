@@ -245,4 +245,6 @@ export interface CreateOpenSignWorkflowParams {
     order: number;
   }>;
   sendNow: boolean;
+  /** Who the invitation says it is from. The firm, not the software. */
+  senderName?: string;
 }
