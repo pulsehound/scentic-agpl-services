@@ -44,3 +44,34 @@ resource "google_compute_router_nat" "agpl" {
     filter = "ERRORS_ONLY"
   }
 }
+
+# Administrative shell access to the Mongo VM, through IAP only.
+#
+# The VM sits on the `scentic-staging` network. Every default-allow-* rule in
+# this project — including default-allow-ssh — is attached to the `default`
+# network, so none of them applies here and nothing permitted SSH at all. The
+# symptom is not a refused login but IAP failing with `4003: failed to connect
+# to backend`, because the tunnel is dropped by the firewall before it reaches
+# port 22.
+#
+# Scoped to IAP's forwarding range rather than opened outright. The VM has no
+# external address, so this range is the only way a packet can arrive, and IAP
+# checks roles/iap.tunnelResourceAccessor before forwarding one — an IAM
+# decision, logged, and revocable per person. A source range alone is checked by
+# the network and by nothing else.
+#
+# Note what this deliberately is not: default-allow-ssh on the other network
+# permits 0.0.0.0/0 to port 22. Copying that pattern here would put a database
+# host's shell on the public internet to save configuring a tunnel.
+resource "google_compute_firewall" "iap_ssh" {
+  name    = "scentic-agpl-iap-ssh"
+  network = data.google_compute_network.shared.name
+
+  allow {
+    protocol = "tcp"
+    ports    = ["22"]
+  }
+
+  source_ranges = ["35.235.240.0/20"]
+  target_tags   = ["agpl-mongo"]
+}
