@@ -148,9 +148,25 @@ resource "google_cloud_run_v2_service" "kimai" {
 # counterparty with no Scentic account; they receive a link by email and open it
 # from wherever they are.
 # ---------------------------------------------------------------------------
+# OpenSign — two services, not one
+#
+# The upstream project ships a Parse backend and a React frontend as separate
+# images, and both are required. This stack ran only the frontend, so there was
+# no Parse API at all: every gateway call to /classes/... was answered with the
+# frontend's index.html, and a POST with 405. The gateway reported that as
+# "createTenant failed", which reads as OpenSign rejecting the tenant rather
+# than as no OpenSign API existing.
+#
+# It also put the SMTP settings on the frontend, where nothing sends mail.
+#
+# Both are public. The backend is not an internal service that only the gateway
+# calls: the signing pages run in a counterparty's browser and talk to it
+# directly, so making it internal would break the very flow it exists for. The
+# protection is Parse's own app-id/master-key model, not the network.
+# ---------------------------------------------------------------------------
 
-resource "google_cloud_run_v2_service" "opensign" {
-  name     = "scentic-agpl-opensign"
+resource "google_cloud_run_v2_service" "opensign_server" {
+  name     = "scentic-agpl-opensign-server"
   location = var.region
   ingress  = "INGRESS_TRAFFIC_ALL"
 
@@ -169,13 +185,12 @@ resource "google_cloud_run_v2_service" "opensign" {
         network    = local.vpc_access.network
         subnetwork = local.vpc_access.subnetwork
       }
-      # Mongo is inside the VPC; the mail provider is not. Private ranges only
-      # would have let OpenSign compose every invitation and send none.
+      # Mongo is inside the VPC; the mail provider is not.
       egress = "ALL_TRAFFIC"
     }
 
     containers {
-      image = var.opensign_image
+      image = var.opensign_server_image
 
       resources {
         limits = { cpu = "1", memory = "2Gi" }
@@ -207,14 +222,18 @@ resource "google_cloud_run_v2_service" "opensign" {
         name  = "PARSE_MOUNT"
         value = "/app"
       }
+      # Parse builds absolute links — including the ones emailed to signers —
+      # from this, so it must be the address a counterparty can actually reach,
+      # and must carry the mount path.
       env {
         name  = "SERVER_URL"
-        value = "https://scentic-agpl-opensign-${var.project_number}.${var.region}.run.app/app"
+        value = "https://scentic-agpl-opensign-server-${var.project_number}.${var.region}.run.app/app"
       }
       env {
-        name  = "PUBLIC_URL"
-        value = "https://scentic-agpl-opensign-${var.project_number}.${var.region}.run.app"
+        name  = "USE_LOCAL"
+        value = "TRUE"
       }
+
       env {
         name  = "SMTP_ENABLE"
         value = "true"
@@ -245,9 +264,9 @@ resource "google_cloud_run_v2_service" "opensign" {
         value = var.smtp_from_address
       }
 
-      # The signing certificate, when there is one. Declared conditionally so
-      # the stack runs without it: signatures are still recorded and the audit
-      # trail is intact, the PDF simply carries no verifiable signature.
+      # The signing certificate, when there is one. Conditional so the stack
+      # runs without it: signatures are still recorded and the audit trail is
+      # intact, the PDF simply carries no verifiable signature.
       dynamic "env" {
         for_each = var.signing_certificate_secret == "" ? [] : [1]
         content {
@@ -289,6 +308,55 @@ resource "google_cloud_run_v2_service" "opensign" {
   }
 
   depends_on = [google_compute_instance.mongo, google_compute_router_nat.agpl]
+}
+
+# The signing pages a counterparty opens. Serves static assets and calls the
+# backend from the browser, which is why it needs the backend's public address
+# rather than an internal one.
+resource "google_cloud_run_v2_service" "opensign" {
+  name     = "scentic-agpl-opensign"
+  location = var.region
+  ingress  = "INGRESS_TRAFFIC_ALL"
+
+  deletion_protection = false
+
+  template {
+    service_account = google_service_account.agpl_runtime.email
+
+    scaling {
+      min_instance_count = 1
+      max_instance_count = 3
+    }
+
+    containers {
+      image = var.opensign_image
+
+      resources {
+        limits = { cpu = "1", memory = "1Gi" }
+      }
+
+      env {
+        name  = "REACT_APP_SERVERURL"
+        value = "${google_cloud_run_v2_service.opensign_server.uri}/app"
+      }
+      env {
+        name  = "REACT_APP_APPID"
+        value = var.opensign_app_id
+      }
+
+      ports {
+        container_port = 3000
+      }
+
+      startup_probe {
+        initial_delay_seconds = 15
+        timeout_seconds       = 10
+        period_seconds        = 15
+        failure_threshold     = 20
+        tcp_socket { port = 3000 }
+      }
+    }
+  }
 }
 
 # Only while the setup window is open, and removed the moment it closes.
@@ -449,8 +517,10 @@ resource "google_cloud_run_v2_service" "gateway" {
         value = "true"
       }
       env {
-        name  = "OPENSIGN_BASE_URL"
-        value = google_cloud_run_v2_service.opensign.uri
+        name = "OPENSIGN_BASE_URL"
+        # The backend, and with /app: Parse is mounted there, so a base URL
+        # without it addresses the frontend's catch-all route instead of the API.
+        value = "${google_cloud_run_v2_service.opensign_server.uri}/app"
       }
       env {
         name  = "OPENSIGN_APP_ID"
@@ -535,6 +605,16 @@ resource "google_cloud_run_v2_service_iam_member" "gateway_caller" {
   location = google_cloud_run_v2_service.gateway[0].location
   role     = "roles/run.invoker"
   member   = "serviceAccount:${var.scentic_runtime_service_account}"
+}
+
+# The signing backend is reached by counterparties' browsers, not only by the
+# gateway, so it cannot sit behind an IAM check the way Kimai does. Parse's
+# app-id and master-key model is the control here.
+resource "google_cloud_run_v2_service_iam_member" "opensign_server_public" {
+  name     = google_cloud_run_v2_service.opensign_server.name
+  location = google_cloud_run_v2_service.opensign_server.location
+  role     = "roles/run.invoker"
+  member   = "allUsers"
 }
 
 # The gateway is the only identity permitted to call Kimai.

@@ -81,9 +81,21 @@ variable "kimai_image" {
 }
 
 variable "opensign_image" {
-  description = "OpenSign image, pinned for the same reason."
+  description = "OpenSign *frontend* image — the signing pages, not the API."
   type        = string
   default     = "opensign/opensign:main"
+}
+
+variable "opensign_server_image" {
+  description = <<-EOT
+    OpenSign *backend* image: the Parse server the gateway actually talks to.
+
+    A separate image from the frontend, and both are required. Running only the
+    frontend leaves no API behind /app/classes — requests are answered with
+    index.html, and a POST with 405.
+  EOT
+  type        = string
+  default     = "opensign/opensignserver:main"
 }
 
 variable "opensign_app_id" {
