@@ -22,6 +22,7 @@ async function main() {
     baseUrl: config.kimaiBaseUrl,
     apiToken: config.kimaiAdminApiToken,
     username: config.kimaiAdminUsername,
+    authMode: config.kimaiAuthMode,
   });
 
   // Durable store bundle (memory, sqlite, or postgres)

@@ -12,8 +12,18 @@
  * - GET/POST /api/teams — list/create teams
  * - POST /api/export — export timesheets
  *
- * Auth: Bearer token via Authorization header (Kimai access tokens).
- * Alternative (deprecated): X-AUTH-USER + X-AUTH-TOKEN headers.
+ * Auth: selected by KIMAI_AUTH_MODE.
+ *
+ *   bearer   Authorization: Bearer <token>. Kimai access tokens, newer builds.
+ *   legacy   X-AUTH-USER + X-AUTH-TOKEN. The API password from a user's
+ *            profile page, which is what Kimai 2.30 issues.
+ *
+ * This mattered in practice rather than in theory: against Kimai 2.30 a Bearer
+ * request is answered 401 and the same token in X-AUTH headers is answered 200.
+ * Sending only Bearer made the gateway unable to reach Kimai at all, and the
+ * failure looks like a bad token rather than a wrong scheme.
+ *
+ * Defaults to legacy because that is what the deployed Kimai accepts.
  *
  * Security:
  * - Never log request/response bodies (may contain confidential descriptions)
@@ -28,6 +38,8 @@ export interface KimaiClientConfig {
   apiToken: string;
   username: string;
   timeoutMs?: number;
+  /** Which authentication scheme Kimai expects. See the note above. */
+  authMode?: 'bearer' | 'legacy';
 }
 
 export interface KimaiCustomer {
@@ -114,10 +126,18 @@ export class KimaiClient {
       const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs ?? 30_000);
 
       const headers: Record<string, string> = {
-        'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       };
+
+      if ((this.config.authMode ?? 'legacy') === 'bearer') {
+        headers['Authorization'] = `Bearer ${token}`;
+      } else {
+        // The username is part of the credential in this scheme, not just the
+        // token, so it has to travel with every request.
+        headers['X-AUTH-USER'] = this.config.username;
+        headers['X-AUTH-TOKEN'] = token;
+      }
 
       const response = await fetch(url, {
         method,

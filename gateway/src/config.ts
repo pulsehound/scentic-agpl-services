@@ -21,6 +21,14 @@ export interface GatewayConfig {
   kimaiBaseUrl: string;
   kimaiAdminUsername: string;
   kimaiAdminApiToken: string;
+  /**
+   * Which authentication scheme Kimai expects.
+   *
+   * Kimai 2.30 answers a Bearer request with 401 and the same token in
+   * X-AUTH-USER / X-AUTH-TOKEN with 200, so the default is legacy. Newer builds
+   * issuing real access tokens should set KIMAI_AUTH_MODE=bearer.
+   */
+  kimaiAuthMode: 'bearer' | 'legacy';
   databaseUrl: string | null;
   defaultActivityName: string;
   useConfidentialLabels: boolean;
@@ -91,6 +99,9 @@ export function loadConfig(env: Record<string, string | undefined>): GatewayConf
   const webhookTargetUrl = env['SCENTIC_WEBHOOK_TARGET_URL'] ?? '';
   const kimaiBaseUrl = env['KIMAI_BASE_URL'] ?? '';
   const kimaiAdminApiToken = env['KIMAI_ADMIN_API_TOKEN'] ?? '';
+  const kimaiAuthMode = (env['KIMAI_AUTH_MODE'] ?? 'legacy').toLowerCase() === 'bearer'
+    ? 'bearer' as const
+    : 'legacy' as const;
 
   // OpenSign config
   const opensignEnabled = (env['OPENSIGN_ENABLED'] ?? 'false').toLowerCase() === 'true';
@@ -161,6 +172,7 @@ export function loadConfig(env: Record<string, string | undefined>): GatewayConf
     webhookTargetUrl: webhookTargetUrl || '',
     webhookHmacSecret: webhookHmacSecret || 'dev-webhook-hmac-secret',
     kimaiBaseUrl: kimaiBaseUrl || 'http://localhost:8001',
+    kimaiAuthMode,
     kimaiAdminUsername: env['KIMAI_ADMIN_USERNAME'] ?? 'admin',
     kimaiAdminApiToken: kimaiAdminApiToken || 'dev-api-token',
     databaseUrl: env['GATEWAY_DATABASE_URL'] ?? null,
