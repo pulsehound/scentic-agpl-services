@@ -138,6 +138,25 @@ variable "smtp_password_secret" {
   default     = "agpl-smtp-password"
 }
 
+variable "kimai_open_for_setup" {
+  description = <<-EOT
+    Temporarily expose Kimai so an administrator can create the API token.
+
+    Kimai issues its token from its own web interface and nowhere else, and the
+    service is otherwise unreachable from outside the VPC — so there is a
+    genuine chicken and egg here, and this is the least bad way through it.
+
+    Declared rather than done by hand with gcloud: an out-of-band ingress change
+    would be silently reverted by the next apply, which is worse than a variable
+    that says what it is. Set it true, create the token, set it false again.
+
+    The exposure is a login page with a long generated password, for as long as
+    it takes to copy a token. It is still exposure, and it should not be left on.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "signing_certificate_secret" {
   description = <<-EOT
     Secret Manager entry holding the PKCS#12 signing certificate, base64

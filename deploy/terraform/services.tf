@@ -28,8 +28,9 @@ resource "google_cloud_run_v2_service" "kimai" {
   name     = "scentic-agpl-kimai"
   location = var.region
   # Internal only. Time data is reached through the gateway, never directly, and
-  # nobody signs in to Kimai from the internet.
-  ingress = "INGRESS_TRAFFIC_INTERNAL_ONLY"
+  # nobody signs in to Kimai from the internet — except once, to create the API
+  # token the gateway needs, which Kimai only issues from its own interface.
+  ingress = var.kimai_open_for_setup ? "INGRESS_TRAFFIC_ALL" : "INGRESS_TRAFFIC_INTERNAL_ONLY"
 
   deletion_protection = false
 
@@ -248,6 +249,16 @@ resource "google_cloud_run_v2_service" "opensign" {
   }
 
   depends_on = [google_compute_instance.mongo, google_compute_router_nat.agpl]
+}
+
+# Only while the setup window is open, and removed the moment it closes.
+resource "google_cloud_run_v2_service_iam_member" "kimai_setup_access" {
+  count = var.kimai_open_for_setup ? 1 : 0
+
+  name     = google_cloud_run_v2_service.kimai.name
+  location = google_cloud_run_v2_service.kimai.location
+  role     = "roles/run.invoker"
+  member   = "allUsers"
 }
 
 # The signing pages must be openable by anyone holding the emailed link.
