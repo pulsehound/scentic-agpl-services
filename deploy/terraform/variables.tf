@@ -108,6 +108,7 @@ variable "kimai_api_token" {
 variable "smtp_host" {
   description = "Mail host OpenSign sends signature invitations through. Without it, signers are never told there is anything to sign."
   type        = string
+  default     = "smtp.mailersend.net"
 }
 
 variable "smtp_port" {
@@ -116,7 +117,8 @@ variable "smtp_port" {
 }
 
 variable "smtp_user" {
-  type = string
+  description = "SMTP username. MailerSend generates one per verified domain; it is not the account login."
+  type        = string
 }
 
 variable "smtp_password_secret" {
@@ -130,7 +132,7 @@ variable "smtp_password_secret" {
     its owner, and read only by the service that sends the mail.
 
     Create it with:
-      printf '%s' '<api-key>' | gcloud secrets create agpl-smtp-password         --replication-policy=automatic --data-file=-
+      printf '%s' '<smtp password>' | gcloud secrets create agpl-smtp-password         --replication-policy=automatic --data-file=-
   EOT
   type        = string
   default     = "agpl-smtp-password"

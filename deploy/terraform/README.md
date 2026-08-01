@@ -65,6 +65,20 @@ of a transaction rather than Scentic users. The sender address is therefore
 client-facing and needs a domain with SPF and DKIM configured, or the
 invitations land in spam and the signing simply never happens.
 
+MailerSend is what this deployment uses:
+
+| | |
+|---|---|
+| host | `smtp.mailersend.net` |
+| port | `587` |
+| username | generated per domain in the MailerSend dashboard |
+| password | generated alongside it, shown once |
+| from | any address on the verified domain |
+
+The username and password come from **Domains -> your domain -> SMTP**. They are
+per-domain, not account-wide, so the domain must be verified first — an
+unverified domain has no DKIM record and its mail is treated accordingly.
+
 The password is never passed to Terraform. Create it once, as its owner:
 
 ```bash
