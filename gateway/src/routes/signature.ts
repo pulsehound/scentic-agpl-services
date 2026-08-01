@@ -73,7 +73,7 @@ export function createSignatureRouter(service: OpenSignService): Router {
         scenticPhysicalFileId: b.scenticPhysicalFileId ?? '',
         documentName: b.documentName,
         documentBase64: b.documentBase64,
-        signers: b.signers ?? [],
+        signers: normaliseSigners(b.signers),
         sendNow: b.sendNow ?? true,
       }, ctx?.correlationId ?? '');
       if (!result.success) return next(result.error);
@@ -183,4 +183,49 @@ export function createSignatureRouter(service: OpenSignService): Router {
   });
 
   return router;
+}
+
+/**
+ * Fill in what the service assumes and the contract did not require.
+ *
+ * createWorkflow reads `role` and `scenticSignerId` off every signer, and the
+ * route passed the caller's array through untouched. A signer without a role —
+ * which is what Scentic actually sent — made `s.role.toLowerCase()` throw, and
+ * an unhandled TypeError becomes a bare 500 that says only "An internal error
+ * occurred". A missing optional field should not be indistinguishable from the
+ * gateway being broken.
+ *
+ * `signer` is the default because it is the only role that makes sense for
+ * somebody named on a document being sent out to be signed.
+ */
+interface IncomingSigner {
+  scenticSignerId?: unknown;
+  email?: unknown;
+  name?: unknown;
+  role?: unknown;
+  order?: unknown;
+}
+
+export function normaliseSigners(input: unknown): Array<{
+  scenticSignerId: string;
+  email: string;
+  name: string;
+  role: string;
+  order: number;
+}> {
+  if (!Array.isArray(input)) return [];
+
+  return input.map((entry, index) => {
+    const s = (entry ?? {}) as IncomingSigner;
+    const email = typeof s.email === 'string' ? s.email : '';
+    return {
+      // Falls back to the address, which is what identifies a signer to
+      // OpenSign anyway — a counterparty has no Scentic id to send.
+      scenticSignerId: typeof s.scenticSignerId === 'string' && s.scenticSignerId ? s.scenticSignerId : email,
+      email,
+      name: typeof s.name === 'string' && s.name ? s.name : email,
+      role: typeof s.role === 'string' && s.role ? s.role : 'signer',
+      order: typeof s.order === 'number' ? s.order : index + 1,
+    };
+  });
 }

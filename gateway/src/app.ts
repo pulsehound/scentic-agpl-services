@@ -18,7 +18,7 @@ import type { OpenSignService } from './opensign/opensign-service.js';
 import type { WebhookDispatcher } from './events/webhook-dispatcher.js';
 import type { MappingStore } from './mappings/mapping-store.js';
 import type { GatewayError } from './http/errors.js';
-import { clearContext } from './http/request-context.js';
+import { clearContext, getContext } from './http/request-context.js';
 
 export interface AppDeps {
   config: GatewayConfig;
@@ -93,6 +93,9 @@ export function createApp(deps: AppDeps): express.Application {
 
   // Error handler
   app.use((err: Error | GatewayError, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    // Read before clearing: the context is what ties a logged failure to the
+    // request the caller saw fail.
+    const correlationId = getContext()?.correlationId ?? '';
     clearContext();
 
     if ('code' in err && 'statusCode' in err && 'toApiError' in err) {
@@ -102,6 +105,18 @@ export function createApp(deps: AppDeps): express.Application {
         error: gwErr.toApiError(),
       });
     } else {
+      // Hidden from the response, not from the operator. Returning a generic
+      // message and logging nothing meant an unhandled exception produced a
+      // bare 500 with no record anywhere of what threw — the failure was
+      // invisible in the gateway's own logs and could only be guessed at from
+      // the caller's side.
+      console.error('[gateway] unhandled error', {
+        correlationId,
+        name: err.name,
+        message: err.message,
+        stack: err.stack,
+      });
+
       // Never expose internal error details
       res.status(500).json({
         ok: false,
