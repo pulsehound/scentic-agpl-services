@@ -164,9 +164,9 @@ resource "google_compute_instance" "mongo" {
     # Password read from Secret Manager on boot rather than baked into metadata,
     # which is readable by anything that can describe the instance.
     startup-script = templatefile("${path.module}/mongo-startup.sh", {
-      project_id     = var.project_id
-      secret_name    = google_secret_manager_secret.agpl["agpl-mongo-password"].secret_id
-      bind_address   = google_compute_address.mongo.address
+      project_id   = var.project_id
+      secret_name  = google_secret_manager_secret.agpl["agpl-mongo-password"].secret_id
+      bind_address = google_compute_address.mongo.address
     })
   }
 

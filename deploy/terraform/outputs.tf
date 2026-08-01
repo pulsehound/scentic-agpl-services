@@ -9,7 +9,7 @@
 output "gateway_url" {
   description = "Set as SCENTIC_AGPL_GATEWAY_URL. Internal ingress: reachable from Scentic's Cloud Run and nowhere else."
   # Empty until the second apply — see the count on the gateway service.
-  value       = one(google_cloud_run_v2_service.gateway[*].uri)
+  value = one(google_cloud_run_v2_service.gateway[*].uri)
 }
 
 output "opensign_public_url" {

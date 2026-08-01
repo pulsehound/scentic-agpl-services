@@ -121,8 +121,16 @@ variable "smtp_port" {
 }
 
 variable "smtp_user" {
-  description = "SMTP username. MailerSend generates one per verified domain; it is not the account login."
+  description = <<-EOT
+    SMTP username — not the account login, and provider-specific.
+
+    On Resend it is the fixed literal `resend` for every account, and the API key
+    is the password. Nothing is per-domain, so this rarely changes. Other
+    providers differ: MailerSend, for one, generates a username per verified
+    domain.
+  EOT
   type        = string
+  default     = "resend"
 }
 
 variable "smtp_password_secret" {
@@ -135,8 +143,16 @@ variable "smtp_password_secret" {
     somebody to get here. Referencing it means the credential is created once, by
     its owner, and read only by the service that sends the mail.
 
-    Create it with:
-      printf '%s' '<smtp password>' | gcloud secrets create agpl-smtp-password         --replication-policy=automatic --data-file=-
+    On Resend the password is the API key itself (`re_...`), created under
+    API Keys with Sending access. Add it as a new *version* rather than a new
+    secret, so the reference here and the Cloud Run wiring stay unchanged.
+
+    Add it through the Console — Secret Manager → agpl-smtp-password → NEW
+    VERSION — or, if scripting it, take care that the value carries no trailing
+    newline. A shell pipe appends one, SMTP auth sends it verbatim, and the
+    provider rejects the login with a message about the password being wrong:
+
+      printf '%s' '<api key>' | gcloud secrets versions add agpl-smtp-password --data-file=-
   EOT
   type        = string
   default     = "agpl-smtp-password"
