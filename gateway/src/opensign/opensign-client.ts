@@ -234,14 +234,18 @@ export class OpenSignClient {
     const session = await this.ensureAdminSession();
     if (!session.success) return { success: false, error: session.error };
 
-    const first = await this.callFunction<{ url: string }>('savefile', { fileBase64, fileName }, false);
+    // Storage name only. The name a person reads is set on the document record,
+    // so nothing legible is lost by making this one boring.
+    const storedName = storageSafeFilename(fileName);
+
+    const first = await this.callFunction<{ url: string }>('savefile', { fileBase64, fileName: storedName }, false);
     if (first.success) return first;
 
     this.sessionToken = null;
     const retry = await this.ensureAdminSession();
     if (!retry.success) return first;
 
-    return this.callFunction<{ url: string }>('savefile', { fileBase64, fileName }, false);
+    return this.callFunction<{ url: string }>('savefile', { fileBase64, fileName: storedName }, false);
   }
 
   async createDocument(params: {
@@ -318,4 +322,44 @@ export class OpenSignClient {
     // Manual reminders would require calling `sendmailv3` directly, which is not a stable API.
     return { success: false, error: { code: 'NOT_SUPPORTED', message: 'OpenSign does not support manual reminders via API. Automatic reminders are configured per-document.' } };
   }
+}
+
+/**
+ * A filename Parse will accept.
+ *
+ * Parse rejects anything outside a narrow ASCII set with "Filename contains
+ * invalid characters", and a legal system in Israel names documents in Hebrew —
+ * so the common case is a filename with not one acceptable character in it.
+ * Latin-accented names collapse to their base letters; scripts that have no
+ * ASCII equivalent leave nothing behind, and there is no honest transliteration
+ * to invent, so those become a generic name.
+ *
+ * This is deliberately not a round trip. The readable title is carried on the
+ * document record and is what signers see; this string exists only so the bytes
+ * have somewhere to live.
+ */
+export function storageSafeFilename(original: string): string {
+  const lastDot = original.lastIndexOf('.');
+  const hasExt = lastDot > 0 && lastDot < original.length - 1;
+
+  // NFKD splits accented Latin into letter + mark, so the marks can be dropped
+  // and the letter kept. It does nothing for Hebrew, Arabic or CJK, which is
+  // why the fallback below has to exist.
+  const reduce = (part: string) =>
+    part
+      .normalize('NFKD')
+      .replace(/[̀-ͯ]/g, '')
+      .replace(/[^A-Za-z0-9._-]+/g, '-')
+      .replace(/-{2,}/g, '-')
+      .replace(/^[-._]+|[-._]+$/g, '');
+
+  const stem = reduce(hasExt ? original.slice(0, lastDot) : original).slice(0, 80);
+  const ext = (hasExt ? reduce(original.slice(lastDot + 1)) : '').toLowerCase();
+
+  // Parse also requires the first character to be alphanumeric or an
+  // underscore, which a name beginning with a digit satisfies and one beginning
+  // with a dash does not.
+  const base = /^[A-Za-z0-9_]/.test(stem) ? stem : `document${stem ? `-${stem}` : ''}`;
+
+  return ext ? `${base}.${ext}` : `${base}.pdf`;
 }
