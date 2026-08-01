@@ -193,6 +193,18 @@ resource "google_secret_manager_secret_iam_member" "agpl_runtime_signing_cert" {
   member    = "serviceAccount:${google_service_account.agpl_runtime.email}"
 }
 
+data "google_secret_manager_secret" "kimai_token" {
+  for_each  = toset(compact([var.kimai_api_token_secret]))
+  secret_id = each.value
+}
+
+resource "google_secret_manager_secret_iam_member" "agpl_runtime_kimai_token" {
+  for_each  = data.google_secret_manager_secret.kimai_token
+  secret_id = each.value.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.agpl_runtime.email}"
+}
+
 # Scentic's own runtime must read the two HMAC secrets — they are one shared
 # value each, held by both sides of the boundary.
 resource "google_secret_manager_secret_iam_member" "scentic_runtime_hmac" {

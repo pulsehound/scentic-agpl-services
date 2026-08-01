@@ -92,17 +92,21 @@ variable "opensign_app_id" {
   default     = "scentic-opensign"
 }
 
-variable "kimai_api_token" {
+variable "kimai_api_token_secret" {
   description = <<-EOT
-    API token for the Kimai administrator.
+    Secret Manager entry holding the Kimai API token, by name — never the token.
 
-    Cannot be provisioned: Kimai issues it from its own UI after the instance is
-    up and the admin has signed in once. Left empty on the first apply and set on
-    the second — see README.md. Stated rather than pretended around.
+    Cannot be provisioned: Kimai issues it from its own interface after the
+    instance is up and an administrator has signed in once. So the first apply
+    leaves this empty and the gateway is not created; the second sets it and the
+    gateway comes up. The dependency is real and is made explicit rather than
+    worked around.
+
+    Referenced rather than passed as a value, for the same reason as the SMTP
+    password: a sensitive variable still lands in terraform.tfstate in plaintext.
   EOT
   type        = string
   default     = ""
-  sensitive   = true
 }
 
 variable "smtp_host" {

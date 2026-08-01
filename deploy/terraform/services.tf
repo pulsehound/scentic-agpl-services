@@ -285,7 +285,7 @@ resource "google_cloud_run_v2_service" "gateway" {
   # Rather than leave a crash-looping service behind and call it provisioned,
   # the dependency is made explicit: apply once to build everything else, obtain
   # the token, then apply again. See README.md.
-  count = var.kimai_api_token == "" ? 0 : 1
+  count = var.kimai_api_token_secret == "" ? 0 : 1
 
   name     = "scentic-agpl-gateway"
   location = var.region
@@ -363,8 +363,20 @@ resource "google_cloud_run_v2_service" "gateway" {
         value = var.admin_email
       }
       env {
-        name  = "KIMAI_ADMIN_API_TOKEN"
-        value = var.kimai_api_token
+        name = "KIMAI_ADMIN_API_TOKEN"
+        value_source {
+          secret_key_ref {
+            secret  = var.kimai_api_token_secret
+            version = "latest"
+          }
+        }
+      }
+      env {
+        # Kimai 2.30 answers a Bearer request 401 and the same token in X-AUTH
+        # headers 200. Tested against the deployed instance before anything was
+        # wired to depend on it.
+        name  = "KIMAI_AUTH_MODE"
+        value = "legacy"
       }
       env {
         name  = "KIMAI_DEFAULT_ACTIVITY_NAME"
@@ -392,6 +404,26 @@ resource "google_cloud_run_v2_service" "gateway" {
       env {
         name  = "OPENSIGN_MASTER_KEY"
         value = random_password.opensign_master_key.result
+      }
+      env {
+        name  = "OPENSIGN_ADMIN_EMAIL"
+        value = var.admin_email
+      }
+      env {
+        name  = "OPENSIGN_ADMIN_PASSWORD"
+        value = random_password.opensign_admin.result
+      }
+      env {
+        # See isPrivateUrl in the gateway's config. Every Cloud Run service has
+        # a public hostname regardless of who may reach it, so the private-URL
+        # check cannot pass here. This asserts what the ingress settings in this
+        # file already enforce: the gateway and Kimai are internal-only.
+        #
+        # OpenSign is the exception and is genuinely public, because signers are
+        # counterparties without accounts. The gateway reaches it over TLS with
+        # the master key.
+        name  = "GATEWAY_ALLOW_CLOUD_RUN_INTERNAL"
+        value = "true"
       }
       env {
         name  = "SCENTIC_GATEWAY_PUBLIC_BASE_URL"
@@ -432,7 +464,7 @@ resource "google_cloud_run_v2_service" "gateway" {
 
 # Scentic's runtime is the only identity permitted to call the gateway.
 resource "google_cloud_run_v2_service_iam_member" "gateway_caller" {
-  count = var.kimai_api_token == "" ? 0 : 1
+  count = var.kimai_api_token_secret == "" ? 0 : 1
 
   name     = google_cloud_run_v2_service.gateway[0].name
   location = google_cloud_run_v2_service.gateway[0].location

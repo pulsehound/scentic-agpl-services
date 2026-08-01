@@ -64,10 +64,31 @@ function isPlaceholder(value: string): boolean {
   return PLACEHOLDER_VALUES.has(value.toLowerCase().trim());
 }
 
-function isPrivateUrl(url: string): boolean {
+/**
+ * Is this address unreachable from the public internet?
+ *
+ * The check exists so the gateway is never pointed at something the world can
+ * talk to. On a VM or in Kubernetes that means an RFC 1918 address, and the list
+ * below is exactly right.
+ *
+ * On Cloud Run it is wrong. Every service there has a public *.run.app hostname
+ * whether or not anything outside the VPC may reach it — reachability is decided
+ * by the ingress setting, which is not visible from inside the container. So a
+ * correctly locked-down deployment fails this check, and the only way to deploy
+ * would be to disable production validation wholesale, losing the placeholder
+ * and secret checks with it.
+ *
+ * GATEWAY_ALLOW_CLOUD_RUN_INTERNAL permits *.run.app specifically. It is a
+ * narrow exemption and it is a promise the operator makes: those services must
+ * have internal-only ingress. Nothing here can verify that, which is why it is
+ * opt-in and named for what it assumes rather than something vague like
+ * SKIP_URL_CHECK.
+ */
+function isPrivateUrl(url: string, allowCloudRunInternal = false): boolean {
   try {
     const parsed = new URL(url);
     const host = parsed.hostname;
+    if (allowCloudRunInternal && host.endsWith('.run.app')) return true;
     if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return true;
     if (host.endsWith('.local') || host.endsWith('.internal')) return true;
     // RFC 1918
@@ -87,6 +108,9 @@ function isPrivateUrl(url: string): boolean {
 export function loadConfig(env: Record<string, string | undefined>): GatewayConfig {
   const nodeEnv = (env['NODE_ENV'] ?? 'development').toLowerCase();
   const isProduction = nodeEnv === 'production';
+  // See isPrivateUrl. Opt-in, and an assertion by the operator that the Cloud
+  // Run services it covers are internal-ingress only.
+  const allowCloudRun = (env['GATEWAY_ALLOW_CLOUD_RUN_INTERNAL'] ?? '').toLowerCase() === 'true';
 
   const envLevel: Environment = isProduction ? 'production'
     : nodeEnv === 'staging' ? 'staging'
@@ -122,7 +146,7 @@ export function loadConfig(env: Record<string, string | undefined>): GatewayConf
     if (!internalBaseUrl) {
       errors.push('SCENTIC_GATEWAY_INTERNAL_BASE_URL must be set in production');
     }
-    if (internalBaseUrl && !isPrivateUrl(internalBaseUrl)) {
+    if (internalBaseUrl && !isPrivateUrl(internalBaseUrl, allowCloudRun)) {
       errors.push('SCENTIC_GATEWAY_INTERNAL_BASE_URL must be a private network URL in production');
     }
     if (!publicBaseUrl) {
@@ -134,7 +158,7 @@ export function loadConfig(env: Record<string, string | undefined>): GatewayConf
     if (!kimaiBaseUrl) {
       errors.push('KIMAI_BASE_URL must be set in production');
     }
-    if (kimaiBaseUrl && !isPrivateUrl(kimaiBaseUrl)) {
+    if (kimaiBaseUrl && !isPrivateUrl(kimaiBaseUrl, allowCloudRun)) {
       errors.push('KIMAI_BASE_URL must be a private network URL in production');
     }
     if (!kimaiAdminApiToken || isPlaceholder(kimaiAdminApiToken)) {
@@ -145,7 +169,7 @@ export function loadConfig(env: Record<string, string | undefined>): GatewayConf
       if (!opensignBaseUrl) {
         errors.push('OPENSIGN_BASE_URL must be set when OPENSIGN_ENABLED=true in production');
       }
-      if (opensignBaseUrl && !isPrivateUrl(opensignBaseUrl)) {
+      if (opensignBaseUrl && !isPrivateUrl(opensignBaseUrl, allowCloudRun)) {
         errors.push('OPENSIGN_BASE_URL must be a private network URL in production');
       }
       if (!opensignMasterKey || isPlaceholder(opensignMasterKey)) {
