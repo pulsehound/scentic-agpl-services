@@ -140,20 +140,23 @@ export class KimaiClient {
         headers['X-AUTH-TOKEN'] = token;
       }
 
-      // Kimai's credentials above are read by Kimai. On Cloud Run, Kimai is
-      // behind an IAM check that runs first and reads only this header, so
-      // without it the request is refused before Kimai is reached — reported
-      // below as "auth failed", which points at the Kimai token rather than at
-      // the identity that never authenticated.
+      // Two authentications, two consumers, and they cannot share a header.
       //
-      // Only in the legacy scheme: 'bearer' already uses Authorization for
-      // Kimai's own token, and overwriting it would break the case that works.
-      // Those two schemes cannot both be satisfied on one header, so a bearer
-      // deployment behind IAM would need Kimai's token moved elsewhere.
-      if ((this.config.authMode ?? 'legacy') !== 'bearer') {
-        const identityToken = await getIdentityToken(audienceFor(this.config.baseUrl));
-        if (identityToken) headers['Authorization'] = `Bearer ${identityToken}`;
-      }
+      // Cloud Run's IAM check runs in front of Kimai and wants a Google identity
+      // token; Kimai wants its own credentials. Putting the Google token in
+      // Authorization satisfies Cloud Run and then breaks Kimai, whose
+      // TokenAuthenticator sees an Authorization header, tries to read it as a
+      // Kimai token, and answers 401 without ever looking at X-AUTH-USER — a
+      // failure that reads as a bad Kimai token when the Kimai token was never
+      // consulted.
+      //
+      // X-Serverless-Authorization exists for exactly this. Cloud Run accepts
+      // the identity token there and leaves Authorization untouched for the
+      // application behind it, so both checks are satisfied and neither sees
+      // the other's credential. It also means this is safe in *both* auth
+      // modes, including bearer, where Kimai's own token owns Authorization.
+      const identityToken = await getIdentityToken(audienceFor(this.config.baseUrl));
+      if (identityToken) headers['X-Serverless-Authorization'] = `Bearer ${identityToken}`;
 
       const response = await fetch(url, {
         method,
