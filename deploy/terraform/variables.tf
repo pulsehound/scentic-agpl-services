@@ -108,7 +108,7 @@ variable "kimai_api_token" {
 variable "smtp_host" {
   description = "Mail host OpenSign sends signature invitations through. Without it, signers are never told there is anything to sign."
   type        = string
-  default     = "smtp.mailersend.net"
+  default     = "smtp.resend.com"
 }
 
 variable "smtp_port" {

@@ -65,19 +65,23 @@ of a transaction rather than Scentic users. The sender address is therefore
 client-facing and needs a domain with SPF and DKIM configured, or the
 invitations land in spam and the signing simply never happens.
 
-MailerSend is what this deployment uses:
+Resend is what this deployment uses:
 
 | | |
 |---|---|
-| host | `smtp.mailersend.net` |
+| host | `smtp.resend.com` |
 | port | `587` |
-| username | generated per domain in the MailerSend dashboard |
-| password | generated alongside it, shown once |
+| username | `resend`, literally |
+| password | a Resend API key |
 | from | any address on the verified domain |
 
-The username and password come from **Domains -> your domain -> SMTP**. They are
-per-domain, not account-wide, so the domain must be verified first — an
-unverified domain has no DKIM record and its mail is treated accordingly.
+The domain must be verified in Resend first: that is what puts SPF and DKIM in
+place. Without them a signature request is treated as unsolicited mail, which
+for a document somebody is being asked to sign is the worst possible reading.
+
+MailerSend was the first choice and was dropped because a trial account can only
+send to the account owner's own address. Signature invitations go to
+counterparties, so every real send would have failed silently.
 
 The password is never passed to Terraform. Create it once, as its owner:
 
