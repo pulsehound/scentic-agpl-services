@@ -1,0 +1,43 @@
+# OpenSign Parse backend, with one upstream bug patched.
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Upstream saveFile.js assigns to an undeclared variable:
+#
+#     const fileRes = await parseUploadFile(fileName, file, mimeType);
+#     fileUrl = getSecureUrl(fileRes?.url)?.url;      // never declared
+#     return { url: fileUrl };
+#
+# ES modules are always strict mode, so that assignment throws
+# "ReferenceError: fileUrl is not defined" — every time, on the line
+# immediately after the upload has succeeded. The document is stored and the
+# call still fails, which is why the symptom is an upload error for a file that
+# actually uploaded.
+#
+# Present in both published tags, main (2026-06-30) and staging (2026-07-06),
+# so there is no version to move to. Patched here rather than worked around in
+# the gateway, because no caller can avoid a function that cannot return.
+#
+# This makes the image a modified version of an AGPL work that is offered to
+# users over a network, so its source must be too. That is this repository —
+# the patch is the RUN line below, applied to the published upstream image, and
+# nothing else about the program is changed.
+
+FROM opensign/opensignserver:main
+
+# The declaration keyword, and nothing else.
+#
+# Verified after applying: without the check a change to the upstream image
+# would silently produce an unpatched build, and the failure would resurface
+# somewhere far from here.
+RUN set -eu; \
+    f=/usr/src/app/cloud/parsefunction/saveFile.js; \
+    sed -i 's/^\( *\)fileUrl = getSecureUrl/\1const fileUrl = getSecureUrl/' "$f"; \
+    grep -q 'const fileUrl = getSecureUrl' "$f" || { \
+      echo "patch did not apply — upstream saveFile.js has changed shape" >&2; \
+      exit 1; \
+    }; \
+    ! grep -nE '^\s*fileUrl\s*=' "$f" || { \
+      echo "an undeclared fileUrl assignment remains" >&2; \
+      exit 1; \
+    }

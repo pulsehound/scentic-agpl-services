@@ -34,3 +34,12 @@ smtp_from_address = "esign@scentic.com"
 kimai_api_token_secret                = "agpl-kimai-api-token"
 signing_certificate_secret            = "agpl-signing-cert"
 signing_certificate_passphrase_secret = "agpl-signing-passphrase"
+
+# Our own build of the OpenSign backend, not the upstream image.
+#
+# Upstream's saveFile.js assigns to an undeclared `fileUrl` on the line after
+# the upload succeeds, which in an ES module throws every time. Both published
+# tags carry it, so there is no version to move to. deploy/Dockerfile.opensign-server
+# adds the declaration and nothing else, and fails the build if the patch stops
+# applying.
+opensign_server_image = "us-east1-docker.pkg.dev/causal-hour-502018-c8/scentic-agpl/opensign-server:patched-1"
