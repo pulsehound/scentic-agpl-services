@@ -99,9 +99,24 @@ variable "opensign_server_image" {
 }
 
 variable "opensign_app_id" {
-  description = "Parse application id. Not a secret on its own, but paired with the master key."
+  description = <<-EOT
+    Parse application id.
+
+    Must be "opensign", and not by preference. The published frontend is built
+    with process.env replaced by an empty object literal, so its app id resolves
+    to `{}.REACT_APP_APPID ?? "opensign"` — always the fallback, whatever is set
+    at runtime. env.js emits only REACT_APP_SERVERURL, so there is nothing to
+    override either.
+
+    A backend on any other id rejects every call the signing page makes, and the
+    page renders nothing at all rather than reporting an error.
+
+    Not a secret in any case: Parse app ids are shipped to every browser that
+    loads the app. The master key is the credential, and that is held in Secret
+    Manager.
+  EOT
   type        = string
-  default     = "scentic-opensign"
+  default     = "opensign"
 }
 
 variable "kimai_api_token_secret" {
