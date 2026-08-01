@@ -76,6 +76,9 @@ export function createSignatureRouter(service: OpenSignService): Router {
         signers: normaliseSigners(b.signers),
         sendNow: b.sendNow ?? true,
         senderName: typeof b.senderName === 'string' ? b.senderName : '',
+        fields: Array.isArray(b.fields) ? b.fields : [],
+        emailSubject: typeof b.emailSubject === 'string' ? b.emailSubject : '',
+        emailMessage: typeof b.emailMessage === 'string' ? b.emailMessage : '',
       }, ctx?.correlationId ?? '');
       if (!result.success) return next(result.error);
       res.json({ ok: true, data: result.data });

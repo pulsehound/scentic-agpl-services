@@ -1,3 +1,4 @@
+import type { FieldPlacement } from '../opensign/placeholders.js';
 /**
  * Mapping types — Scentic entity ↔ Kimai entity mappings.
  *
@@ -247,4 +248,9 @@ export interface CreateOpenSignWorkflowParams {
   sendNow: boolean;
   /** Who the invitation says it is from. The firm, not the software. */
   senderName?: string;
+  /** Where each signer signs. Empty means the signer places their own signature. */
+  fields?: FieldPlacement[];
+  /** The invitation wording, as the sender wrote it. */
+  emailSubject?: string;
+  emailMessage?: string;
 }

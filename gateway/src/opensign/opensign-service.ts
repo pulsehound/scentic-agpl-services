@@ -12,6 +12,7 @@
  * - Raw OpenSign errors are wrapped safely
  */
 
+import { buildPlaceholders } from './placeholders.js';
 import { createHash } from 'node:crypto';
 import type { OpenSignClient } from './opensign-client.js';
 import type { MappingStore } from '../mappings/mapping-store.js';
@@ -212,16 +213,12 @@ export class OpenSignService {
       url: uploadResult.data!.url,
       extUserPtr,
       signers: [],
-      placeholders: params.signers.map(s => ({
-        Role: s.role.toLowerCase(),
-        // Lowercased to match. linkContactToDoc lowercases the address it is
-        // given and compares it against this one exactly; a signer entered as
-        // "Name@Firm.com" finds no placeholder, and the mismatch surfaces as
-        // OPERATION_FORBIDDEN "unauthorized" rather than as anything to do with
-        // an address.
-        email: s.email.trim().toLowerCase(),
-        placeHolder: [],
-      })),
+      // Emails are lowercased inside buildPlaceholders. linkContactToDoc
+      // lowercases the address it is given and compares it against the
+      // placeholder exactly; a signer entered as "Name@Firm.com" finds no
+      // placeholder, and the mismatch surfaces as OPERATION_FORBIDDEN
+      // "unauthorized" rather than as anything to do with an address.
+      placeholders: buildPlaceholders(params.signers, params.fields ?? []),
       timeToCompleteDays: 15,
       sendinOrder: false,
       isEnableOTP: false,
