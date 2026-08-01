@@ -24,6 +24,24 @@ locals {
 # Kimai — time tracking
 # ---------------------------------------------------------------------------
 
+# Credentials are referenced, never inlined.
+#
+# An `env { value = ... }` holding a password is readable by anyone with
+# run.services.get — roles/viewer is enough — and appears in `gcloud run
+# services describe`, in the Console, and in deployment logs. A secret_key_ref
+# is resolved by the runtime at start-up instead, so reading it needs
+# secretmanager.versions.access, which is a separate grant with its own audit
+# trail.
+#
+# This file originally inlined ten of them, including both HMAC secrets — the
+# entire authentication boundary between Scentic and this stack, in a field a
+# project viewer could read. The three connection strings are stored whole
+# rather than as a password assembled into a URI here, since assembling it in
+# Terraform puts the finished credential back into the service configuration.
+#
+# Terraform state still holds these values in plaintext; that is inherent to
+# random_password and is why the state bucket is access-controlled separately.
+
 resource "google_cloud_run_v2_service" "kimai" {
   name     = "scentic-agpl-kimai"
   location = var.region
@@ -64,24 +82,39 @@ resource "google_cloud_run_v2_service" "kimai" {
       }
 
       env {
-        name  = "DATABASE_URL"
-        value = "mysql://kimai:${random_password.kimai_db.result}@${google_sql_database_instance.kimai.private_ip_address}:3306/kimai?charset=utf8mb4&serverVersion=8.0.0"
+        name = "DATABASE_URL"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.agpl["agpl-kimai-database-url"].secret_id
+            version = "latest"
+          }
+        }
       }
       env {
         name  = "APP_ENV"
         value = "prod"
       }
       env {
-        name  = "APP_SECRET"
-        value = random_password.kimai_app_secret.result
+        name = "APP_SECRET"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.agpl["agpl-kimai-app-secret"].secret_id
+            version = "latest"
+          }
+        }
       }
       env {
         name  = "ADMINMAIL"
         value = var.admin_email
       }
       env {
-        name  = "ADMINPASS"
-        value = random_password.kimai_admin.result
+        name = "ADMINPASS"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.agpl["agpl-kimai-admin-password"].secret_id
+            version = "latest"
+          }
+        }
       }
       env {
         name  = "TRUSTED_PROXIES"
@@ -149,16 +182,26 @@ resource "google_cloud_run_v2_service" "opensign" {
       }
 
       env {
-        name  = "MONGODB_URI"
-        value = "mongodb://opensign:${random_password.mongo_password.result}@${google_compute_address.mongo.address}:27017/opensign?authSource=admin"
+        name = "MONGODB_URI"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.agpl["agpl-mongo-uri"].secret_id
+            version = "latest"
+          }
+        }
       }
       env {
         name  = "APP_ID"
         value = var.opensign_app_id
       }
       env {
-        name  = "MASTER_KEY"
-        value = random_password.opensign_master_key.result
+        name = "MASTER_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.agpl["agpl-opensign-master-key"].secret_id
+            version = "latest"
+          }
+        }
       }
       env {
         name  = "PARSE_MOUNT"
@@ -190,9 +233,6 @@ resource "google_cloud_run_v2_service" "opensign" {
       }
       env {
         name = "SMTP_PASS"
-        # Read at start-up from Secret Manager rather than baked into the service
-        # configuration, where it would be visible to anyone who can describe the
-        # service and would sit in Terraform state in plaintext.
         value_source {
           secret_key_ref {
             secret  = var.smtp_password_secret
@@ -335,20 +375,35 @@ resource "google_cloud_run_v2_service" "gateway" {
         value = "postgres"
       }
       env {
-        name  = "GATEWAY_DATABASE_URL"
-        value = "postgresql://gateway:${random_password.gateway_db.result}@${google_sql_database_instance.gateway.private_ip_address}:5432/gateway"
+        name = "GATEWAY_DATABASE_URL"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.agpl["agpl-gateway-database-url"].secret_id
+            version = "latest"
+          }
+        }
       }
       env {
         name  = "GATEWAY_POSTGRES_SSL_MODE"
         value = "disable"
       }
       env {
-        name  = "SCENTIC_SHARED_HMAC_SECRET"
-        value = random_password.shared_hmac.result
+        name = "SCENTIC_SHARED_HMAC_SECRET"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.agpl["agpl-shared-hmac-secret"].secret_id
+            version = "latest"
+          }
+        }
       }
       env {
-        name  = "SCENTIC_WEBHOOK_HMAC_SECRET"
-        value = random_password.webhook_hmac.result
+        name = "SCENTIC_WEBHOOK_HMAC_SECRET"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.agpl["agpl-webhook-hmac-secret"].secret_id
+            version = "latest"
+          }
+        }
       }
       env {
         name  = "SCENTIC_WEBHOOK_TARGET_URL"
@@ -402,16 +457,26 @@ resource "google_cloud_run_v2_service" "gateway" {
         value = var.opensign_app_id
       }
       env {
-        name  = "OPENSIGN_MASTER_KEY"
-        value = random_password.opensign_master_key.result
+        name = "OPENSIGN_MASTER_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.agpl["agpl-opensign-master-key"].secret_id
+            version = "latest"
+          }
+        }
       }
       env {
         name  = "OPENSIGN_ADMIN_EMAIL"
         value = var.admin_email
       }
       env {
-        name  = "OPENSIGN_ADMIN_PASSWORD"
-        value = random_password.opensign_admin.result
+        name = "OPENSIGN_ADMIN_PASSWORD"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.agpl["agpl-opensign-admin-password"].secret_id
+            version = "latest"
+          }
+        }
       }
       env {
         # See isPrivateUrl in the gateway's config. Every Cloud Run service has

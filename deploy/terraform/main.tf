@@ -127,6 +127,13 @@ locals {
     "agpl-opensign-master-key"     = random_password.opensign_master_key.result
     "agpl-opensign-admin-password" = random_password.opensign_admin.result
     "agpl-mongo-password"          = random_password.mongo_password.result
+
+    # The connection strings, whole. Each embeds a password, so a secret holding
+    # only the password would still leave the credential in the service
+    # configuration once the URI was assembled around it.
+    "agpl-kimai-database-url"   = "mysql://kimai:${random_password.kimai_db.result}@${google_sql_database_instance.kimai.private_ip_address}:3306/kimai?charset=utf8mb4&serverVersion=8.0.0"
+    "agpl-gateway-database-url" = "postgresql://gateway:${random_password.gateway_db.result}@${google_sql_database_instance.gateway.private_ip_address}:5432/gateway"
+    "agpl-mongo-uri"            = "mongodb://opensign:${random_password.mongo_password.result}@${google_compute_address.mongo.address}:27017/opensign?authSource=admin"
   }
 }
 

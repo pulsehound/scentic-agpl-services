@@ -58,3 +58,9 @@ deploy/terraform/*.tfstate
 deploy/terraform/*.tfstate.*
 deploy/terraform/*.tfvars
 deploy/terraform/tfplan*
+
+# The staging inputs are the exception, committed on purpose: they name secrets
+# rather than carrying them, and without them the stack cannot be rebuilt from
+# the configuration alone — which is the acceptance test. Any tfvars file that
+# does hold a credential stays ignored by the rule above.
+!deploy/terraform/staging.auto.tfvars
