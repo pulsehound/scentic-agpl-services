@@ -23,7 +23,11 @@ resource "google_sql_database_instance" "kimai" {
   region           = var.region
 
   settings {
-    tier              = var.db_tier
+    tier = var.db_tier
+    # Pinned. Newer Cloud SQL versions default to ENTERPRISE_PLUS, which rejects
+    # shared-core tiers with an error naming the tier rather than the edition
+    # that made it invalid.
+    edition           = "ENTERPRISE"
     availability_type = "ZONAL"
     disk_size         = 10
     disk_autoresize   = true
@@ -42,11 +46,9 @@ resource "google_sql_database_instance" "kimai" {
       start_time         = "03:00"
     }
 
-    database_flags {
-      # Kimai's schema needs this for its longer indexes.
-      name  = "innodb_large_prefix"
-      value = "on"
-    }
+    # No innodb_large_prefix flag. It was a MySQL 5.7 setting and was removed in
+    # 8.0, where the long index prefixes Kimai needs are always available —
+    # Cloud SQL rejects the instance outright rather than ignoring it.
   }
 
   # Staging, and deliberately destroyable — this whole stack is meant to be
@@ -83,6 +85,7 @@ resource "google_sql_database_instance" "gateway" {
 
   settings {
     tier              = var.db_tier
+    edition           = "ENTERPRISE"
     availability_type = "ZONAL"
     disk_size         = 10
     disk_autoresize   = true
