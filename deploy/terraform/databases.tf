@@ -172,6 +172,11 @@ resource "google_compute_instance" "mongo" {
 
   tags = ["agpl-mongo"]
 
+  # Nothing to install without a route to the package repositories, and the
+  # startup script marks itself complete either way — so ordering matters more
+  # than it looks.
+  depends_on = [google_compute_router_nat.agpl]
+
   # The startup script installs MongoDB; replacing the VM re-runs it against an
   # empty disk, which would lose the data. Changes to the script are applied by
   # rebuilding deliberately, not by a plan nobody read.

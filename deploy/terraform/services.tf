@@ -49,7 +49,10 @@ resource "google_cloud_run_v2_service" "kimai" {
         network    = local.vpc_access.network
         subnetwork = local.vpc_access.subnetwork
       }
-      egress = "PRIVATE_RANGES_ONLY"
+      # Through Cloud NAT. Kimai fetches nothing itself, but a Symfony
+      # application that cannot resolve anything behaves oddly in ways that are
+      # tedious to attribute, and the NAT is already there.
+      egress = "ALL_TRAFFIC"
     }
 
     containers {
@@ -132,10 +135,9 @@ resource "google_cloud_run_v2_service" "opensign" {
         network    = local.vpc_access.network
         subnetwork = local.vpc_access.subnetwork
       }
-      # Private ranges only: it reaches Mongo inside the VPC and sends mail out
-      # through the mail provider, which resolves publicly. If mail needs egress
-      # this becomes ALL_TRAFFIC with a NAT — noted rather than guessed.
-      egress = "PRIVATE_RANGES_ONLY"
+      # Mongo is inside the VPC; the mail provider is not. Private ranges only
+      # would have let OpenSign compose every invitation and send none.
+      egress = "ALL_TRAFFIC"
     }
 
     containers {
@@ -202,6 +204,35 @@ resource "google_cloud_run_v2_service" "opensign" {
         value = var.smtp_from_address
       }
 
+      # The signing certificate, when there is one. Declared conditionally so
+      # the stack runs without it: signatures are still recorded and the audit
+      # trail is intact, the PDF simply carries no verifiable signature.
+      dynamic "env" {
+        for_each = var.signing_certificate_secret == "" ? [] : [1]
+        content {
+          name = "PFX_BASE64"
+          value_source {
+            secret_key_ref {
+              secret  = var.signing_certificate_secret
+              version = "latest"
+            }
+          }
+        }
+      }
+
+      dynamic "env" {
+        for_each = var.signing_certificate_passphrase_secret == "" ? [] : [1]
+        content {
+          name = "PASS_PHRASE"
+          value_source {
+            secret_key_ref {
+              secret  = var.signing_certificate_passphrase_secret
+              version = "latest"
+            }
+          }
+        }
+      }
+
       ports {
         container_port = 8080
       }
@@ -216,7 +247,7 @@ resource "google_cloud_run_v2_service" "opensign" {
     }
   }
 
-  depends_on = [google_compute_instance.mongo]
+  depends_on = [google_compute_instance.mongo, google_compute_router_nat.agpl]
 }
 
 # The signing pages must be openable by anyone holding the emailed link.
@@ -267,7 +298,10 @@ resource "google_cloud_run_v2_service" "gateway" {
         network    = local.vpc_access.network
         subnetwork = local.vpc_access.subnetwork
       }
-      egress = "PRIVATE_RANGES_ONLY"
+      # The gateway posts webhooks to app.scentic.com, which is public. Without
+      # this a signed document would never update its workflow in Scentic, and
+      # the failure would look like a signing problem rather than a routing one.
+      egress = "ALL_TRAFFIC"
     }
 
     containers {

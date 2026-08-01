@@ -138,6 +138,30 @@ variable "smtp_password_secret" {
   default     = "agpl-smtp-password"
 }
 
+variable "signing_certificate_secret" {
+  description = <<-EOT
+    Secret Manager entry holding the PKCS#12 signing certificate, base64
+    encoded, or "" to run without one.
+
+    This is what makes a completed PDF cryptographically signed rather than
+    merely recorded as signed. Without it OpenSign still captures who signed,
+    when, and from where — the audit trail is intact — but the document itself
+    carries no signature a reader can verify.
+
+    The certificate identifies the *service* that applied the signature, not the
+    individual signer. Signer identity lives in the audit trail. Which level of
+    certificate a jurisdiction requires is a legal question, not a technical one.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "signing_certificate_passphrase_secret" {
+  description = "Secret Manager entry holding the certificate's passphrase."
+  type        = string
+  default     = ""
+}
+
 variable "smtp_from_address" {
   description = <<-EOT
     The address signature invitations come from.

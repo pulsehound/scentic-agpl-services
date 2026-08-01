@@ -180,6 +180,19 @@ resource "google_secret_manager_secret_iam_member" "agpl_runtime_smtp" {
   member    = "serviceAccount:${google_service_account.agpl_runtime.email}"
 }
 
+# The signing certificate, when one is configured.
+data "google_secret_manager_secret" "signing_cert" {
+  for_each  = toset(compact([var.signing_certificate_secret, var.signing_certificate_passphrase_secret]))
+  secret_id = each.value
+}
+
+resource "google_secret_manager_secret_iam_member" "agpl_runtime_signing_cert" {
+  for_each  = data.google_secret_manager_secret.signing_cert
+  secret_id = each.value.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.agpl_runtime.email}"
+}
+
 # Scentic's own runtime must read the two HMAC secrets — they are one shared
 # value each, held by both sides of the boundary.
 resource "google_secret_manager_secret_iam_member" "scentic_runtime_hmac" {
