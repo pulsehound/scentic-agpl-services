@@ -176,7 +176,22 @@ resource "google_cloud_run_v2_service" "opensign_server" {
     service_account = google_service_account.agpl_runtime.email
 
     scaling {
-      min_instance_count = 1
+      # Scale to zero when idle.
+      #
+      # Holding one instance warm bills for a whole vCPU and its memory every
+      # second of the month whether a request arrives or not. Across the four
+      # services here that was roughly $213 of a $282 monthly bill — spent
+      # waiting for traffic that, on a staging deployment used by a handful of
+      # people, mostly does not come.
+      #
+      # The cost of zero is a cold start on the first request after an idle
+      # period: a few seconds for the gateway, longer for the OpenSign backend,
+      # which is a 1.4 GB image. That is paid by whoever sends a document for
+      # signature after a quiet afternoon, and it is worth it here.
+      #
+      # A production deployment with people waiting on it should reconsider
+      # this. The number is small and the reasoning is not universal.
+      min_instance_count = 0
       max_instance_count = 3
     }
 
@@ -338,7 +353,22 @@ resource "google_cloud_run_v2_service" "opensign" {
     service_account = google_service_account.agpl_runtime.email
 
     scaling {
-      min_instance_count = 1
+      # Scale to zero when idle.
+      #
+      # Holding one instance warm bills for a whole vCPU and its memory every
+      # second of the month whether a request arrives or not. Across the four
+      # services here that was roughly $213 of a $282 monthly bill — spent
+      # waiting for traffic that, on a staging deployment used by a handful of
+      # people, mostly does not come.
+      #
+      # The cost of zero is a cold start on the first request after an idle
+      # period: a few seconds for the gateway, longer for the OpenSign backend,
+      # which is a 1.4 GB image. That is paid by whoever sends a document for
+      # signature after a quiet afternoon, and it is worth it here.
+      #
+      # A production deployment with people waiting on it should reconsider
+      # this. The number is small and the reasoning is not universal.
+      min_instance_count = 0
       max_instance_count = 3
     }
 
@@ -422,7 +452,22 @@ resource "google_cloud_run_v2_service" "gateway" {
     service_account = google_service_account.agpl_runtime.email
 
     scaling {
-      min_instance_count = 1
+      # Scale to zero when idle.
+      #
+      # Holding one instance warm bills for a whole vCPU and its memory every
+      # second of the month whether a request arrives or not. Across the four
+      # services here that was roughly $213 of a $282 monthly bill — spent
+      # waiting for traffic that, on a staging deployment used by a handful of
+      # people, mostly does not come.
+      #
+      # The cost of zero is a cold start on the first request after an idle
+      # period: a few seconds for the gateway, longer for the OpenSign backend,
+      # which is a 1.4 GB image. That is paid by whoever sends a document for
+      # signature after a quiet afternoon, and it is worth it here.
+      #
+      # A production deployment with people waiting on it should reconsider
+      # this. The number is small and the reasoning is not universal.
+      min_instance_count = 0
       max_instance_count = 3
     }
 
