@@ -404,22 +404,53 @@ export class OpenSignClient {
    * no account and no relationship with the software, and it should read as a
    * message from the firm rather than from a product.
    */
-  async sendSigningInvitation(params: {
-    docId: string;
-    documentName: string;
-    recipientEmail: string;
-    recipientName: string;
-    contactId: string;
-    senderName: string;
-    extUserId: string;
-    publicUrl: string;
-  }): Promise<OpenSignResult<unknown>> {
+  async sendSigningInvitation(params: SigningMailParams): Promise<OpenSignResult<unknown>> {
+    return this.sendSigningMail(params, 'invitation');
+  }
+
+  /**
+   * Ask again.
+   *
+   * The same message with different wording and the same link — because that is
+   * what a reminder is, and re-issuing the link would invalidate the one already
+   * sitting in their inbox.
+   *
+   * This used to refuse. The note said manual reminders would mean calling
+   * sendmailv3 directly and that this was not a stable API, but the invitation
+   * above already calls sendmailv3 directly and has been delivering mail in
+   * production since it was written. The refusal was costing the firm the one
+   * thing it most often needs to do with an unsigned document.
+   *
+   * Not to be confused with OpenSign's own AutomaticReminders, which are set
+   * per document at creation and cannot be aimed at one person or stopped
+   * afterwards. Scentic decides who is chased and when; this only delivers.
+   */
+  async sendSigningReminder(params: SigningMailParams): Promise<OpenSignResult<unknown>> {
+    return this.sendSigningMail(params, 'reminder');
+  }
+
+  private async sendSigningMail(
+    params: SigningMailParams,
+    kind: 'invitation' | 'reminder',
+  ): Promise<OpenSignResult<unknown>> {
     const link = signingUrlFor(params.publicUrl, params.docId, params.recipientEmail, params.contactId);
     const safe = (value: string) =>
       value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-    const html = `<p>Hello ${safe(params.recipientName)},</p>` +
-      `<p>${safe(params.senderName)} has sent you a document to sign: <strong>${safe(params.documentName)}</strong>.</p>` +
+    // Plain, and deliberately. This arrives at a counterparty with no account
+    // and no relationship with the software; it should read as a message from
+    // the firm rather than from a product. A reminder says it is one — a second
+    // identical email reads as a system fault, and the recipient who already
+    // signed something else that week will assume it is one.
+    const opening =
+      kind === 'invitation'
+        ? `<p>${safe(params.senderName)} has sent you a document to sign: <strong>${safe(params.documentName)}</strong>.</p>`
+        : `<p>${safe(params.senderName)} is still waiting on your signature for <strong>${safe(params.documentName)}</strong>.</p>` +
+          `<p>If you have already signed it, nothing further is needed and you can ignore this.</p>`;
+
+    const html =
+      `<p>Hello ${safe(params.recipientName)},</p>` +
+      opening +
       `<p><a href="${safe(link)}">Open the document to review and sign it</a></p>` +
       `<p>If the link does not open, copy this address into your browser:<br>${safe(link)}</p>`;
 
@@ -428,7 +459,10 @@ export class OpenSignClient {
       {
         extUserId: params.extUserId,
         recipient: params.recipientEmail,
-        subject: `${params.documentName} — signature requested`,
+        subject:
+          kind === 'invitation'
+            ? `${params.documentName} — signature requested`
+            : `Reminder: ${params.documentName} — signature requested`,
         from: params.senderName,
         html,
       },
@@ -450,8 +484,10 @@ export class OpenSignClient {
 
   // ── Unsupported operations ────────────────────────────────────────────
   // OpenSign has no native "void/cancel" API. Decline is the closest.
-  // OpenSign has no native "send reminder" API. Automatic reminders are configured per-doc.
   // OpenSign has no native "delegate signer" API via Cloud Functions.
+  //
+  // Reminders were listed here and are not unsupported: see sendSigningReminder
+  // above, which sends the same mail as the invitation with different wording.
 
   async cancelDocument(docId: string, userId: string, reason: string): Promise<OpenSignResult<boolean>> {
     // OpenSign does not have a "void" or "cancel" function.
@@ -460,12 +496,6 @@ export class OpenSignClient {
     return this.declineDocument({ docId, userId, reason });
   }
 
-  async sendReminder(_docId: string, _signerEmail: string): Promise<OpenSignResult<boolean>> {
-    // OpenSign has no dedicated "send reminder" Cloud Function.
-    // Automatic reminders are configured per-document via `AutomaticReminders` + `RemindOnceInEvery`.
-    // Manual reminders would require calling `sendmailv3` directly, which is not a stable API.
-    return { success: false, error: { code: 'NOT_SUPPORTED', message: 'OpenSign does not support manual reminders via API. Automatic reminders are configured per-document.' } };
-  }
 }
 
 /**
@@ -516,6 +546,18 @@ export function storageSafeFilename(original: string): string {
  * signer on the document; without it the link identifies a document and an
  * address and OpenSign cannot tell which placeholder is being signed.
  */
+/** What both the invitation and the reminder need in order to be sent. */
+export interface SigningMailParams {
+  docId: string;
+  documentName: string;
+  recipientEmail: string;
+  recipientName: string;
+  contactId: string;
+  senderName: string;
+  extUserId: string;
+  publicUrl: string;
+}
+
 export function signingUrlFor(publicUrl: string, docId: string, email: string, contactId: string): string {
   const token = Buffer.from(`${docId}/${email}/${contactId}`).toString('base64');
   return `${publicUrl.replace(/\/+$/, '')}/login/${token}`;

@@ -27,6 +27,12 @@ export interface OpenSignDocument {
   ExpiryDate?: string;
   TimeToCompleteDays?: number;
   Signers: OpenSignSignerRef[];
+  /**
+   * Who sent it. Present on the document OpenSign returns, and the correct
+   * source for a later reminder — a reminder should come from whoever sent the
+   * invitation, not from whichever user happened to be looked up at the time.
+   */
+  ExtUserPtr?: OpenSignSignerRef;
   Placeholders: OpenSignPlaceholder[];
   AuditTrail: OpenSignAuditEntry[];
   createdAt: string;
@@ -60,6 +66,24 @@ export interface OpenSignAuditEntry {
   SignedOn?: string;
   ViewedOn?: string;
   Signature?: string;
+}
+
+/**
+ * What Scentic needs to know about one recipient, per status check.
+ *
+ * The email is what makes any of it usable: an audit entry names its signer by
+ * an internal object id, so a status response without an address is a list of
+ * events with nobody attached to them.
+ *
+ * The address they acted from is evidence. If receipt of a document is ever
+ * disputed, "opened from 82.x.x.x at 14:02" is the record that answers it.
+ */
+export interface OpenSignSignerStatus {
+  email?: string;
+  status: string;
+  signedAt?: string;
+  viewedAt?: string;
+  ipAddress?: string;
 }
 
 export interface OpenSignContact {

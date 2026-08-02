@@ -72,7 +72,7 @@ describe('OpenSign client / health / error wrapping / unsupported — tests F–
   });
 
   // I. Unsupported operation returns NOT_SUPPORTED
-  it('I: sendReminder via service returns NOT_SUPPORTED', async () => {
+  it('I: sendReminder sends the invitation again, with reminder wording', async () => {
     // Set up a firm + workflow so the mapping exists (sendReminder checks the mapping first).
     await t.opensignService!.initFirm({ scenticFirmId: FIRM1, firmName: 'Acme Law' }, 'corr');
     const wf = await t.opensignService!.createWorkflow(
@@ -92,11 +92,53 @@ describe('OpenSign client / health / error wrapping / unsupported — tests F–
     );
     expect(wf.success).toBe(true);
 
-    const r = await t.opensignService!.sendReminder(FIRM1, 'wf-1', [USER1], 'corr');
-    expect(r.success).toBe(false);
-    if (!r.success) {
-      expect(r.error.code).toBe('NOT_SUPPORTED');
-      expect(r.error.statusCode).toBe(501);
-    }
+    // Addresses, not internal ids: the caller knows who it invited by the
+    // address it invited them at, and has no visibility of OpenSign's object
+    // ids.
+    const r = await t.opensignService!.sendReminder(
+      FIRM1,
+      'wf-1',
+      ['signer@example.com'],
+      'Acme Law',
+      'corr',
+    );
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.remindedCount).toBe(1);
+  });
+
+  it('I2: sendReminder chases nobody who has already signed', async () => {
+    // The property that matters. A reminder to somebody who has signed reads as
+    // "your signature did not register", which is worse than no reminder at all.
+    await t.opensignService!.initFirm({ scenticFirmId: FIRM1, firmName: 'Acme Law' }, 'corr');
+    const wf = await t.opensignService!.createWorkflow(
+      {
+        scenticFirmId: FIRM1,
+        scenticSignatureWorkflowId: 'wf-signed',
+        scenticMatterId: 'matter-1',
+        scenticDocumentId: 'doc-1',
+        scenticDocumentVersionId: 'v-1',
+        scenticPhysicalFileId: 'pf-1',
+        documentName: 'contract.pdf',
+        documentBase64: 'dGVzdA==',
+        signers: [
+          { scenticSignerId: USER1, email: 'signer@example.com', name: 'Signer One', role: 'signer', order: 1 },
+        ],
+        sendNow: true,
+      },
+      'corr',
+    );
+    expect(wf.success).toBe(true);
+
+    t.opensignClient!.recordActivity('signer@example.com', 'Signed', '203.0.113.9');
+
+    const r = await t.opensignService!.sendReminder(
+      FIRM1,
+      'wf-signed',
+      [],
+      'Acme Law',
+      'corr',
+    );
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.remindedCount).toBe(0);
   });
 });

@@ -213,19 +213,32 @@ describe('Signature API (firm filtering, idempotency, events) — tests O–X', 
     expect(res.body.data.certificateReady).toBe(false);
   });
 
-  // X. Unsupported remind returns safe NOT_SUPPORTED
-  it('X: POST remind for an existing workflow returns NOT_SUPPORTED (OpenSign has no manual reminder API)', async () => {
+  // X. Remind sends, and says how many went.
+  it('X: POST remind chases the outstanding signers and reports the count', async () => {
     await setupFirm(t, FIRM1, 'Acme Law');
     await createWorkflow(t, FIRM1, 'wf-remind-x');
 
     const res = await signedRequest(t.app, {
       method: 'POST',
       path: `/api/v1/firms/${FIRM1}/signature/workflows/wf-remind-x/remind`,
-      bodyObj: { scenticSignerIds: [USER1] },
+      bodyObj: { signerEmails: [], senderName: 'Acme Law' },
       firmId: FIRM1,
       idempotencyKey: 'idem-X',
     });
-    expect(res.status).toBe(501);
-    expect(res.body.error.code).toBe('NOT_SUPPORTED');
+    expect(res.status).toBe(200);
+    expect(res.body.data.remindedCount).toBeGreaterThan(0);
+  });
+
+  it('X2: POST remind for an unknown workflow is not found', async () => {
+    await setupFirm(t, FIRM1, 'Acme Law');
+
+    const res = await signedRequest(t.app, {
+      method: 'POST',
+      path: `/api/v1/firms/${FIRM1}/signature/workflows/wf-does-not-exist/remind`,
+      bodyObj: { signerEmails: [] },
+      firmId: FIRM1,
+      idempotencyKey: 'idem-X2',
+    });
+    expect(res.status).toBe(404);
   });
 });

@@ -22,6 +22,7 @@ import type {
   OpenSignDocumentStatus,
   OpenSignHealthStatus,
   OpenSignResult,
+  OpenSignSignerStatus,
 } from './types.js';
 import { deriveDocumentStatus } from './types.js';
 import type {
@@ -50,6 +51,42 @@ export interface OpenSignServiceConfig {
 }
 
 type ServiceResult<T> = { success: true; data: T } | { success: false; error: GatewayError };
+
+/**
+ * Who did what to a document, and from where.
+ *
+ * OpenSign keeps these in two places that do not reference each other by
+ * anything a caller can use. The audit trail records the activity, the time and
+ * the originating address, but names its subject by an internal object id. The
+ * placeholders carry the email address. Joining them here is the only way a
+ * status response can say "jane@example.com opened it on Tuesday" rather than
+ * "somebody did something".
+ *
+ * That join is why the status endpoint used to be useless: it returned an
+ * activity and a timestamp with no address, so Scentic matched none of it to a
+ * recipient and reported that nothing had changed no matter what had.
+ *
+ * Entries the placeholders cannot explain are still returned, without an email.
+ * Dropping them would silently hide activity by a signer added outside this
+ * integration, which is exactly the thing somebody checking a status wants to
+ * know about.
+ */
+export function signerStatusesFrom(doc: OpenSignDocument): OpenSignSignerStatus[] {
+  const emailByObjectId = new Map<string, string>();
+  for (const placeholder of doc.Placeholders || []) {
+    const objectId = placeholder.signerObjId ?? placeholder.signerPtr?.objectId;
+    const email = placeholder.email?.trim().toLowerCase();
+    if (objectId && email) emailByObjectId.set(objectId, email);
+  }
+
+  return (doc.AuditTrail || []).map((entry) => ({
+    email: entry.UserPtr?.objectId ? emailByObjectId.get(entry.UserPtr.objectId) : undefined,
+    status: entry.Activity,
+    signedAt: entry.SignedOn,
+    viewedAt: entry.ViewedOn,
+    ipAddress: entry.ipAddress,
+  }));
+}
 
 export class OpenSignService {
   constructor(
@@ -327,7 +364,7 @@ export class OpenSignService {
 
   // ── Get workflow status ───────────────────────────────────────────────
 
-  async getWorkflowStatus(scenticFirmId: string, scenticSignatureWorkflowId: string, correlationId: string): Promise<ServiceResult<{ status: OpenSignDocumentStatus; opensignDocumentId: string; signers: Array<{ status: string; signedAt?: string }> }>> {
+  async getWorkflowStatus(scenticFirmId: string, scenticSignatureWorkflowId: string, correlationId: string): Promise<ServiceResult<{ status: OpenSignDocumentStatus; opensignDocumentId: string; signers: OpenSignSignerStatus[] }>> {
     if (!this.config.enabled) {
       return { success: false, error: notSupported('OpenSign is not enabled') };
     }
@@ -362,11 +399,14 @@ export class OpenSignService {
       });
     }
 
-    // Extract signer statuses from audit trail
-    const signers = (doc.AuditTrail || []).map(entry => ({
-      status: entry.Activity,
-      signedAt: entry.SignedOn,
-    }));
+    // Extract signer statuses from the audit trail.
+    //
+    // The email comes from the placeholders, not the trail: an audit entry
+    // identifies its signer by an internal object id, and without resolving it
+    // the caller receives a list of things that happened with no way to say who
+    // they happened to. Scentic could not match a single entry to a recipient,
+    // so "check for updates" reported nothing had changed however much had.
+    const signers = signerStatusesFrom(doc);
 
     return { success: true, data: { status, opensignDocumentId: mapping.opensignDocumentId, signers } };
   }
@@ -446,7 +486,7 @@ export class OpenSignService {
 
   // ── Send reminder ─────────────────────────────────────────────────────
 
-  async sendReminder(scenticFirmId: string, scenticSignatureWorkflowId: string, _signerIds: string[], correlationId: string): Promise<ServiceResult<{ remindedCount: number }>> {
+  async sendReminder(scenticFirmId: string, scenticSignatureWorkflowId: string, signerEmails: string[], senderName: string, correlationId: string): Promise<ServiceResult<{ remindedCount: number }>> {
     if (!this.config.enabled) {
       return { success: false, error: notSupported('OpenSign is not enabled') };
     }
@@ -456,9 +496,95 @@ export class OpenSignService {
       return { success: false, error: notFound('Workflow not found') };
     }
 
-    // OpenSign does not support manual reminders via API.
-    // Automatic reminders are configured per-document.
-    return { success: false, error: notSupported('OpenSign does not support manual reminders via API. Automatic reminders are configured per-document.') };
+    const docResult = await this.client.getDocument(mapping.opensignDocumentId);
+    if (!docResult.success || !docResult.data) {
+      return { success: false, error: wrapUpstreamError('OpenSign', 'getDocument', docResult.error) };
+    }
+    const doc = docResult.data;
+
+    // Whoever the caller named, narrowed to people who can still act on it.
+    // Chasing somebody who has already signed tells them their signature did
+    // not register, which is worse than not chasing at all.
+    const wanted = new Set(signerEmails.map((email) => email.trim().toLowerCase()).filter(Boolean));
+    const done = new Set(
+      signerStatusesFrom(doc)
+        .filter((signer) => signer.status === 'Signed' || signer.status === 'Declined')
+        .map((signer) => signer.email)
+        .filter((email): email is string => Boolean(email)),
+    );
+
+    const recipients = (doc.Placeholders || [])
+      .map((placeholder) => ({
+        email: (placeholder.email ?? '').trim().toLowerCase(),
+        contactId: placeholder.signerObjId ?? placeholder.signerPtr?.objectId ?? '',
+        role: (placeholder.Role ?? 'signer').toLowerCase(),
+      }))
+      // A viewer or a prefill placeholder has nothing to sign, so there is
+      // nothing to remind them of.
+      .filter((r) => r.email && r.contactId && r.role !== 'viewer' && r.role !== 'prefill')
+      .filter((r) => !done.has(r.email))
+      .filter((r) => wanted.size === 0 || wanted.has(r.email));
+
+    if (recipients.length === 0) {
+      return { success: true, data: { remindedCount: 0 } };
+    }
+
+    // The sender of the document itself, so a reminder comes from whoever sent
+    // the invitation rather than from whichever user was looked up at the time.
+    const extUserId = doc.ExtUserPtr?.objectId ?? '';
+
+    // The firm's own name, from its tenant, unless the caller named one. Held
+    // here rather than sent on every call because a counterparty must not see
+    // two different names chasing them for the same document.
+    const firmMapping = await this.store.getOpenSignFirmMapping(scenticFirmId);
+    const from = senderName || firmMapping?.opensignTenantName || 'Your legal team';
+
+    let remindedCount = 0;
+    for (const recipient of recipients) {
+      const sent = await this.client.sendSigningReminder({
+        docId: mapping.opensignDocumentId,
+        documentName: doc.Name,
+        recipientEmail: recipient.email,
+        // OpenSign holds no display name on the placeholder, and the audit
+        // trail only names people who have already acted. The address is what
+        // is certainly known, and a greeting to an address reads better than a
+        // greeting to nobody.
+        recipientName: recipient.email,
+        contactId: recipient.contactId,
+        senderName: from,
+        extUserId,
+        publicUrl: this.config.publicUrl,
+      });
+
+      if (sent.success) {
+        remindedCount += 1;
+      } else {
+        // Recorded and carried on. One bad address must not stop the other
+        // three from being chased, and the count returned says how many
+        // actually went.
+        await this.outbox.publish({
+          eventType: 'OPENSIGN_SYNC_FAILED',
+          scenticFirmId,
+          correlationId,
+          payload: { operation: 'sendSigningReminder', scenticSignatureWorkflowId },
+          safeSummary: `OpenSign reminder could not be sent for workflow ${scenticSignatureWorkflowId}`,
+        });
+      }
+    }
+
+    await this.outbox.publish({
+      eventType: 'OPENSIGN_WORKFLOW_REMINDER_SENT',
+      scenticFirmId,
+      correlationId,
+      payload: {
+        scenticSignatureWorkflowId,
+        opensignDocumentId: mapping.opensignDocumentId,
+        remindedCount,
+      },
+      safeSummary: `Reminded ${remindedCount} signer(s) on workflow ${scenticSignatureWorkflowId}`,
+    });
+
+    return { success: true, data: { remindedCount } };
   }
 
   // ── Poll workflow ─────────────────────────────────────────────────────

@@ -76,7 +76,24 @@ export type MockKimaiClient = ReturnType<typeof makeMockKimaiClient>;
 
 // ─── Mock OpenSignClient ────────────────────────────────────────────────────
 
+interface FakeContact {
+  email: string;
+  contactId: string;
+}
+
+interface FakeActivity {
+  contactId: string;
+  activity: string;
+  at: string;
+  ipAddress?: string;
+}
+
 export function makeMockOpenSignClient(overrides: Record<string, ReturnType<typeof vi.fn>> = {}) {
+  // Per double, not per module: two harnesses in one file must not see each
+  // other's signers.
+  const contacts: FakeContact[] = [];
+  const audit: FakeActivity[] = [];
+
   const defaults = {
     setSessionToken: vi.fn(),
     getSessionToken: vi.fn(() => 'test-session-token'),
@@ -88,6 +105,11 @@ export function makeMockOpenSignClient(overrides: Record<string, ReturnType<type
     addUser: vi.fn(async () => ({ success: true, data: { objectId: 'user-new' } })),
     uploadFile: vi.fn(async () => ({ success: true, data: { url: 'http://opensign/files/test.pdf' } })),
     createDocument: vi.fn(async () => ({ success: true, data: { objectId: 'doc-new' } })),
+    // Stateful, because the behaviour under test is a join between two things
+    // OpenSign keeps separately: who is on the document (placeholders) and what
+    // has happened to it (the audit trail). A double that returns two empty
+    // arrays cannot exercise that join, so it would pass whatever the service
+    // did — including doing nothing.
     getDocument: vi.fn(async () => ({
       success: true,
       data: {
@@ -100,23 +122,50 @@ export function makeMockOpenSignClient(overrides: Record<string, ReturnType<type
         IsDeclined: false,
         IsArchive: false,
         Signers: [],
-        Placeholders: [],
-        AuditTrail: [],
+        ExtUserPtr: { objectId: 'user-1', __type: 'Pointer', className: '_User' },
+        Placeholders: contacts.map((contact) => ({
+          Role: 'signer',
+          email: contact.email,
+          signerObjId: contact.contactId,
+        })),
+        AuditTrail: audit.map((entry) => ({
+          UserPtr: { objectId: entry.contactId, __type: 'Pointer', className: 'contracts_Contactbook' },
+          Activity: entry.activity,
+          ipAddress: entry.ipAddress,
+          SignedOn: entry.activity === 'Signed' ? entry.at : undefined,
+          ViewedOn: entry.activity === 'Viewed' ? entry.at : undefined,
+        })),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       },
     })),
-    linkContactToDoc: vi.fn(async () => ({ success: true, data: { objectId: 'contact-1' } })),
+    linkContactToDoc: vi.fn(async (params: { email: string }) => {
+      const contactId = `contact-${contacts.length + 1}`;
+      contacts.push({ email: params.email.trim().toLowerCase(), contactId });
+      return { success: true, data: { objectId: contactId } };
+    }),
     // Sending the invitation is part of creating a workflow, so the double has
     // to answer it. Its absence is what these tests caught: the service called
     // a method the fake did not have, which is the same shape of fault as
     // calling a field the far side does not return.
     sendSigningInvitation: vi.fn(async () => ({ success: true, data: {} })),
+    sendSigningReminder: vi.fn(async () => ({ success: true, data: {} })),
     declineDocument: vi.fn(async () => ({ success: true, data: true })),
     getSignedUrl: vi.fn(async () => ({ success: true, data: { url: 'http://opensign/signed/test.pdf' } })),
     generateCertificate: vi.fn(async () => ({ success: true, data: { url: 'http://opensign/cert/test.pdf' } })),
     cancelDocument: vi.fn(async () => ({ success: true, data: true })),
-    sendReminder: vi.fn(async () => ({ success: false, error: { code: 'NOT_SUPPORTED', message: 'OpenSign does not support manual reminders via API.' } })),
+
+    /** Record that somebody acted on the document, as OpenSign would. */
+    recordActivity(email: string, activity: 'Viewed' | 'Signed' | 'Declined', ipAddress?: string) {
+      const contact = contacts.find((c) => c.email === email.trim().toLowerCase());
+      if (!contact) throw new Error(`no contact linked for ${email}`);
+      audit.push({
+        contactId: contact.contactId,
+        activity,
+        at: new Date().toISOString(),
+        ipAddress,
+      });
+    },
   };
   return { ...defaults, ...overrides };
 }

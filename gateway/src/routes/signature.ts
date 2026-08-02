@@ -137,7 +137,11 @@ export function createSignatureRouter(service: OpenSignService): Router {
       const result = await service.sendReminder(
         req.params.firmId,
         req.params.workflowId,
-        b.scenticSignerIds ?? [],
+        // Addresses, not internal ids. The caller knows who it wants chased by
+        // the address it sent the invitation to; it has no visibility of
+        // OpenSign's object ids and never should.
+        b.signerEmails ?? b.scenticSignerIds ?? [],
+        b.senderName ?? '',
         ctx?.correlationId ?? '',
       );
       if (!result.success) return next(result.error);

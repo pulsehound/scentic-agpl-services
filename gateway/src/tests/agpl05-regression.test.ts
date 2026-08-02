@@ -5,7 +5,7 @@
  * after the async refactoring and Postgres store addition.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { makeApp, signedRequest, type TestApp } from './helpers.js';
 
 describe('AGPL-05 regression — tests AM–AP', () => {
