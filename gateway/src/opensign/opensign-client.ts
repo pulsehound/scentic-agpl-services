@@ -290,6 +290,14 @@ export class OpenSignClient {
     sendinOrder?: boolean;
     isEnableOTP?: boolean;
     notifyOnSignatures?: boolean;
+    redirectUrl?: string;
+    /**
+     * The wording OpenSign uses when it, rather than the gateway, invites somebody — the next
+     * signer of a document signed in order. Variables in OpenSign's own syntax.
+     */
+    requestSubject?: string;
+    requestBody?: string;
+    senderName?: string;
   }): Promise<OpenSignResult<{ objectId: string }>> {
     const session = await this.ensureAdminSession();
     if (!session.success) return { success: false, error: session.error };
@@ -316,6 +324,9 @@ export class OpenSignClient {
         Placeholders: params.placeholders,
         TimeToCompleteDays: params.timeToCompleteDays ?? 15,
         SendinOrder: params.sendinOrder ?? false,
+        // Strict as well: in order means a later signer cannot sign first by finding the link.
+        SendInOrderStrict: params.sendinOrder ?? false,
+        ...(params.redirectUrl ? { RedirectUrl: params.redirectUrl } : {}),
         IsEnableOTP: params.isEnableOTP ?? false,
         NotifyOnSignatures: params.notifyOnSignatures ?? true,
         AutomaticReminders: true,
@@ -334,7 +345,12 @@ export class OpenSignClient {
     // and discarded inside linkContactToDoc — which then returns undefined
     // rather than failing. The two upstream functions cannot be used together
     // until one exists, so it is written here.
-    await this.setDocumentAcl(created.data!.objectId);
+    await this.setDocumentAcl(created.data!.objectId, {
+      // Not read by createDocumentFromApp, so set afterwards.
+      ...(params.requestSubject ? { RequestSubject: params.requestSubject } : {}),
+      ...(params.requestBody ? { RequestBody: params.requestBody } : {}),
+      ...(params.senderName ? { SenderName: params.senderName } : {}),
+    });
     return created;
   }
 
@@ -344,14 +360,43 @@ export class OpenSignClient {
    * Only the creator, at this point. linkContactToDoc widens it to each signer
    * as they are attached, which is what it was reaching for when it found null.
    */
-  private async setDocumentAcl(docId: string): Promise<void> {
-    if (!this.adminUserId) return;
+  private async setDocumentAcl(docId: string, extra: Record<string, unknown> = {}): Promise<void> {
+    if (!this.adminUserId) {
+      if (Object.keys(extra).length > 0) {
+        await this.restCall('PUT', `/classes/contracts_Document/${docId}`, extra, true);
+      }
+      return;
+    }
     await this.restCall(
       'PUT',
       `/classes/contracts_Document/${docId}`,
-      { ACL: { [this.adminUserId]: { read: true, write: true } } },
+      { ACL: { [this.adminUserId]: { read: true, write: true } }, ...extra },
       true,
     );
+  }
+
+  /**
+   * The bytes of one of a document's files — the signed PDF or the certificate.
+   *
+   * OpenSign serves stored files only through links signed for a few minutes, so a fresh one is
+   * asked for each time rather than the stored address being fetched.
+   */
+  async fetchDocumentFile(docId: string, storedUrl: string): Promise<OpenSignResult<Buffer>> {
+    const signed = await this.callFunction<string | { url?: string }>('getsignedurl', { docId, url: storedUrl }, true);
+    if (!signed.success) return { success: false, error: signed.error };
+    const url = typeof signed.data === 'string' ? signed.data : signed.data?.url;
+    if (!url) {
+      return { success: false, error: { code: 'OPENSIGN_API_ERROR', message: 'OpenSign gave no address for the file' } };
+    }
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        return { success: false, error: { code: 'OPENSIGN_API_ERROR', message: `OpenSign file fetch returned ${resp.status}` } };
+      }
+      return { success: true, data: Buffer.from(await resp.arrayBuffer()) };
+    } catch {
+      return { success: false, error: { code: 'OPENSIGN_UNREACHABLE', message: 'OpenSign file could not be fetched' } };
+    }
   }
 
   async getDocument(docId: string): Promise<OpenSignResult<OpenSignDocument>> {
@@ -434,35 +479,23 @@ export class OpenSignClient {
     kind: 'invitation' | 'reminder',
   ): Promise<OpenSignResult<unknown>> {
     const link = signingUrlFor(params.publicUrl, params.docId, params.recipientEmail, params.contactId);
-    const safe = (value: string) =>
-      value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-
-    // Plain, and deliberately. This arrives at a counterparty with no account
-    // and no relationship with the software; it should read as a message from
-    // the firm rather than from a product. A reminder says it is one — a second
-    // identical email reads as a system fault, and the recipient who already
-    // signed something else that week will assume it is one.
-    const opening =
-      kind === 'invitation'
-        ? `<p>${safe(params.senderName)} has sent you a document to sign: <strong>${safe(params.documentName)}</strong>.</p>`
-        : `<p>${safe(params.senderName)} is still waiting on your signature for <strong>${safe(params.documentName)}</strong>.</p>` +
-          `<p>If you have already signed it, nothing further is needed and you can ignore this.</p>`;
-
-    const html =
-      `<p>Hello ${safe(params.recipientName)},</p>` +
-      opening +
-      `<p><a href="${safe(link)}">Open the document to review and sign it</a></p>` +
-      `<p>If the link does not open, copy this address into your browser:<br>${safe(link)}</p>`;
+    const { subject, html } = signingMail({
+      kind,
+      senderName: params.senderName,
+      documentName: params.documentName,
+      recipientName: params.recipientName,
+      link,
+      subject: params.subject,
+      message: params.message,
+      expiresAt: params.expiresAt,
+    });
 
     return this.callFunction<unknown>(
       'sendmailv3',
       {
         extUserId: params.extUserId,
         recipient: params.recipientEmail,
-        subject:
-          kind === 'invitation'
-            ? `${params.documentName} — signature requested`
-            : `Reminder: ${params.documentName} — signature requested`,
+        subject,
         from: params.senderName,
         html,
       },
@@ -556,6 +589,68 @@ export interface SigningMailParams {
   senderName: string;
   extUserId: string;
   publicUrl: string;
+  /** The sender's own subject and note, where they wrote them. */
+  subject?: string;
+  message?: string;
+  /** When the request lapses, shown so the signer knows how long they have. */
+  expiresAt?: string;
+}
+
+const escapeHtml = (value: string) =>
+  value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/**
+ * The invitation or reminder a signer receives.
+ *
+ * Reads as a message from the firm: the firm's name at the top, the sender's own subject and note
+ * where they wrote one, the document's title, one button. A reminder says it is one — a second
+ * identical email reads as a system fault.
+ *
+ * `{{...}}` placeholders are OpenSign's own; with `link` left as `{{signing_url}}` and the name as
+ * `{{receiver_name}}` the same template serves as the wording OpenSign uses when it invites the
+ * next signer of a document signed in order.
+ */
+export function signingMail(params: {
+  kind: 'invitation' | 'reminder';
+  senderName: string;
+  documentName: string;
+  recipientName: string;
+  link: string;
+  subject?: string;
+  message?: string;
+  expiresAt?: string;
+}): { subject: string; html: string } {
+  const sender = escapeHtml(params.senderName);
+  const title = escapeHtml(params.documentName);
+  const baseSubject = params.subject?.trim() || `${params.documentName} — signature requested`;
+  const subject = params.kind === 'reminder' ? `Reminder: ${baseSubject}` : baseSubject;
+
+  const lead =
+    params.kind === 'invitation'
+      ? `${sender} has sent you a document to sign.`
+      : `${sender} is still waiting for your signature. If you have already signed, you can ignore this.`;
+  const note = params.message?.trim()
+    ? `<p style="margin:0 0 16px;padding:12px 14px;background:#f4f5f7;border-radius:6px;white-space:pre-line">${escapeHtml(params.message.trim())}</p>`
+    : '';
+  const expiry = params.expiresAt
+    ? `<p style="margin:16px 0 0;color:#5f6368;font-size:13px">Please sign by ${escapeHtml(params.expiresAt)}.</p>`
+    : '';
+  const link = escapeHtml(params.link);
+
+  const html =
+    `<div style="font-family:Segoe UI,Arial,sans-serif;color:#1f2329;max-width:560px;margin:0 auto">` +
+    `<p style="margin:0 0 20px;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:#5f6368">${sender}</p>` +
+    `<p style="margin:0 0 12px">Hello ${escapeHtml(params.recipientName)},</p>` +
+    `<p style="margin:0 0 16px">${lead}</p>` +
+    note +
+    `<p style="margin:0 0 4px;font-size:13px;color:#5f6368">Document</p>` +
+    `<p style="margin:0 0 20px;font-weight:600">${title}</p>` +
+    `<p style="margin:0 0 20px"><a href="${link}" style="display:inline-block;padding:11px 22px;background:#1a3d7c;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:600">Review and sign</a></p>` +
+    `<p style="margin:0;color:#5f6368;font-size:12px">If the button does not open, copy this address into your browser:<br><span style="word-break:break-all">${link}</span></p>` +
+    expiry +
+    `</div>`;
+
+  return { subject, html };
 }
 
 export function signingUrlFor(publicUrl: string, docId: string, email: string, contactId: string): string {

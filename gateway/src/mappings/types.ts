@@ -253,4 +253,17 @@ export interface CreateOpenSignWorkflowParams {
   /** The invitation wording, as the sender wrote it. */
   emailSubject?: string;
   emailMessage?: string;
+  /**
+   * The name signers read — the document's title. `documentName` is the stored file's name, which
+   * is what the invitation used to show: "SCT-00000242 – 10000007 – TAT – … – v.001.pdf".
+   */
+  documentTitle?: string;
+  /** Days the signers have. OpenSign closes the document after it. */
+  expiresInDays?: number;
+  /** One signer after another, each invited when the one before has signed. */
+  sendInOrder?: boolean;
+  /** Where a signer lands after finishing. */
+  redirectUrl?: string;
+  /** How the date of signing is written. */
+  dateFormat?: string;
 }

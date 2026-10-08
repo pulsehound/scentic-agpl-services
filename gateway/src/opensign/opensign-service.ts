@@ -12,7 +12,9 @@
  * - Raw OpenSign errors are wrapped safely
  */
 
-import { buildPlaceholders } from './placeholders.js';
+import { buildPlaceholders, dateFormatOrDefault } from './placeholders.js';
+import { signingMail } from './opensign-client.js';
+import { createHash as hashOf } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import type { OpenSignClient } from './opensign-client.js';
 import type { MappingStore } from '../mappings/mapping-store.js';
@@ -232,6 +234,17 @@ export class OpenSignService {
       return { success: false, error: notFound('OpenSign firm mapping not found. Initialize firm first.') };
     }
 
+    // The name signers read. The stored file's name is a fallback only.
+    const title = params.documentTitle?.trim() || params.documentName;
+    const expiresInDays = params.expiresInDays ?? 15;
+    const expiresAt = new Date(Date.now() + expiresInDays * 86_400_000).toLocaleDateString('en-GB', {
+      day: 'numeric', month: 'long', year: 'numeric',
+    });
+
+    // Signers in the order they act. With sendInOrder OpenSign invites each after the one before
+    // has signed, walking the placeholders in this order.
+    const signers = [...params.signers].sort((a, b) => a.order - b.order);
+
     // Upload document to OpenSign
     const uploadResult = await this.client.uploadFile(params.documentBase64, params.documentName);
     if (!uploadResult.success) {
@@ -245,8 +258,21 @@ export class OpenSignService {
       : { objectId: '', __type: 'Pointer', className: '_User' };
 
     // Create document in OpenSign
+    // The wording OpenSign uses for the next signer of a document signed in order, in its own
+    // variable syntax — the same template the gateway sends, so every signer reads the same mail.
+    const relay = signingMail({
+      kind: 'invitation',
+      senderName: params.senderName || 'Your legal team',
+      documentName: title,
+      recipientName: '{{receiver_name}}',
+      link: '{{signing_url}}',
+      subject: params.emailSubject,
+      message: params.emailMessage,
+      expiresAt,
+    });
+
     const docResult = await this.client.createDocument({
-      name: params.documentName,
+      name: title,
       url: uploadResult.data!.url,
       extUserPtr,
       signers: [],
@@ -255,11 +281,15 @@ export class OpenSignService {
       // placeholder exactly; a signer entered as "Name@Firm.com" finds no
       // placeholder, and the mismatch surfaces as OPERATION_FORBIDDEN
       // "unauthorized" rather than as anything to do with an address.
-      placeholders: buildPlaceholders(params.signers, params.fields ?? []),
-      timeToCompleteDays: 15,
-      sendinOrder: false,
+      placeholders: buildPlaceholders(signers, params.fields ?? [], Math.random, dateFormatOrDefault(params.dateFormat)),
+      timeToCompleteDays: expiresInDays,
+      sendinOrder: params.sendInOrder === true && signers.length > 1,
       isEnableOTP: false,
       notifyOnSignatures: true,
+      redirectUrl: params.redirectUrl || undefined,
+      requestSubject: relay.subject,
+      requestBody: relay.html,
+      senderName: params.senderName || undefined,
     });
 
     if (!docResult.success) {
@@ -268,8 +298,10 @@ export class OpenSignService {
 
     const opensignDocId = docResult.data!.objectId;
 
-    // Link signers to document
-    for (const signer of params.signers) {
+    // Link signers to document. In order, only the first is invited now; OpenSign invites each
+    // of the rest when the one before has signed.
+    const inOrder = params.sendInOrder === true && signers.length > 1;
+    for (const [position, signer] of signers.entries()) {
       const linkResult = await this.client.linkContactToDoc({
         docId: opensignDocId,
         email: signer.email.trim().toLowerCase(),
@@ -303,10 +335,13 @@ export class OpenSignService {
         // A failure here is recorded, not raised. The document is filed and the
         // signer is linked — the work is done and re-sending is a normal
         // action, so an unreachable mail provider must not undo it.
-        if (params.sendNow) {
+        if (params.sendNow && (!inOrder || position === 0)) {
           const invited = await this.client.sendSigningInvitation({
             docId: opensignDocId,
-            documentName: params.documentName,
+            documentName: title,
+            subject: params.emailSubject,
+            message: params.emailMessage,
+            expiresAt,
             recipientEmail: signer.email.trim().toLowerCase(),
             recipientName: signer.name,
             contactId: linkResult.data.objectId,
@@ -364,7 +399,7 @@ export class OpenSignService {
 
   // ── Get workflow status ───────────────────────────────────────────────
 
-  async getWorkflowStatus(scenticFirmId: string, scenticSignatureWorkflowId: string, correlationId: string): Promise<ServiceResult<{ status: OpenSignDocumentStatus; opensignDocumentId: string; signers: OpenSignSignerStatus[] }>> {
+  async getWorkflowStatus(scenticFirmId: string, scenticSignatureWorkflowId: string, correlationId: string): Promise<ServiceResult<{ status: OpenSignDocumentStatus; opensignDocumentId: string; signers: OpenSignSignerStatus[]; declineReason: string | null; expiresAt: string | null; completedPdfReady: boolean; certificateReady: boolean }>> {
     if (!this.config.enabled) {
       return { success: false, error: notSupported('OpenSign is not enabled') };
     }
@@ -408,7 +443,18 @@ export class OpenSignService {
     // so "check for updates" reported nothing had changed however much had.
     const signers = signerStatusesFrom(doc);
 
-    return { success: true, data: { status, opensignDocumentId: mapping.opensignDocumentId, signers } };
+    return {
+      success: true,
+      data: {
+        status,
+        opensignDocumentId: mapping.opensignDocumentId,
+        signers,
+        declineReason: doc.DeclineReason ?? null,
+        expiresAt: doc.ExpiryDate ? new Date(doc.ExpiryDate).toISOString() : null,
+        completedPdfReady: !!doc.SignedUrl && doc.IsCompleted,
+        certificateReady: !!doc.CertificateUrl,
+      },
+    };
   }
 
   // ── Send workflow ─────────────────────────────────────────────────────
@@ -751,6 +797,49 @@ export class OpenSignService {
         certificateReady: !!doc.CertificateUrl,
       },
     };
+  }
+
+  // ── Completed file ────────────────────────────────────────────────────
+
+  /**
+   * The executed PDF or the certificate of completion, as bytes.
+   *
+   * Asks OpenSign for the document rather than trusting the stored status: a document signed a
+   * minute ago has not been polled yet, and refusing to hand it over until a poll ran would make
+   * filing depend on timing.
+   */
+  async getCompletedFile(
+    scenticFirmId: string,
+    scenticSignatureWorkflowId: string,
+    kind: 'signed' | 'certificate',
+  ): Promise<ServiceResult<{ bytes: Buffer; sha256: string }>> {
+    if (!this.config.enabled) {
+      return { success: false, error: notSupported('OpenSign is not enabled') };
+    }
+    const mapping = await this.store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId);
+    if (!mapping || mapping.status !== 'ACTIVE') {
+      return { success: false, error: notFound('Workflow not found') };
+    }
+    const docResult = await this.client.getDocument(mapping.opensignDocumentId);
+    if (!docResult.success || !docResult.data) {
+      return { success: false, error: wrapUpstreamError('OpenSign', 'getDocument', docResult.error) };
+    }
+    const doc = docResult.data;
+    if (!doc.IsCompleted) {
+      return { success: false, error: conflict('The document has not been signed by everybody yet.') };
+    }
+    const stored = kind === 'signed' ? doc.SignedUrl : doc.CertificateUrl;
+    if (!stored) {
+      return { success: false, error: notFound(kind === 'signed' ? 'No signed document yet.' : 'No certificate yet.') };
+    }
+    const file = await this.client.fetchDocumentFile(mapping.opensignDocumentId, stored);
+    if (!file.success || !file.data) {
+      return { success: false, error: wrapUpstreamError('OpenSign', 'fetchDocumentFile', file.error) };
+    }
+    if (file.data.subarray(0, 5).toString('ascii') !== '%PDF-') {
+      return { success: false, error: wrapUpstreamError('OpenSign', 'fetchDocumentFile', { code: 'OPENSIGN_API_ERROR', message: 'Not a PDF' }) };
+    }
+    return { success: true, data: { bytes: file.data, sha256: hashOf('sha256').update(file.data).digest('hex') } };
   }
 
   // ── Disable firm ──────────────────────────────────────────────────────

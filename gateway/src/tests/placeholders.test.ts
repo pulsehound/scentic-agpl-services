@@ -64,13 +64,20 @@ describe('placeholdersForSigner', () => {
     expect(radio.type).toBe('radio button');
   });
 
-  it('gives a date the format and response OpenSign reads, as its editor does', () => {
-    const widget = placeholdersForSigner([field({ type: 'DATE' })])[0].pos[0] as { options: Record<string, unknown> };
+  it('makes a date the date of signing, which the signer cannot change', () => {
+    // "today" is OpenSign's own value: it stamps the day the signer finishes, in the format given.
+    const widget = placeholdersForSigner([field({ type: 'DATE' })], Math.random, 'dd/MM/yyyy')[0].pos[0] as { options: Record<string, unknown> };
     expect(widget.options).toMatchObject({
-      response: '',
-      isReadOnly: false,
-      validation: { format: 'MM/dd/yyyy', type: 'date-format' },
+      response: 'today',
+      isReadOnly: true,
+      validation: { format: 'dd/MM/yyyy', type: 'date-format' },
     });
+  });
+
+  it('titles fields readably, numbering repeats of the same kind', () => {
+    const names = placeholdersForSigner([field(), field({ type: 'DATE' }), field(), field({ label: 'Witness' })])[0]
+      .pos.map((w) => (w as { options: { name: string } }).options.name);
+    expect(names).toEqual(['Signature', 'Date signed', 'Signature 2', 'Witness']);
   });
 
   it('gives an email its validation, as the editor does', () => {

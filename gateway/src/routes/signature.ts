@@ -20,6 +20,12 @@ export function createSignatureRouter(service: OpenSignService): Router {
     } catch (err) { next(err); }
   });
 
+  // What the signing service does, in the provider-neutral vocabulary Scentic's settings read.
+  // Static: these are properties of this integration, not of a firm or a moment.
+  router.get('/api/v1/providers/capabilities', (_req, res) => {
+    res.json({ ok: true, data: SIGNATURE_CAPABILITIES });
+  });
+
   // Init firm for OpenSign
   router.post('/api/v1/firms/:firmId/signature/init', async (req, res, next) => {
     try {
@@ -79,6 +85,11 @@ export function createSignatureRouter(service: OpenSignService): Router {
         fields: Array.isArray(b.fields) ? b.fields : [],
         emailSubject: typeof b.emailSubject === 'string' ? b.emailSubject : '',
         emailMessage: typeof b.emailMessage === 'string' ? b.emailMessage : '',
+        documentTitle: typeof b.documentTitle === 'string' ? b.documentTitle : '',
+        expiresInDays: clampDays(b.expiresInDays),
+        sendInOrder: b.sendInOrder === true,
+        redirectUrl: httpsUrlOrEmpty(b.redirectUrl),
+        dateFormat: typeof b.dateFormat === 'string' ? b.dateFormat : '',
       }, ctx?.correlationId ?? '');
       if (!result.success) return next(result.error);
       res.json({ ok: true, data: result.data });
@@ -177,6 +188,23 @@ export function createSignatureRouter(service: OpenSignService): Router {
     } catch (err) { next(err); }
   });
 
+  // The executed PDF, or its certificate of completion, as bytes.
+  //
+  // Streamed rather than linked. The signing service's file links are signed for minutes and point
+  // at a host Scentic has no reason to trust with a client document's address; Scentic files these
+  // into the firm's own Drive and needs the bytes, not a pointer.
+  router.get('/api/v1/firms/:firmId/signature/workflows/:workflowId/completed/file', async (req, res, next) => {
+    try {
+      const kind = req.query.kind === 'certificate' ? 'certificate' : 'signed';
+      const result = await service.getCompletedFile(req.params.firmId, req.params.workflowId, kind);
+      if (!result.success) return next(result.error);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Length', String(result.data.bytes.length));
+      res.setHeader('X-Content-Sha256', result.data.sha256);
+      res.end(result.data.bytes);
+    } catch (err) { next(err); }
+  });
+
   // Poll all due workflows
   router.post('/api/v1/firms/:firmId/signature/poll-due', async (req, res, next) => {
     try {
@@ -191,6 +219,44 @@ export function createSignatureRouter(service: OpenSignService): Router {
   });
 
   return router;
+}
+
+/**
+ * What this integration supports. "emulated" means the gateway provides it on top of OpenSign
+ * rather than OpenSign providing it; "unsupported" is said rather than left out.
+ */
+export const SIGNATURE_CAPABILITIES = {
+  provider: 'opensign',
+  placedFields: 'supported',
+  dateSigned: 'supported',
+  sequentialSigning: 'supported',
+  parallelSigning: 'supported',
+  reminders: 'emulated',
+  expiry: 'supported',
+  decline: 'supported',
+  cancel: 'emulated',
+  completionCertificate: 'supported',
+  signedDocumentDownload: 'supported',
+  redirectAfterSigning: 'supported',
+  delegate: 'unsupported',
+  smsVerification: 'unsupported',
+  bulkSend: 'unsupported',
+} as const;
+
+/** Between one day and a year; anything else is the service's default. */
+export function clampDays(value: unknown): number | undefined {
+  const days = Math.round(Number(value));
+  return Number.isFinite(days) && days >= 1 ? Math.min(days, 365) : undefined;
+}
+
+/** An https address, or nothing — a signer is never redirected anywhere else. */
+export function httpsUrlOrEmpty(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  try {
+    return new URL(value).protocol === 'https:' ? value : '';
+  } catch {
+    return '';
+  }
 }
 
 /**

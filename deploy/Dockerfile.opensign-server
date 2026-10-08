@@ -23,7 +23,15 @@
 # the patch is the RUN line below, applied to the published upstream image, and
 # nothing else about the program is changed.
 
-FROM opensign/opensignserver:main
+# The upstream image this is built on. `main` is a moving tag, and it moved after the first
+# patched build (patched-1, from main as of 2026-06-30): rebuilding from today's main would change
+# OpenSign underneath a working deployment without anybody deciding to. Later patches are therefore
+# applied on top of the previous patched image, and every patch below is idempotent so the chain
+# also builds from upstream:
+#
+#   docker build --build-arg OPENSIGN_BASE=opensign/opensignserver:main ...
+ARG OPENSIGN_BASE=us-east1-docker.pkg.dev/causal-hour-502018-c8/scentic-agpl/opensign-server:patched-1
+FROM ${OPENSIGN_BASE}
 
 # The declaration keyword, and nothing else.
 #
@@ -41,3 +49,23 @@ RUN set -eu; \
       echo "an undeclared fileUrl assignment remains" >&2; \
       exit 1; \
     }
+
+# Signing emails carry the firm's name and nothing of a third party's.
+#
+# Upstream appends a line to every mail it sends — "If you think this email is inappropriate or
+# spam, you may file a complaint with OpenSign™" with a mailto to the upstream vendor — after
+# whatever HTML the caller supplied. A firm's counterparty has never heard of that vendor, and the
+# line invites them to report the firm's own legal correspondence to a stranger. The notice is not
+# a legal notice or an author attribution; removing it is a modification like the one above.
+RUN set -eu; \
+    for f in sendMailv3.js sendMailWithAttachment.js sendSystemMail.js; do \
+      p=/usr/src/app/cloud/parsefunction/$f; \
+      sed -i 's/ + reportMsg//' "$p"; \
+      ! grep -n '+ reportMsg' "$p" || { echo "complaint footer still appended in $f" >&2; exit 1; }; \
+    done
+
+# Where the file adapter writes, made to exist before a volume is mounted on it. Cloud Run mounts
+# the firm documents' bucket here (see deploy/terraform/services.tf): the container's own disk is
+# memory that disappears when the instance stops, which with scale-to-zero meant a document could
+# vanish between being sent and being opened.
+RUN mkdir -p /usr/src/app/files/files

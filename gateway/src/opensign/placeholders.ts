@@ -81,11 +81,19 @@ function widgetType(type: string): string {
  * renders, but the page then reads the format of a date or the validation of an email from
  * options that are not there.
  */
-function widgetOptions(type: string, name: string, required: boolean): Record<string, unknown> {
+function widgetOptions(
+  type: string,
+  name: string,
+  required: boolean,
+  dateFormat: string,
+): Record<string, unknown> {
   const base = { name, status: required ? 'required' : 'optional' };
   switch (type) {
     case 'date':
-      return { ...base, response: '', isReadOnly: false, validation: { format: 'MM/dd/yyyy', type: 'date-format' } };
+      // Scentic's date field is the date of signing, as DocuSign's "Date signed" is: OpenSign
+      // stamps "today" in the given format when the signer finishes, and a read-only field asks
+      // the signer for nothing. A date the signer picks would let them backdate the document.
+      return { ...base, response: 'today', isReadOnly: true, validation: { format: dateFormat, type: 'date-format' } };
     case 'email':
       return { ...base, defaultValue: '', validation: { type: 'email', pattern: '' } };
     case 'name':
@@ -120,6 +128,29 @@ export function placeholderId(random: () => number = Math.random): number {
   return 10_000_000 + Math.floor(random() * 90_000_000);
 }
 
+/** What the signer reads as the field's title in OpenSign's signing dialog. */
+const READABLE: Record<string, string> = {
+  signature: 'Signature',
+  initials: 'Initials',
+  stamp: 'Stamp',
+  date: 'Date signed',
+  name: 'Full name',
+  email: 'Email',
+  'job title': 'Job title',
+  company: 'Company',
+  'text input': 'Text',
+  checkbox: 'Checkbox',
+  'radio button': 'Choice',
+  dropdown: 'Choice',
+};
+
+/** The date formats OpenSign stamps. Anything else falls back to its default. */
+const DATE_FORMATS = new Set(['MM/dd/yyyy', 'dd/MM/yyyy', 'dd-MM-yyyy', 'dd.MM.yyyy', 'yyyy-MM-dd', 'MMMM dd, yyyy', 'dd MMM, yyyy']);
+
+export function dateFormatOrDefault(format: string | undefined): string {
+  return format && DATE_FORMATS.has(format) ? format : 'MM/dd/yyyy';
+}
+
 /**
  * Build the `placeHolder` array for one signer.
  *
@@ -129,8 +160,17 @@ export function placeholderId(random: () => number = Math.random): number {
 export function placeholdersForSigner(
   placements: FieldPlacement[],
   random: () => number = Math.random,
+  dateFormat = 'MM/dd/yyyy',
 ): Array<{ pageNumber: number; pos: Array<Record<string, unknown>> }> {
   const byPage = new Map<number, Array<Record<string, unknown>>>();
+  // A widget's name is its title in the signing dialog, and OpenSign shares one response between
+  // a signer's widgets of the same name — so names are readable and unique per signer.
+  const used = new Map<string, number>();
+  const nameFor = (base: string) => {
+    const seen = (used.get(base) ?? 0) + 1;
+    used.set(base, seen);
+    return seen === 1 ? base : `${base} ${seen}`;
+  };
 
   for (const [index, field] of placements.entries()) {
     const page = Math.max(1, Math.round(field.pageNumber));
@@ -150,7 +190,7 @@ export function placeholdersForSigner(
       isStamp: type === 'stamp',
       type,
       options: {
-        ...widgetOptions(type, `${type}-${index + 1}`, field.required),
+        ...widgetOptions(type, nameFor(field.label?.trim() || READABLE[type] || 'Field'), field.required, dateFormat),
         ...(field.label ? { hint: field.label } : {}),
         ...(field.options ?? {}),
       },
@@ -179,6 +219,7 @@ export function buildPlaceholders(
   signers: Array<{ email: string; role: string }>,
   fields: FieldPlacement[],
   random: () => number = Math.random,
+  dateFormat = 'MM/dd/yyyy',
 ): Array<Record<string, unknown>> {
   return signers.map((signer, index) => {
     const email = signer.email.trim().toLowerCase();
@@ -194,7 +235,7 @@ export function buildPlaceholders(
       // has no predefined fields and may place their own signature. That is the
       // behaviour every document had before placements existed, so it stays the
       // answer when none were drawn.
-      placeHolder: placeholdersForSigner(mine, random),
+      placeHolder: placeholdersForSigner(mine, random, dateFormat),
     };
   });
 }
