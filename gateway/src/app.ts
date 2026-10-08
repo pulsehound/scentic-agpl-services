@@ -37,8 +37,12 @@ export function createApp(deps: AppDeps): express.Application {
   const { config, kimaiService, opensignService, webhookDispatcher, mappingStore, upstreamSources } = deps;
   const app = express();
 
-  // Parse JSON bodies (limit to 10MB for document uploads in future)
-  app.use(express.json({ limit: '10mb' }));
+  // JSON bodies carry documents sent for signature, base64. Ten megabytes was about 7.5 MB of
+  // document — a scanned contract of forty pages — so a long agreement could not be sent at all.
+  // The platform in front refuses HTTP/1 requests over 32 MiB on its own; this limit sits above
+  // that so it is never the one that refuses, and can be raised by environment where the service
+  // runs HTTP/2 end to end and the platform's ceiling does not apply.
+  app.use(express.json({ limit: process.env.GATEWAY_JSON_LIMIT || '64mb' }));
 
   // Response headers
   app.use((req, res, next) => {
