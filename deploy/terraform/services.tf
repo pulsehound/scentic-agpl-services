@@ -590,8 +590,10 @@ resource "google_cloud_run_v2_service" "gateway" {
       # one OpenSign address that has to be publicly reachable — and pointing it
       # at the API base produces links that resolve to JSON.
       env {
-        name  = "OPENSIGN_PUBLIC_URL"
-        value = google_cloud_run_v2_service.opensign.uri
+        name = "OPENSIGN_PUBLIC_URL"
+        # The signing domain, served by deploy/cloudflare/sign-worker.js in front of the
+        # signing page. Set 2026-10-08; the service's own URL still works behind it.
+        value = "https://sign.scentic.com"
       }
       env {
         name = "OPENSIGN_MASTER_KEY"
