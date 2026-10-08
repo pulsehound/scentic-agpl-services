@@ -522,11 +522,23 @@ export class OpenSignClient {
   // Reminders were listed here and are not unsupported: see sendSigningReminder
   // above, which sends the same mail as the invitation with different wording.
 
-  async cancelDocument(docId: string, userId: string, reason: string): Promise<OpenSignResult<boolean>> {
-    // OpenSign does not have a "void" or "cancel" function.
-    // The closest is `declinedoc`, but that marks the document as declined by a user,
-    // not cancelled by the sender. We use it as the best available option.
-    return this.declineDocument({ docId, userId, reason });
+  /**
+   * Withdraw a document: archive it, which is how OpenSign's own sender revokes one.
+   *
+   * This used to call `declinedoc` with no user, which builds a pointer to an empty id; the save
+   * failed and every cancellation came back as an upstream error, so nothing could ever be
+   * cancelled. An archived document is refused to signers and reads as VOIDED in a status check;
+   * the sender's reason is kept on the document beside it.
+   */
+  async cancelDocument(docId: string, _userId: string, reason: string): Promise<OpenSignResult<boolean>> {
+    const result = await this.restCall<unknown>(
+      'PUT',
+      `/classes/contracts_Document/${docId}`,
+      { IsArchive: true, ...(reason ? { DeclineReason: reason.slice(0, 500) } : {}) },
+      true,
+    );
+    if (!result.success) return { success: false, error: result.error };
+    return { success: true, data: true };
   }
 
 }
