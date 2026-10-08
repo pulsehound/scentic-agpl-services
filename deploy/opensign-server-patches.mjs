@@ -45,6 +45,18 @@ edit(PDF, [
       "    `<p style='margin:0'>The signed copy is attached.</p></div></body></html>`;",
     'completion mail body',
   ],
+  [
+    // The name and contact written into every signature on a signed PDF ("Digitally signed by …"),
+    // which a reader sees in their PDF viewer's signature panel.
+    "const eSignName = 'OpenSign';",
+    "const eSignName = process.env.ESIGN_NAME || 'Scentic';",
+    'signature name',
+  ],
+  [
+    "const eSigncontact = 'hello@opensignlabs.com';",
+    "const eSigncontact = process.env.ESIGN_CONTACT || 'esign@scentic.com';",
+    'signature contact',
+  ],
 ]);
 
 const INDEX = '/usr/src/app/index.js';

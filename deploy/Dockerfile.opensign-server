@@ -72,6 +72,9 @@ RUN set -eu;     f=/usr/src/app/Utils.js;     sed -i "s/^export const appName = 
 COPY deploy/opensign-server-patches.mjs /tmp/opensign-server-patches.mjs
 RUN node /tmp/opensign-server-patches.mjs && rm /tmp/opensign-server-patches.mjs
 
+# The completion certificate's header logo: Scentic's, in place of the upstream vendor's.
+COPY deploy/opensign-assets/logo.png /usr/src/app/images/logo.png
+
 # Where the file adapter writes, made to exist before a volume is mounted on it. Cloud Run mounts
 # the firm documents' bucket here (see deploy/terraform/services.tf): the container's own disk is
 # memory that disappears when the instance stops, which with scale-to-zero meant a document could
