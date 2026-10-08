@@ -19,3 +19,11 @@ RUN set -eu; \
     grep -rl 'OpenSign™' --include='*.js' --include='*.html' . | xargs -r sed -i "s/OpenSign™/${PRODUCT_NAME}/g"; \
     ! grep -rq 'OpenSign™ DocumentId' . || { echo "page stamp still names OpenSign" >&2; exit 1; }; \
     grep -rq "${PRODUCT_NAME} DocumentId" . || { echo "page stamp not found — upstream changed shape" >&2; exit 1; }
+
+# The signer's tab read "Request signatures" — the sender's menu item — on the pages a signer
+# lands on. Those routes are titled "Sign".
+RUN set -eu; \
+    cd /usr/src/app/build/assets; \
+    f=$(grep -l '"/login/:base64url":`Request Signatures`' main-*.js); \
+    sed -i -E 's#("/(load/)?recipientSignPdf/[^"]*"|"/login/:base64url"):`Request Signatures`#\1:`Sign`#g' "$f"; \
+    ! grep -qE '"/(load/)?recipientSignPdf/[^"]*":`Request Signatures`' "$f" || { echo "signer title not patched" >&2; exit 1; }
