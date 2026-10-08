@@ -57,6 +57,14 @@ edit(PDF, [
     "const eSigncontact = process.env.ESIGN_CONTACT || 'esign@scentic.com';",
     'signature contact',
   ],
+  [
+    // The completed document reaches signers from Scentic, which attaches it when it can and sends
+    // a link when it cannot. OpenSign could only attach, and its mail server refuses anything over
+    // 10 MB, so a signer of a long agreement received nothing. Off unless SEND_COMPLETION_MAIL=true.
+    '  if (doc.IsSendMail === false) {\n    console.log("don\'t send mail");',
+    '  if (doc.IsSendMail === false || process.env.SEND_COMPLETION_MAIL !== \'true\') {\n    console.log("don\'t send mail");',
+    'completion mail off',
+  ],
 ]);
 
 const INDEX = '/usr/src/app/index.js';
