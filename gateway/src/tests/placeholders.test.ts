@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { placeholdersForSigner, buildPlaceholders } from '../opensign/placeholders.js';
+import { placeholdersForSigner, buildPlaceholders, placeholderId } from '../opensign/placeholders.js';
 
 const field = (over: Partial<Parameters<typeof placeholdersForSigner>[0][0]> = {}) => ({
   pageNumber: 1, x: 0.1, y: 0.2, width: 0.3, height: 0.05,
@@ -52,9 +52,41 @@ describe('placeholdersForSigner', () => {
     expect(sig.isStamp).toBe(false);
   });
 
-  it('falls back to text for a type OpenSign does not know', () => {
+  it('falls back to something the signer types for a type OpenSign does not know', () => {
+    // OpenSign's "text" is a fixed label the signer cannot fill; "text input" is what they type.
     const widget = placeholdersForSigner([field({ type: 'nonsense' })])[0].pos[0] as Record<string, unknown>;
-    expect(widget.type).toBe('text');
+    expect(widget.type).toBe('text input');
+  });
+
+  it("maps Scentic's TEXT and RADIO to OpenSign's signer-filled widgets", () => {
+    const [text, radio] = placeholdersForSigner([field({ type: 'TEXT' }), field({ type: 'RADIO' })])[0].pos as Array<Record<string, unknown>>;
+    expect(text.type).toBe('text input');
+    expect(radio.type).toBe('radio button');
+  });
+
+  it('gives a date the format and response OpenSign reads, as its editor does', () => {
+    const widget = placeholdersForSigner([field({ type: 'DATE' })])[0].pos[0] as { options: Record<string, unknown> };
+    expect(widget.options).toMatchObject({
+      response: '',
+      isReadOnly: false,
+      validation: { format: 'MM/dd/yyyy', type: 'date-format' },
+    });
+  });
+
+  it('gives an email its validation, as the editor does', () => {
+    const widget = placeholdersForSigner([field({ type: 'EMAIL' })])[0].pos[0] as { options: Record<string, unknown> };
+    expect(widget.options).toMatchObject({ defaultValue: '', validation: { type: 'email', pattern: '' } });
+  });
+
+  it('gives every widget a distinct key and name', () => {
+    let n = 0;
+    const random = () => ((n += 1) * 0.1) % 1;
+    const widgets = placeholdersForSigner(
+      [field(), field({ type: 'date' }), field(), field({ pageNumber: 2 })],
+      random,
+    ).flatMap((page) => page.pos) as Array<{ key: number; options: { name: string } }>;
+    expect(new Set(widgets.map((w) => w.key)).size).toBe(widgets.length);
+    expect(new Set(widgets.map((w) => w.options.name)).size).toBe(widgets.length);
   });
 
   it('accepts the enum spelling Scentic stores', () => {
@@ -104,8 +136,27 @@ describe('buildPlaceholders', () => {
     expect(built[1].placeHolder).toEqual([]);
   });
 
+  it('gives each signer the Id and colour OpenSign\'s signing page looks them up by', () => {
+    // Without an Id the signing page crashed for every signer: it finds the signer's placeholder
+    // with placeholders.filter((p) => p.Id === uniqueId)[0].
+    const built = buildPlaceholders(signers, [field({ signerEmail: 'first@example.com' })]);
+    for (const signer of built) {
+      expect(signer.Id).toEqual(expect.any(Number));
+      expect(String(signer.Id)).toMatch(/^\d{8}$/);
+      expect(signer.blockColor).toMatch(/^#[0-9a-f]{6}$/);
+    }
+    expect(built[0].blockColor).not.toBe(built[1].blockColor);
+  });
+
   it('ignores a field addressed to nobody on the document', () => {
     const built = buildPlaceholders(signers, [field({ signerEmail: 'stranger@example.com' })]);
     expect(built.every((p) => (p.placeHolder as unknown[]).length === 0)).toBe(true);
+  });
+});
+
+describe('placeholderId', () => {
+  it('is always eight digits, as the editor makes them', () => {
+    expect(placeholderId(() => 0)).toBe(10_000_000);
+    expect(String(placeholderId(() => 0.999999999))).toMatch(/^\d{8}$/);
   });
 });
