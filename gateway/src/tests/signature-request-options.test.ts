@@ -73,7 +73,7 @@ describe('request options', () => {
     // OpenSign writes the next signer's mail from these, in its own variable syntax.
     expect(created.requestBody).toContain('{{signing_url}}');
     expect(created.requestBody).toContain('Hello,');
-    expect(created.requestSubject).toBe('Share Purchase Agreement — signature requested');
+    expect(created.requestSubject).toBe('Please sign: Share Purchase Agreement');
   });
 
   it("carries the sender's subject, note, expiry and landing page", async () => {
@@ -167,7 +167,7 @@ describe('signingMail', () => {
 
   it("uses the sender's subject when there is one", () => {
     expect(signingMail({ ...base, kind: 'invitation', subject: 'Please sign' }).subject).toBe('Please sign');
-    expect(signingMail({ ...base, kind: 'invitation' }).subject).toBe('SPA <draft> — signature requested');
+    expect(signingMail({ ...base, kind: 'invitation' }).subject).toBe('Please sign: SPA <draft>');
   });
 
   it('greets plainly when the name is not known', () => {

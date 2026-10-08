@@ -68,6 +68,10 @@ RUN set -eu; \
 # email from OpenSign™" — is the firm's platform's, set by APP_NAME, Scentic unless told otherwise.
 RUN set -eu;     f=/usr/src/app/Utils.js;     sed -i "s/^export const appName = 'OpenSign™';/export const appName = process.env.APP_NAME || 'Scentic';/" "$f";     grep -q "export const appName = process.env.APP_NAME || 'Scentic';" "$f" || { echo "appName not patched" >&2; exit 1; }
 
+# The completion mail and the body-size limits: see opensign-server-patches.mjs.
+COPY deploy/opensign-server-patches.mjs /tmp/opensign-server-patches.mjs
+RUN node /tmp/opensign-server-patches.mjs && rm /tmp/opensign-server-patches.mjs
+
 # Where the file adapter writes, made to exist before a volume is mounted on it. Cloud Run mounts
 # the firm documents' bucket here (see deploy/terraform/services.tf): the container's own disk is
 # memory that disappears when the instance stops, which with scale-to-zero meant a document could

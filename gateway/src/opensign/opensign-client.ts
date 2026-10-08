@@ -634,33 +634,32 @@ export function signingMail(params: {
 }): { subject: string; html: string } {
   const sender = escapeHtml(params.senderName);
   const title = escapeHtml(params.documentName);
-  const baseSubject = params.subject?.trim() || `${params.documentName} — signature requested`;
-  const subject = params.kind === 'reminder' ? `Reminder: ${baseSubject}` : baseSubject;
+  const custom = params.subject?.trim();
+  const subject =
+    params.kind === 'reminder'
+      ? `Reminder: ${custom || params.documentName}`
+      : custom || `Please sign: ${params.documentName}`;
 
+  const greeting = params.recipientName.trim() ? `Hello ${escapeHtml(params.recipientName.trim())},` : 'Hello,';
   const lead =
     params.kind === 'invitation'
-      ? `${sender} has sent you a document to sign.`
-      : `${sender} is still waiting for your signature. If you have already signed, you can ignore this.`;
+      ? `${sender} sent you <strong>${title}</strong> to sign.`
+      : `<strong>${title}</strong> is still waiting for your signature.`;
   const note = params.message?.trim()
     ? `<p style="margin:0 0 16px;padding:12px 14px;background:#f4f5f7;border-radius:6px;white-space:pre-line">${escapeHtml(params.message.trim())}</p>`
     : '';
   const expiry = params.expiresAt
-    ? `<p style="margin:16px 0 0;color:#5f6368;font-size:13px">Please sign by ${escapeHtml(params.expiresAt)}.</p>`
+    ? `<p style="margin:16px 0 0;color:#5f6368;font-size:13px">Sign by ${escapeHtml(params.expiresAt)}.</p>`
     : '';
   const link = escapeHtml(params.link);
 
   const html =
     `<div style="font-family:Segoe UI,Arial,sans-serif;color:#1f2329;max-width:560px;margin:0 auto">` +
     `<p style="margin:0 0 20px;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:#5f6368">${sender}</p>` +
-    // A bare greeting when the name is not known: OpenSign has no name for the next signer of a
-    // document signed in order, and "Hello ," reads as a broken template.
-    `<p style="margin:0 0 12px">${params.recipientName.trim() ? `Hello ${escapeHtml(params.recipientName.trim())},` : 'Hello,'}</p>` +
+    `<p style="margin:0 0 12px">${greeting}</p>` +
     `<p style="margin:0 0 16px">${lead}</p>` +
     note +
-    `<p style="margin:0 0 4px;font-size:13px;color:#5f6368">Document</p>` +
-    `<p style="margin:0 0 20px;font-weight:600">${title}</p>` +
-    `<p style="margin:0 0 20px"><a href="${link}" style="display:inline-block;padding:11px 22px;background:#1a3d7c;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:600">Review and sign</a></p>` +
-    `<p style="margin:0;color:#5f6368;font-size:12px">If the button does not open, copy this address into your browser:<br><span style="word-break:break-all">${link}</span></p>` +
+    `<p style="margin:0"><a href="${link}" style="display:inline-block;padding:11px 22px;background:#1a3d7c;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:600">Review and sign</a></p>` +
     expiry +
     `</div>`;
 

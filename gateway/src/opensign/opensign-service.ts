@@ -239,7 +239,7 @@ export class OpenSignService {
     const title = params.documentTitle?.trim() || params.documentName;
     const expiresInDays = params.expiresInDays ?? 15;
     const expiresAt = new Date(Date.now() + expiresInDays * 86_400_000).toLocaleDateString('en-GB', {
-      day: 'numeric', month: 'long', year: 'numeric',
+      day: 'numeric', month: 'short', year: 'numeric',
     });
 
     // Signers in the order they act. With sendInOrder OpenSign invites each after the one before
@@ -297,7 +297,8 @@ export class OpenSignService {
       timeToCompleteDays: expiresInDays,
       sendinOrder: params.sendInOrder === true && signers.length > 1,
       isEnableOTP: false,
-      notifyOnSignatures: true,
+      // Scentic tells the firm; OpenSign would mail its own admin account for every signature.
+      notifyOnSignatures: false,
       redirectUrl: params.redirectUrl || undefined,
       requestSubject: relay.subject,
       requestBody: relay.html,
