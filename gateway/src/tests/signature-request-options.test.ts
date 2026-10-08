@@ -72,7 +72,7 @@ describe('request options', () => {
     expect(created.placeholders.map((p) => p.email)).toEqual(['first@example.com', 'second@example.com']);
     // OpenSign writes the next signer's mail from these, in its own variable syntax.
     expect(created.requestBody).toContain('{{signing_url}}');
-    expect(created.requestBody).toContain('{{receiver_name}}');
+    expect(created.requestBody).toContain('Hello,');
     expect(created.requestSubject).toBe('Share Purchase Agreement — signature requested');
   });
 
@@ -168,6 +168,10 @@ describe('signingMail', () => {
   it("uses the sender's subject when there is one", () => {
     expect(signingMail({ ...base, kind: 'invitation', subject: 'Please sign' }).subject).toBe('Please sign');
     expect(signingMail({ ...base, kind: 'invitation' }).subject).toBe('SPA <draft> — signature requested');
+  });
+
+  it('greets plainly when the name is not known', () => {
+    expect(signingMail({ ...base, recipientName: '', kind: 'invitation' }).html).toContain('>Hello,<');
   });
 
   it('says a reminder is one', () => {

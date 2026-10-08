@@ -275,7 +275,8 @@ export class OpenSignService {
       kind: 'invitation',
       senderName: params.senderName || 'Your legal team',
       documentName: title,
-      recipientName: '{{receiver_name}}',
+      // OpenSign fills {{receiver_name}} from a contact name it does not have for the next signer.
+      recipientName: '',
       link: '{{signing_url}}',
       subject: params.emailSubject,
       message: params.emailMessage,

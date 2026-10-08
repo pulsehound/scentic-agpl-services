@@ -1,0 +1,21 @@
+# OpenSign frontend — the signing page signers see — with the product name changed.
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Upstream stamps "OpenSign™ DocumentId: <id>" on the top of every page of a document once
+# somebody has signed it, and titles the signer's tab "… - OpenSign™". A client's executed
+# agreement then carries a third party's trademark on every page, and a counterparty sees a
+# product they have never heard of. The name is replaced in the built assets; nothing else about
+# the program changes. Being a modified AGPL work offered over a network, its source is this file
+# and the upstream image it names.
+#
+# Pinned to the digest that was running when this was written, so a rebuild changes only the name.
+ARG OPENSIGN_FRONTEND_BASE=mirror.gcr.io/opensign/opensign@sha256:4c62e38d9b9c5824f4dcc605b08b95a8fb25dce620a5fd122d76dfba2b9b2eb3
+FROM ${OPENSIGN_FRONTEND_BASE}
+
+ARG PRODUCT_NAME=Scentic
+RUN set -eu; \
+    cd /usr/src/app/build; \
+    grep -rl 'OpenSign™' --include='*.js' --include='*.html' . | xargs -r sed -i "s/OpenSign™/${PRODUCT_NAME}/g"; \
+    ! grep -rq 'OpenSign™ DocumentId' . || { echo "page stamp still names OpenSign" >&2; exit 1; }; \
+    grep -rq "${PRODUCT_NAME} DocumentId" . || { echo "page stamp not found — upstream changed shape" >&2; exit 1; }

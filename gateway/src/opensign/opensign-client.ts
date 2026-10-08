@@ -640,7 +640,9 @@ export function signingMail(params: {
   const html =
     `<div style="font-family:Segoe UI,Arial,sans-serif;color:#1f2329;max-width:560px;margin:0 auto">` +
     `<p style="margin:0 0 20px;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:#5f6368">${sender}</p>` +
-    `<p style="margin:0 0 12px">Hello ${escapeHtml(params.recipientName)},</p>` +
+    // A bare greeting when the name is not known: OpenSign has no name for the next signer of a
+    // document signed in order, and "Hello ," reads as a broken template.
+    `<p style="margin:0 0 12px">${params.recipientName.trim() ? `Hello ${escapeHtml(params.recipientName.trim())},` : 'Hello,'}</p>` +
     `<p style="margin:0 0 16px">${lead}</p>` +
     note +
     `<p style="margin:0 0 4px;font-size:13px;color:#5f6368">Document</p>` +
