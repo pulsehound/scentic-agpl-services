@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { makeApp, makeMockOpenSignClient, type TestApp } from './helpers.js';
 import { signingMail } from '../opensign/opensign-client.js';
 import { clampDays, httpsUrlOrEmpty, SIGNATURE_CAPABILITIES } from '../routes/signature.js';
+import { parseDate, deriveDocumentStatus } from '../opensign/types.js';
 
 const FIRM = 'firm-options-1';
 
@@ -101,6 +102,30 @@ describe('request options', () => {
     expect(invited.expiresAt).toMatch(/\d{4}$/);
   });
 
+  it('leaves viewers out of the signing, so they neither get a sign request nor hold up completion', async () => {
+    await t.opensignService!.createWorkflow(
+      request({
+        signers: [
+          { scenticSignerId: 'a', email: 'first@example.com', name: 'First', role: 'signer', order: 1 },
+          { scenticSignerId: 'v', email: 'copy@example.com', name: 'Copy', role: 'viewer', order: 1 },
+        ],
+      }),
+      'corr',
+    );
+    const created = t.opensignClient!.createDocument.mock.calls[0][0] as { placeholders: Array<{ email: string }> };
+    expect(created.placeholders.map((p) => p.email)).toEqual(['first@example.com']);
+    expect(t.opensignClient!.sendSigningInvitation).toHaveBeenCalledTimes(1);
+    expect(t.opensignClient!.linkContactToDoc).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a request with only viewers', async () => {
+    const result = await t.opensignService!.createWorkflow(
+      request({ signers: [{ scenticSignerId: 'v', email: 'copy@example.com', name: 'Copy', role: 'viewer', order: 1 }] }),
+      'corr',
+    );
+    expect(result.success).toBe(false);
+  });
+
   it('hands over the signed PDF as bytes once everybody has signed', async () => {
     const pdf = Buffer.from('%PDF-1.7 signed');
     t.opensignClient!.getDocument.mockResolvedValueOnce({
@@ -176,5 +201,31 @@ describe('route helpers', () => {
 
   it('states what is unsupported rather than leaving it out', () => {
     expect(SIGNATURE_CAPABILITIES.delegate).toBe('unsupported');
+  });
+});
+
+describe('Parse dates', () => {
+  it('reads the {__type, iso} form a document comes back with', () => {
+    expect(parseDate({ __type: 'Date', iso: '2026-10-23T10:00:00.000Z' })?.toISOString()).toBe('2026-10-23T10:00:00.000Z');
+    expect(parseDate('2026-10-23T10:00:00.000Z')?.toISOString()).toBe('2026-10-23T10:00:00.000Z');
+    expect(parseDate({ __type: 'Date' })).toBeNull();
+    expect(parseDate('nonsense')).toBeNull();
+  });
+
+  it('sees a lapsed request as expired', () => {
+    const doc = { IsCompleted: false, IsDeclined: false, IsArchive: false, ExpiryDate: { __type: 'Date', iso: '2020-01-01T00:00:00.000Z' } };
+    expect(deriveDocumentStatus(doc)).toBe('EXPIRED');
+  });
+
+  it('reports the expiry in a status without throwing', async () => {
+    const t = makeApp({ opensignClient: makeMockOpenSignClient() });
+    await t.opensignService!.initFirm({ scenticFirmId: FIRM, firmName: 'Udi' }, 'corr');
+    await t.opensignService!.createWorkflow(request(), 'corr');
+    t.opensignClient!.getDocument.mockResolvedValueOnce({
+      success: true,
+      data: { objectId: 'doc-new', IsCompleted: false, IsDeclined: false, IsArchive: false, ExpiryDate: { __type: 'Date', iso: '2099-10-23T10:00:00.000Z' }, Placeholders: [], AuditTrail: [] },
+    } as never);
+    const status = await t.opensignService!.getWorkflowStatus(FIRM, 'wf-options', 'corr');
+    expect(status.success && status.data.expiresAt).toBe('2099-10-23T10:00:00.000Z');
   });
 });

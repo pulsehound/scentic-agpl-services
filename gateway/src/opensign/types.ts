@@ -24,7 +24,7 @@ export interface OpenSignDocument {
   IsDeclined: boolean;
   IsArchive: boolean;
   DeclineReason?: string;
-  ExpiryDate?: string;
+  ExpiryDate?: ParseDateValue;
   TimeToCompleteDays?: number;
   Signers: OpenSignSignerRef[];
   /**
@@ -146,15 +146,28 @@ export function deriveDocumentStatus(doc: {
   IsDeclined: boolean;
   IsArchive: boolean;
   SignedUrl?: string;
-  ExpiryDate?: string;
+  ExpiryDate?: ParseDateValue;
 }): OpenSignDocumentStatus {
   if (doc.IsCompleted) return 'COMPLETED';
   if (doc.IsDeclined) return 'DECLINED';
   if (doc.IsArchive) return 'VOIDED';
-  if (doc.ExpiryDate) {
-    const expiry = new Date(doc.ExpiryDate);
-    if (expiry < new Date() && !doc.IsCompleted) return 'EXPIRED';
-  }
+  const expiry = parseDate(doc.ExpiryDate);
+  if (expiry && expiry < new Date() && !doc.IsCompleted) return 'EXPIRED';
   if (doc.SignedUrl) return 'IN_PROGRESS';
   return 'DRAFT';
+}
+
+/**
+ * A date as Parse stores it: `{ __type: 'Date', iso }` on a document read back, a string or a
+ * Date elsewhere. Read as a plain string it is "[object Object]", which made every expiry check
+ * compare against an invalid date and a status request throw "Invalid time value".
+ */
+export type ParseDateValue = string | Date | { __type?: string; iso?: string };
+
+export function parseDate(value: ParseDateValue | null | undefined): Date | null {
+  if (!value) return null;
+  const raw = typeof value === 'object' && !(value instanceof Date) ? value.iso : value;
+  if (!raw) return null;
+  const date = raw instanceof Date ? raw : new Date(raw);
+  return Number.isNaN(date.getTime()) ? null : date;
 }

@@ -13,6 +13,7 @@
  */
 
 import { buildPlaceholders, dateFormatOrDefault } from './placeholders.js';
+import { parseDate } from './types.js';
 import { signingMail } from './opensign-client.js';
 import { createHash as hashOf } from 'node:crypto';
 import { createHash } from 'node:crypto';
@@ -243,7 +244,17 @@ export class OpenSignService {
 
     // Signers in the order they act. With sendInOrder OpenSign invites each after the one before
     // has signed, walking the placeholders in this order.
-    const signers = [...params.signers].sort((a, b) => a.order - b.order);
+    //
+    // Viewers are left out. This edition of OpenSign counts every placeholder towards completion
+    // ("viewers excluded" is its enterprise edition), so a viewer on the document would be invited
+    // to sign and the document would never complete without their signature. A copy for a viewer
+    // is sent by Scentic once the document is signed.
+    const signers = [...params.signers]
+      .filter((s) => s.role.toLowerCase() !== 'viewer')
+      .sort((a, b) => a.order - b.order);
+    if (signers.length === 0) {
+      return { success: false, error: invalidInput('At least one recipient must sign or approve') };
+    }
 
     // Upload document to OpenSign
     const uploadResult = await this.client.uploadFile(params.documentBase64, params.documentName);
@@ -450,7 +461,7 @@ export class OpenSignService {
         opensignDocumentId: mapping.opensignDocumentId,
         signers,
         declineReason: doc.DeclineReason ?? null,
-        expiresAt: doc.ExpiryDate ? new Date(doc.ExpiryDate).toISOString() : null,
+        expiresAt: parseDate(doc.ExpiryDate)?.toISOString() ?? null,
         completedPdfReady: !!doc.SignedUrl && doc.IsCompleted,
         certificateReady: !!doc.CertificateUrl,
       },
