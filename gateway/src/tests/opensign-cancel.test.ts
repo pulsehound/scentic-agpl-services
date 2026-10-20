@@ -30,3 +30,18 @@ describe('cancelDocument', () => {
     expect((await client().cancelDocument('doc-1', '', 'x')).success).toBe(false);
   });
 });
+
+describe('getStatus', () => {
+  it('asks Parse Server’s health route — the mount path itself answers 404 on a healthy server', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ status: 'ok' }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await client().getStatus();
+    expect(result.success).toBe(true);
+    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe('http://opensign.test/app/health');
+  });
+
+  it('reports a server that is down as unreachable', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 503 })));
+    expect((await client().getStatus()).success).toBe(false);
+  });
+});

@@ -98,9 +98,12 @@ export class OpenSignClient {
 
   async getStatus(): Promise<OpenSignResult<OpenSignHealthStatus>> {
     try {
-      const resp = await fetch(`${this.config.baseUrl}/`, {
+      // Parse Server's own health route under its mount path. The mount path itself answers 404,
+      // so asking for it reported a running server as unreachable on every check.
+      const resp = await fetch(`${this.config.baseUrl}/health`, {
         method: 'GET',
         headers: this.headers(true),
+        signal: AbortSignal.timeout(20_000),
       });
       if (!resp.ok) {
         return { success: false, error: { code: 'OPENSIGN_UNREACHABLE', message: 'OpenSign server returned error status' } };
