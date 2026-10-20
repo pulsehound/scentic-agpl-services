@@ -102,6 +102,10 @@ describe('withSignatureRevoked', () => {
 
 // ── The service, against a fake OpenSign ────────────────────────────────
 
+/** The admin, the buyer's account and the witness's account; without the witness's. */
+const ACL_BEFORE = { 'u-admin': { read: true, write: true }, 'u-buyer': { read: true, write: true }, 'u-witness': { read: true, write: true } };
+const ACL_AFTER = { 'u-admin': { read: true, write: true }, 'u-buyer': { read: true, write: true } };
+
 function service(document: OpenSignDocument, overrides: Record<string, unknown> = {}) {
   const client = {
     getDocument: vi.fn(async () => ({ success: true, data: document })),
@@ -110,6 +114,7 @@ function service(document: OpenSignDocument, overrides: Record<string, unknown> 
     sendSigningInvitation: vi.fn(async () => ({ success: true })),
     uploadFile: vi.fn(async () => ({ success: true, data: { url: 'https://files/up.pdf' } })),
     createDocument: vi.fn(async () => ({ success: true, data: { objectId: 'doc-1' } })),
+    documentAccessWithout: vi.fn(async () => ({ success: true, data: { before: ACL_BEFORE, after: ACL_AFTER } })),
     ...overrides,
   };
   const store = {
@@ -149,6 +154,11 @@ describe('OpenSignService signer changes', () => {
     if (!result.success) throw new Error(result.error.message);
     expect(client.updateDocument).toHaveBeenCalledTimes(1);
     expect(client.linkContactToDoc).toHaveBeenCalledWith({ docId: 'doc-1', email: 'deputy@example.com', name: 'Dana Deputy' });
+    // The old signer's account loses its access in the same write that takes their place away.
+    expect(client.documentAccessWithout).toHaveBeenCalledWith('doc-1', 'c-witness');
+    const [, fields] = client.updateDocument.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    expect(fields.ACL).toEqual(ACL_AFTER);
+    expect(Object.keys(fields).sort()).toEqual(['ACL', 'Placeholders', 'Signers']);
     expect(result.data.signingUrl).toBe(signingUrlFor('https://sign.example.com', 'doc-1', 'deputy@example.com', 'c-deputy'));
   });
 
@@ -157,7 +167,15 @@ describe('OpenSignService signer changes', () => {
     const { svc, client } = service(original, { linkContactToDoc: vi.fn(async () => ({ success: false, error: { code: 'X', message: 'no' } })) });
     const result = await svc.replaceSigner('firm', 'wf', { fromEmail: 'witness@example.com', toEmail: 'deputy@example.com', toName: '' }, 'c1');
     expect(result.success).toBe(false);
-    expect(client.updateDocument).toHaveBeenLastCalledWith('doc-1', { Placeholders: original.Placeholders, Signers: original.Signers });
+    expect(client.updateDocument).toHaveBeenLastCalledWith('doc-1', { Placeholders: original.Placeholders, Signers: original.Signers, ACL: ACL_BEFORE });
+  });
+
+  it('changes nothing when the access list cannot be read', async () => {
+    const { svc, client } = service(doc(), { documentAccessWithout: vi.fn(async () => ({ success: false, error: { code: 'X', message: 'no' } })) });
+    const result = await svc.replaceSigner('firm', 'wf', { fromEmail: 'witness@example.com', toEmail: 'deputy@example.com', toName: '' }, 'c1');
+    expect(result.success).toBe(false);
+    expect(client.updateDocument).not.toHaveBeenCalled();
+    expect(client.linkContactToDoc).not.toHaveBeenCalled();
   });
 
   it('refuses any change once everybody has signed', async () => {
@@ -199,6 +217,18 @@ describe('Scentic delivering the messages', () => {
     const params = (client.createDocument.mock.calls[0] as unknown as [Record<string, unknown>])[0];
     expect(params.automaticReminders).toBe(false);
     expect(String(params.requestBody)).toContain(SCENTIC_DELIVERS_MARKER);
+  });
+
+  it('asks every signer for an emailed code before the document opens, naming the firm in it', async () => {
+    for (const scenticDelivers of [true, false]) {
+      const { svc, client } = service(doc());
+      const store = (svc as unknown as { store: { getOpenSignWorkflowMapping: ReturnType<typeof vi.fn> } }).store;
+      store.getOpenSignWorkflowMapping.mockResolvedValueOnce(null);
+      await create(svc, scenticDelivers);
+      const params = (client.createDocument.mock.calls[0] as unknown as [Record<string, unknown>])[0];
+      expect(params.isEnableOTP).toBe(true);
+      expect(params.firmName).toBe('Firm');
+    }
   });
 
   it('still invites the first signer itself when Scentic does not deliver', async () => {

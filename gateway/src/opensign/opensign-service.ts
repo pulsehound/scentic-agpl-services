@@ -17,7 +17,7 @@ import { parseDate } from './types.js';
 import { signingMail, signingUrlFor, SCENTIC_DELIVERS_TEMPLATE } from './opensign-client.js';
 import { createHash as hashOf } from 'node:crypto';
 import { createHash } from 'node:crypto';
-import type { OpenSignClient } from './opensign-client.js';
+import type { DocumentAcl, OpenSignClient } from './opensign-client.js';
 import type { MappingStore } from '../mappings/mapping-store.js';
 import type { EventOutbox } from '../events/outbox.js';
 import type {
@@ -300,7 +300,10 @@ export class OpenSignService {
       placeholders: buildPlaceholders(signers, params.fields ?? [], Math.random, dateFormatOrDefault(params.dateFormat)),
       timeToCompleteDays: expiresInDays,
       sendinOrder: params.sendInOrder === true && signers.length > 1,
-      isEnableOTP: false,
+      // Each signer enters a code emailed to them before the document opens: the id in a signing
+      // link alone shows nothing to a forwarded invitation or to somebody since replaced.
+      isEnableOTP: true,
+      firmName: firmMapping.opensignTenantName || undefined,
       // Scentic tells the firm; OpenSign would mail its own admin account for every signature.
       notifyOnSignatures: false,
       redirectUrl: params.redirectUrl || undefined,
@@ -926,14 +929,31 @@ export class OpenSignService {
     const next = withSignerReplaced(doc.data, change.fromEmail, change.toEmail);
     if (isChangeError(next)) return { success: false, error: next.code === 'NOT_A_SIGNER' ? notFound(next.message) : conflict(next.message) };
 
-    const saved = await this.client.updateDocument(doc.data.objectId, { Placeholders: next.placeholders, Signers: next.signers });
+    // The person replaced loses their access to the document in the same write that takes their
+    // place away: with codes on, a code to their own address would otherwise still open it.
+    let access: { before: DocumentAcl; after: DocumentAcl } | null = null;
+    if (next.oldContactId) {
+      const read = await this.client.documentAccessWithout(doc.data.objectId, next.oldContactId);
+      if (!read.success) return { success: false, error: wrapUpstreamError('OpenSign', 'documentAccessWithout', read.error) };
+      access = read.data!;
+    }
+
+    const saved = await this.client.updateDocument(doc.data.objectId, {
+      Placeholders: next.placeholders,
+      Signers: next.signers,
+      ...(access ? { ACL: access.after } : {}),
+    });
     if (!saved.success) return { success: false, error: wrapUpstreamError('OpenSign', 'updateDocument', saved.error) };
 
     const email = change.toEmail.trim().toLowerCase();
     const linked = await this.client.linkContactToDoc({ docId: doc.data.objectId, email, name: change.toName.trim() || email });
     if (!linked.success || !linked.data) {
       // Put the original signer back rather than leave a placeholder nobody can sign.
-      await this.client.updateDocument(doc.data.objectId, { Placeholders: doc.data.Placeholders, Signers: doc.data.Signers });
+      await this.client.updateDocument(doc.data.objectId, {
+        Placeholders: doc.data.Placeholders,
+        Signers: doc.data.Signers,
+        ...(access ? { ACL: access.before } : {}),
+      });
       return { success: false, error: wrapUpstreamError('OpenSign', 'linkContactToDoc', linked.error) };
     }
 

@@ -16,6 +16,9 @@ import { createHash } from 'node:crypto';
 import { wrapUpstreamError, notSupported } from '../http/errors.js';
 import type { OpenSignResult, OpenSignDocument, OpenSignHealthStatus, OpenSignContact, OpenSignTenant, OpenSignUser } from './types.js';
 
+/** A Parse ACL as REST reads and writes it: user id (or "*") to its permissions. */
+export type DocumentAcl = Record<string, { read?: boolean; write?: boolean }>;
+
 export interface OpenSignClientConfig {
   baseUrl: string;
   appId: string;
@@ -291,6 +294,11 @@ export class OpenSignClient {
     placeholders: unknown[];
     timeToCompleteDays?: number;
     sendinOrder?: boolean;
+    /**
+     * Signers open the document only after entering a code emailed to them. On unless a caller
+     * turns it off: without it OpenSign hands the document to anyone who has its id, and the id is
+     * in every signing link — a forwarded invitation, or the old link of somebody replaced.
+     */
     isEnableOTP?: boolean;
     notifyOnSignatures?: boolean;
     redirectUrl?: string;
@@ -301,6 +309,8 @@ export class OpenSignClient {
     requestSubject?: string;
     requestBody?: string;
     senderName?: string;
+    /** The firm the request comes from, named in the code email (deploy/opensign-server-files). */
+    firmName?: string;
     /** OpenSign's own reminder mail every few days. Off where Scentic chases signers itself. */
     automaticReminders?: boolean;
   }): Promise<OpenSignResult<{ objectId: string }>> {
@@ -332,7 +342,7 @@ export class OpenSignClient {
         // Strict as well: in order means a later signer cannot sign first by finding the link.
         SendInOrderStrict: params.sendinOrder ?? false,
         ...(params.redirectUrl ? { RedirectUrl: params.redirectUrl } : {}),
-        IsEnableOTP: params.isEnableOTP ?? false,
+        IsEnableOTP: params.isEnableOTP ?? true,
         NotifyOnSignatures: params.notifyOnSignatures ?? true,
         AutomaticReminders: params.automaticReminders ?? true,
         RemindOnceInEvery: 5,
@@ -355,8 +365,33 @@ export class OpenSignClient {
       ...(params.requestSubject ? { RequestSubject: params.requestSubject } : {}),
       ...(params.requestBody ? { RequestBody: params.requestBody } : {}),
       ...(params.senderName ? { SenderName: params.senderName } : {}),
+      ...(params.firmName ? { FirmName: params.firmName } : {}),
     });
     return created;
+  }
+
+  /**
+   * The document's ACL as it stands, and as it would be without the person behind one contact.
+   *
+   * linkcontacttodoc gives each signer's account read and write access to the document, and
+   * nothing takes it away again. With email codes on, that access is what opens the document: a
+   * signer who was replaced, or who handed over, could still enter a code sent to their own
+   * address and read it. The platform's own account keeps its access whoever the contact is.
+   */
+  async documentAccessWithout(docId: string, contactId: string): Promise<OpenSignResult<{ before: DocumentAcl; after: DocumentAcl }>> {
+    const session = await this.ensureAdminSession();
+    if (!session.success) return { success: false, error: session.error };
+
+    const doc = await this.restCall<{ ACL?: DocumentAcl }>('GET', `/classes/contracts_Document/${docId}`, undefined, true);
+    if (!doc.success) return { success: false, error: doc.error };
+    const contact = await this.restCall<{ UserId?: { objectId?: string } }>('GET', `/classes/contracts_Contactbook/${contactId}`, undefined, true);
+    if (!contact.success) return { success: false, error: contact.error };
+
+    const before = doc.data?.ACL ?? {};
+    const after = { ...before };
+    const userId = contact.data?.UserId?.objectId;
+    if (userId && userId !== this.adminUserId) delete after[userId];
+    return { success: true, data: { before, after } };
   }
 
   /**

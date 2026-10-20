@@ -27,3 +27,8 @@ RUN set -eu; \
     f=$(grep -l '"/login/:base64url":`Request Signatures`' main-*.js); \
     sed -i -E 's#("/(load/)?recipientSignPdf/[^"]*"|"/login/:base64url"):`Request Signatures`#\1:`Sign`#g' "$f"; \
     ! grep -qE '"/(load/)?recipientSignPdf/[^"]*":`Request Signatures`' "$f" || { echo "signer title not patched" >&2; exit 1; }
+
+# Signers open a document with a six-digit code emailed to them, and the code screens are in plain
+# words: see opensign-frontend-patches.mjs.
+COPY deploy/opensign-frontend-patches.mjs /tmp/opensign-frontend-patches.mjs
+RUN node /tmp/opensign-frontend-patches.mjs && rm /tmp/opensign-frontend-patches.mjs
