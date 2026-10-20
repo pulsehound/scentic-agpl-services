@@ -90,6 +90,7 @@ export function createSignatureRouter(service: OpenSignService): Router {
         sendInOrder: b.sendInOrder === true,
         redirectUrl: httpsUrlOrEmpty(b.redirectUrl),
         dateFormat: typeof b.dateFormat === 'string' ? b.dateFormat : '',
+        scenticDelivers: b.scenticDelivers === true,
       }, ctx?.correlationId ?? '');
       if (!result.success) return next(result.error);
       res.json({ ok: true, data: result.data });
@@ -153,6 +154,49 @@ export function createSignatureRouter(service: OpenSignService): Router {
         // OpenSign's object ids and never should.
         b.signerEmails ?? b.scenticSignerIds ?? [],
         b.senderName ?? '',
+        ctx?.correlationId ?? '',
+      );
+      if (!result.success) return next(result.error);
+      res.json({ ok: true, data: result.data });
+    } catch (err) { next(err); }
+  });
+
+  // Everyone asked to sign, in order, with where they have got to and their personal link while it
+  // can still be used — for Scentic to send the messages itself.
+  router.get('/api/v1/firms/:firmId/signature/workflows/:workflowId/signers', async (req, res, next) => {
+    try {
+      const result = await service.listSigners(req.params.firmId, req.params.workflowId);
+      if (!result.success) return next(result.error);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ ok: true, data: result.data });
+    } catch (err) { next(err); }
+  });
+
+  // Somebody else signs in place of a signer who has not signed yet. The old link stops working.
+  router.post('/api/v1/firms/:firmId/signature/workflows/:workflowId/signers/replace', async (req, res, next) => {
+    try {
+      const ctx = getContext();
+      const b = req.body ?? {};
+      const result = await service.replaceSigner(req.params.firmId, req.params.workflowId, {
+        fromEmail: typeof b.fromEmail === 'string' ? b.fromEmail : '',
+        toEmail: typeof b.toEmail === 'string' ? b.toEmail : '',
+        toName: typeof b.toName === 'string' ? b.toName : '',
+      }, ctx?.correlationId ?? '');
+      if (!result.success) return next(result.error);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ ok: true, data: result.data });
+    } catch (err) { next(err); }
+  });
+
+  // Take a signature back before the document is complete, with any made after it.
+  router.post('/api/v1/firms/:firmId/signature/workflows/:workflowId/signers/revoke', async (req, res, next) => {
+    try {
+      const ctx = getContext();
+      const b = req.body ?? {};
+      const result = await service.revokeSignature(
+        req.params.firmId,
+        req.params.workflowId,
+        typeof b.email === 'string' ? b.email : '',
         ctx?.correlationId ?? '',
       );
       if (!result.success) return next(result.error);
@@ -238,7 +282,13 @@ export const SIGNATURE_CAPABILITIES = {
   completionCertificate: 'supported',
   signedDocumentDownload: 'supported',
   redirectAfterSigning: 'supported',
-  delegate: 'unsupported',
+  // Changing who signs after sending, and taking a signature back before completion: done by the
+  // gateway on OpenSign's own fields, which OpenSign's screens do not offer.
+  delegate: 'emulated',
+  replaceSigner: 'emulated',
+  revokeSignature: 'emulated',
+  // Scentic can send every message itself, given each signer's link.
+  signerLinks: 'supported',
   smsVerification: 'unsupported',
   bulkSend: 'unsupported',
 } as const;

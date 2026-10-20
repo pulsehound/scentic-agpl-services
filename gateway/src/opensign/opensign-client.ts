@@ -298,6 +298,8 @@ export class OpenSignClient {
     requestSubject?: string;
     requestBody?: string;
     senderName?: string;
+    /** OpenSign's own reminder mail every few days. Off where Scentic chases signers itself. */
+    automaticReminders?: boolean;
   }): Promise<OpenSignResult<{ objectId: string }>> {
     const session = await this.ensureAdminSession();
     if (!session.success) return { success: false, error: session.error };
@@ -329,7 +331,7 @@ export class OpenSignClient {
         ...(params.redirectUrl ? { RedirectUrl: params.redirectUrl } : {}),
         IsEnableOTP: params.isEnableOTP ?? false,
         NotifyOnSignatures: params.notifyOnSignatures ?? true,
-        AutomaticReminders: true,
+        AutomaticReminders: params.automaticReminders ?? true,
         RemindOnceInEvery: 5,
       },
       // Session, not master key. createDocumentFromApp requires request.user,
@@ -541,7 +543,39 @@ export class OpenSignClient {
     return { success: true, data: true };
   }
 
+  /**
+   * Write fields on a document directly — its placeholders, signers, audit trail, signed copy.
+   *
+   * OpenSign has no function for changing who signs a document already sent, or for taking a
+   * signature back; its own screens do neither. Both are a matter of setting the same fields its
+   * signing flow sets, which is what this does. A field given as `null` is removed.
+   */
+  async updateDocument(docId: string, fields: Record<string, unknown>): Promise<OpenSignResult<true>> {
+    const body: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(fields)) {
+      body[key] = value === null ? { __op: 'Delete' } : value;
+    }
+    const result = await this.restCall<unknown>('PUT', `/classes/contracts_Document/${docId}`, body, true);
+    if (!result.success) return { success: false, error: result.error };
+    return { success: true, data: true };
+  }
+
 }
+
+/**
+ * Marks a message OpenSign must not send.
+ *
+ * In a document signed in order, the signer's browser asks OpenSign to mail the next signer as soon
+ * as it has signed, using the document's own template. Where Scentic delivers every message itself,
+ * that template is only this marker, and the patched mail function (deploy/opensign-server-patches.mjs)
+ * answers success without sending anything that carries it.
+ */
+export const SCENTIC_DELIVERS_MARKER = 'data-scentic-delivers';
+
+export const SCENTIC_DELIVERS_TEMPLATE = {
+  subject: 'Scentic delivers this message',
+  body: `<div ${SCENTIC_DELIVERS_MARKER}="1"></div>`,
+} as const;
 
 /**
  * A filename Parse will accept.

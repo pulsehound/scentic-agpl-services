@@ -266,4 +266,11 @@ export interface CreateOpenSignWorkflowParams {
   redirectUrl?: string;
   /** How the date of signing is written. */
   dateFormat?: string;
+  /**
+   * Scentic sends every message about this document itself — invitations, the next signer in
+   * order, reminders — and asks for each signer's link to do it. Nothing is mailed from here or
+   * from OpenSign, and OpenSign's own automatic reminders are off. False keeps the older behaviour,
+   * where this service mails the invitation and OpenSign mails the next signer.
+   */
+  scenticDelivers?: boolean;
 }

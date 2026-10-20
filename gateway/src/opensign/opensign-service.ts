@@ -14,7 +14,7 @@
 
 import { buildPlaceholders, dateFormatOrDefault } from './placeholders.js';
 import { parseDate } from './types.js';
-import { signingMail } from './opensign-client.js';
+import { signingMail, signingUrlFor, SCENTIC_DELIVERS_TEMPLATE } from './opensign-client.js';
 import { createHash as hashOf } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import type { OpenSignClient } from './opensign-client.js';
@@ -28,6 +28,7 @@ import type {
   OpenSignSignerStatus,
 } from './types.js';
 import { deriveDocumentStatus } from './types.js';
+import { closedReason, isChangeError, signerRows, withSignatureRevoked, withSignerReplaced, type SignerState } from './signer-changes.js';
 import type {
   CreateOpenSignWorkflowParams,
   SyncOpenSignFirmParams,
@@ -271,17 +272,20 @@ export class OpenSignService {
     // Create document in OpenSign
     // The wording OpenSign uses for the next signer of a document signed in order, in its own
     // variable syntax — the same template the gateway sends, so every signer reads the same mail.
-    const relay = signingMail({
-      kind: 'invitation',
-      senderName: params.senderName || 'Your legal team',
-      documentName: title,
-      // OpenSign fills {{receiver_name}} from a contact name it does not have for the next signer.
-      recipientName: '',
-      link: '{{signing_url}}',
-      subject: params.emailSubject,
-      message: params.emailMessage,
-      expiresAt,
-    });
+    const scenticDelivers = params.scenticDelivers === true;
+    const relay = scenticDelivers
+      ? { subject: SCENTIC_DELIVERS_TEMPLATE.subject, html: SCENTIC_DELIVERS_TEMPLATE.body }
+      : signingMail({
+          kind: 'invitation',
+          senderName: params.senderName || 'Your legal team',
+          documentName: title,
+          // OpenSign fills {{receiver_name}} from a contact name it does not have for the next signer.
+          recipientName: '',
+          link: '{{signing_url}}',
+          subject: params.emailSubject,
+          message: params.emailMessage,
+          expiresAt,
+        });
 
     const docResult = await this.client.createDocument({
       name: title,
@@ -303,6 +307,8 @@ export class OpenSignService {
       requestSubject: relay.subject,
       requestBody: relay.html,
       senderName: params.senderName || undefined,
+      // Scentic chases signers on its own schedule, in its own words.
+      automaticReminders: !scenticDelivers,
     });
 
     if (!docResult.success) {
@@ -348,7 +354,7 @@ export class OpenSignService {
         // A failure here is recorded, not raised. The document is filed and the
         // signer is linked — the work is done and re-sending is a normal
         // action, so an unreachable mail provider must not undo it.
-        if (params.sendNow && (!inOrder || position === 0)) {
+        if (params.sendNow && !scenticDelivers && (!inOrder || position === 0)) {
           const invited = await this.client.sendSigningInvitation({
             docId: opensignDocId,
             documentName: title,
@@ -853,6 +859,126 @@ export class OpenSignService {
       return { success: false, error: wrapUpstreamError('OpenSign', 'fetchDocumentFile', { code: 'OPENSIGN_API_ERROR', message: 'Not a PDF' }) };
     }
     return { success: true, data: { bytes: file.data, sha256: hashOf('sha256').update(file.data).digest('hex') } };
+  }
+
+  // ── Signers, their links, and changing them ───────────────────────────
+
+  /** The document a workflow maps to, read fresh. */
+  private async documentFor(scenticFirmId: string, scenticSignatureWorkflowId: string): Promise<ServiceResult<OpenSignDocument>> {
+    if (!this.config.enabled) {
+      return { success: false, error: notSupported('OpenSign is not enabled') };
+    }
+    const mapping = await this.store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId);
+    if (!mapping || mapping.status !== 'ACTIVE') {
+      return { success: false, error: notFound('Workflow not found') };
+    }
+    const docResult = await this.client.getDocument(mapping.opensignDocumentId);
+    if (!docResult.success || !docResult.data) {
+      return { success: false, error: wrapUpstreamError('OpenSign', 'getDocument', docResult.error) };
+    }
+    return { success: true, data: docResult.data };
+  }
+
+  /**
+   * Everyone asked to sign, in order, with where they have got to and — while it can still be
+   * used — their personal link. For Scentic to send the messages itself; a link is never logged.
+   */
+  async listSigners(scenticFirmId: string, scenticSignatureWorkflowId: string): Promise<ServiceResult<{
+    signers: Array<{ email: string; role: string; order: number; state: SignerState; signingUrl?: string }>;
+  }>> {
+    const doc = await this.documentFor(scenticFirmId, scenticSignatureWorkflowId);
+    if (!doc.success) return doc;
+    const open = closedReason(doc.data) === null;
+    return {
+      success: true,
+      data: {
+        signers: signerRows(doc.data).map((row) => ({
+          email: row.email,
+          role: row.role,
+          order: row.order,
+          state: row.state,
+          ...(open && row.contactId && row.state !== 'signed' && row.state !== 'declined'
+            ? { signingUrl: signingUrlFor(this.config.publicUrl, doc.data.objectId, row.email, row.contactId) }
+            : {}),
+        })),
+      },
+    };
+  }
+
+  /**
+   * Somebody else signs in place of one signer who has not signed yet. The old link stops working;
+   * the new signer's link is returned for the caller to send.
+   */
+  async replaceSigner(
+    scenticFirmId: string,
+    scenticSignatureWorkflowId: string,
+    change: { fromEmail: string; toEmail: string; toName: string },
+    correlationId: string,
+  ): Promise<ServiceResult<{ email: string; signingUrl: string }>> {
+    if (!change.fromEmail || !change.toEmail || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(change.toEmail.trim())) {
+      return { success: false, error: invalidInput('fromEmail and a valid toEmail are required') };
+    }
+    const doc = await this.documentFor(scenticFirmId, scenticSignatureWorkflowId);
+    if (!doc.success) return doc;
+    const closed = closedReason(doc.data);
+    if (closed) return { success: false, error: conflict(closed.message) };
+
+    const next = withSignerReplaced(doc.data, change.fromEmail, change.toEmail);
+    if (isChangeError(next)) return { success: false, error: next.code === 'NOT_A_SIGNER' ? notFound(next.message) : conflict(next.message) };
+
+    const saved = await this.client.updateDocument(doc.data.objectId, { Placeholders: next.placeholders, Signers: next.signers });
+    if (!saved.success) return { success: false, error: wrapUpstreamError('OpenSign', 'updateDocument', saved.error) };
+
+    const email = change.toEmail.trim().toLowerCase();
+    const linked = await this.client.linkContactToDoc({ docId: doc.data.objectId, email, name: change.toName.trim() || email });
+    if (!linked.success || !linked.data) {
+      // Put the original signer back rather than leave a placeholder nobody can sign.
+      await this.client.updateDocument(doc.data.objectId, { Placeholders: doc.data.Placeholders, Signers: doc.data.Signers });
+      return { success: false, error: wrapUpstreamError('OpenSign', 'linkContactToDoc', linked.error) };
+    }
+
+    await this.outbox.publish({
+      eventType: 'OPENSIGN_SIGNER_REPLACED',
+      scenticFirmId,
+      correlationId,
+      payload: { scenticSignatureWorkflowId },
+      safeSummary: `A signer was replaced on workflow ${scenticSignatureWorkflowId}`,
+    });
+
+    return { success: true, data: { email, signingUrl: signingUrlFor(this.config.publicUrl, doc.data.objectId, email, linked.data.objectId) } };
+  }
+
+  /**
+   * Take a signature back before the document is complete, with any made after it. The document
+   * returns to how it stood before that signature; those signers are asked again by the caller.
+   */
+  async revokeSignature(
+    scenticFirmId: string,
+    scenticSignatureWorkflowId: string,
+    email: string,
+    correlationId: string,
+  ): Promise<ServiceResult<{ clearedEmails: string[] }>> {
+    if (!email) return { success: false, error: invalidInput('email is required') };
+    const doc = await this.documentFor(scenticFirmId, scenticSignatureWorkflowId);
+    if (!doc.success) return doc;
+    const closed = closedReason(doc.data);
+    if (closed) return { success: false, error: conflict(closed.message) };
+
+    const next = withSignatureRevoked(doc.data, email);
+    if (isChangeError(next)) return { success: false, error: next.code === 'NOT_A_SIGNER' ? notFound(next.message) : conflict(next.message) };
+
+    const saved = await this.client.updateDocument(doc.data.objectId, { SignedUrl: next.signedUrl, AuditTrail: next.auditTrail });
+    if (!saved.success) return { success: false, error: wrapUpstreamError('OpenSign', 'updateDocument', saved.error) };
+
+    await this.outbox.publish({
+      eventType: 'OPENSIGN_SIGNATURE_REVOKED',
+      scenticFirmId,
+      correlationId,
+      payload: { scenticSignatureWorkflowId, cleared: next.clearedEmails.length },
+      safeSummary: `${next.clearedEmails.length} signature(s) taken back on workflow ${scenticSignatureWorkflowId}`,
+    });
+
+    return { success: true, data: { clearedEmails: next.clearedEmails } };
   }
 
   // ── Disable firm ──────────────────────────────────────────────────────

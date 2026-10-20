@@ -204,7 +204,10 @@ describe('route helpers', () => {
   });
 
   it('states what is unsupported rather than leaving it out', () => {
-    expect(SIGNATURE_CAPABILITIES.delegate).toBe('unsupported');
+    expect(SIGNATURE_CAPABILITIES.smsVerification).toBe('unsupported');
+    // Changing who signs, and taking a signature back, are done by the gateway itself.
+    expect(SIGNATURE_CAPABILITIES.delegate).toBe('emulated');
+    expect(SIGNATURE_CAPABILITIES.revokeSignature).toBe('emulated');
   });
 });
 

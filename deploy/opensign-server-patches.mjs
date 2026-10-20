@@ -67,6 +67,20 @@ edit(PDF, [
   ],
 ]);
 
+const SENDMAIL = '/usr/src/app/cloud/parsefunction/sendMailv3.js';
+edit(SENDMAIL, [
+  [
+    // In a document signed in order, the signer's browser asks for the next signer to be mailed
+    // straight after signing, from the document's template. Where Scentic sends every message
+    // itself, that template is only a marker (gateway SCENTIC_DELIVERS_TEMPLATE): answered as sent,
+    // and nothing leaves. Scentic invites the next signer, in its own words, when it learns the
+    // previous one signed.
+    'async function sendmailv3(req) {\n  const nonCustomMail = await sendMailProvider(req);',
+    "async function sendmailv3(req) {\n  if (String(req.params?.html || '').includes('data-scentic-delivers')) {\n    console.log('scentic delivers this message');\n    return { status: 'success' };\n  }\n  const nonCustomMail = await sendMailProvider(req);",
+    'scentic delivers',
+  ],
+]);
+
 const INDEX = '/usr/src/app/index.js';
 edit(INDEX, [
   // Bodies were capped at 100 MB — a signed PDF is posted back base64 by the signer's browser, so
