@@ -52,7 +52,8 @@ const esc = value =>
 /** The code email. Exported for the build check in opensign-server-patches.mjs. */
 export function codeMail({ code, documentName, senderName, firmName }) {
   const title = documentName || 'the document';
-  const from = [senderName, firmName].filter(Boolean).join(', ');
+  // The sender's name and the firm's, once each: a request sent in the firm's name carries it twice.
+  const from = [...new Map([senderName, firmName].filter(Boolean).map(n => [n.trim().toLowerCase(), n.trim()])).values()].join(', ');
   const heading = 'Your signing code';
   const lead = documentName
     ? `Enter this code on the signing page to open <strong style="color:${BRAND.ink};font-weight:600">${esc(title)}</strong>.`
