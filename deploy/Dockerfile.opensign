@@ -31,4 +31,5 @@ RUN set -eu; \
 # Signers open a document with a six-digit code emailed to them, and the code screens are in plain
 # words: see opensign-frontend-patches.mjs.
 COPY deploy/opensign-frontend-patches.mjs /tmp/opensign-frontend-patches.mjs
-RUN node /tmp/opensign-frontend-patches.mjs && rm /tmp/opensign-frontend-patches.mjs
+COPY deploy/opensign-assets/logo.png /tmp/scentic-logo.png
+RUN node /tmp/opensign-frontend-patches.mjs && rm /tmp/opensign-frontend-patches.mjs /tmp/scentic-logo.png
