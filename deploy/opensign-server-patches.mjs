@@ -222,6 +222,42 @@ edit(`${FN}/editContact.js`, [
 ]);
 edit(`${FN}/ContactBookAftersave.js`, [["_user.set('password', Email);", `_user.set('password', ${RANDOM_PASSWORD});`, 'contact book password']]);
 
+// Only the server makes accounts (the _User guard in cloud/main.js, below), so the functions that
+// make a signer's or a firm user's account make it with the master key. Each is already behind its
+// own check: a signed-in sender (savecontact, editcontact, the contact book), an admin (adduser), or
+// a document naming the address (linkcontacttodoc).
+const MASTER_SAVE = 'await _user.save(null, { useMasterKey: true });';
+edit(`${FN}/linkContactToDoc.js`, [['await _user.save();', MASTER_SAVE, 'signer account']]);
+edit(`${FN}/savecontact.js`, [['await _user.save();', MASTER_SAVE, 'contact account']]);
+edit(`${FN}/editContact.js`, [['await _user.save();', MASTER_SAVE, 'edited contact account']]);
+edit(`${FN}/ContactBookAftersave.js`, [['await _user.save();', MASTER_SAVE, 'contact book account']]);
+edit(`${FN}/addUser.js`, [['await _user.save();', MASTER_SAVE, 'firm user account']]);
+
+// usersignup and addadmin are open to anyone and, given an address that already has an account,
+// sign in as it (/loginAs with the master key) and hand back its session, whatever password was
+// sent: with addadmin anyone could become any signer by naming their address (usersignup does the
+// same once upstream's undefined normalizeEmail is fixed). Both are for the server alone now; the
+// gateway makes the first admin with the master key (gateway/src/opensign/opensign-client.ts
+// createFirstAdmin).
+const SERVER_ONLY =
+  "  if (!request.master) throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, 'Accounts are not open for sign-up.');\n";
+edit(`${FN}/usersignup.js`, [
+  [
+    'export default async function usersignup(request) {\n',
+    `export default async function usersignup(request) {\n${SERVER_ONLY}`,
+    'usersignup for the server',
+  ],
+  ['await user.signUp();', 'await user.signUp(null, { useMasterKey: true });', 'usersignup account'],
+]);
+edit(`${FN}/AddAdmin.js`, [
+  [
+    'export default async function AddAdmin(request) {\n',
+    `export default async function AddAdmin(request) {\n${SERVER_ONLY}`,
+    'addadmin for the server',
+  ],
+  ['await user.signUp();', 'await user.signUp(null, { useMasterKey: true });', 'addadmin account'],
+]);
+
 edit('/usr/src/app/cloud/main.js', [
   [
     "Parse.Cloud.define('createdocumentfromapp', createDocumentFromApp);",
@@ -235,6 +271,13 @@ edit('/usr/src/app/cloud/main.js', [
       '  if (isPlatform) return;\n' +
       "  const isContact = await new Parse.Query('contracts_Contactbook').equalTo('UserId', request.object).first({ useMasterKey: true });\n" +
       "  if (isContact) throw new Parse.Error(Parse.Error.OBJECT_NOT_FOUND, 'Invalid username/password.');\n" +
+      '});\n' +
+      '\n' +
+      '// Scentic: accounts are made by the server, never by whoever asks. An open sign-up let anyone\n' +
+      '// register an address before a sender named it as a signer; the document would then let that\n' +
+      '// account in, because a signer is linked to whatever account already holds their address.\n' +
+      'Parse.Cloud.beforeSave(Parse.User, request => {\n' +
+      "  if (!request.master && !request.original) throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, 'Accounts are not open for sign-up.');\n" +
       '});\n' +
       '\n' +
       '// Scentic: nobody reads documents anonymously, by id, by query or by count.\n' +
