@@ -156,6 +156,9 @@ html[data-scentic-view='code'] .op-card .op-btn {
 /* ── A phone ─────────────────────────────────────────────────────────────────────────────────── */
 @media (max-width: 767px) {
   .scentic-bar {
+    /* On a phone the page keeps its own header at the top as it scrolls; a second bar held there
+       sat under it, the mark showing through (staging, 2026-11-19). It scrolls away instead. */
+    position: static;
     padding: 6px 10px;
     gap: 8px;
   }
