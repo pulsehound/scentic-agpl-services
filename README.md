@@ -66,6 +66,10 @@ This repository is licensed under the GNU Affero General Public License v3.0 (AG
 
 See `docs/SOURCE_OFFER.md` for full details.
 
+## How OpenSign is modified
+
+There is no `patches/` directory. OpenSign's two images are built from upstream's images by `deploy/Dockerfile.opensign-server` and `deploy/Dockerfile.opensign`, which run `deploy/opensign-server-patches.mjs` and `deploy/opensign-frontend-patches.mjs` over the program inside the image and copy in the files under `deploy/opensign-server-files/`, `deploy/opensign-ceremony/` and `deploy/opensign-assets/`. Every edit names the upstream text it replaces, says why in a comment beside it, and fails the build if that text is no longer there. `vendor/opensign/` is a checkout of upstream to read and to test those edits against; it is not edited and not deployed. `docs/SOURCE_OFFER.md` §8 lists what is modified.
+
 ## Tests
 
 ```
@@ -83,6 +87,7 @@ pnpm test:patches    # what this repository changes in OpenSign at image build (
 | `frontend-patches.test.mjs` | Every transform in `deploy/opensign-frontend-patches.mjs` over text cut from the built signing page, the whole script over a small build folder laid out like it, and the hashes of the third-party files in `deploy/opensign-assets/vendor`. The page exists only built, inside the upstream image, so the proof that the real page takes the patch is the image build below. |
 | `ceremony.test.mjs` | `deploy/opensign-ceremony/scentic-ceremony.js` in jsdom against a page shaped like the signing page: the bar and Start, what Start never clicks, and what the bar says once a document is declined, expired, withdrawn or finished. |
 | `certificate.test.mjs` | The patched certificate generator, run on fixture documents; the text of the PDFs it makes is read back. |
+| `scentic-ceremony-guard.test.mjs` | OpenSign's patched `signPdf`, `declinedoc`, `triggerevent`, `getDocument` and this repository's code mail, run against fixtures: a document Scentic hosts the signing of answers the server's own calls only; a hosted one behaves as before. |
 
 Building the images runs the same scripts for real and fails if any edit does not apply. The signing page's build also fails if the page still names a host it used to load from:
 
@@ -98,8 +103,8 @@ One gateway suite talks to a real PostgreSQL when told where one is, and is skip
 ## License
 
 - **This repository (gateway code, docs, scripts, deploy configs):** AGPL-3.0
-- **vendor/kimai/:** AGPL-3.0-or-later (upstream Kimai, unmodified)
-- **vendor/opensign/:** AGPL-3.0 (upstream OpenSign, unmodified)
+- **vendor/kimai/:** AGPL-3.0-or-later (a checkout of upstream Kimai; Kimai is run unmodified)
+- **vendor/opensign/:** AGPL-3.0 (a checkout of upstream OpenSign, itself unedited — but **the OpenSign that is deployed is modified**, at image build, by the files under `deploy/` listed below)
 - See `LICENSE` for the full AGPL-3.0 text.
 - See `docs/SOURCE_OFFER.md` for attribution and modification tracking.
 

@@ -42,8 +42,8 @@ This is an inconsistency in the upstream OpenSign project itself (present at the
 The source offer covers all AGPL-licensed code and configuration required to build, run, and deploy the AGPL services stack:
 
 - **Gateway code:** `gateway/` — the Node.js/Express service that bridges Scentic ↔ Kimai/OpenSign.
-- **Kimai source:** `vendor/kimai/` — vendored copy of Kimai (AGPL-3.0-or-later), plus any patches in `patches/kimai/`.
-- **OpenSign source:** `vendor/opensign/` — vendored copy of OpenSign (AGPL-3.0), plus any patches in `patches/opensign/`.
+- **Kimai:** upstream Kimai (AGPL-3.0-or-later), run unmodified from its published image; the upstream source at the pinned commit is fetched to `vendor/kimai/`.
+- **OpenSign:** upstream OpenSign (AGPL-3.0), **modified at image build**. The upstream source at the pinned commit is fetched to `vendor/opensign/`; every modification is in `deploy/` (see §8).
 - **Deployment scripts:** `deploy/`, `scripts/` — Dockerfiles, compose files, GCloud deployment scripts, migration scripts.
 - **Build instructions:** `docs/DEPLOYMENT.md` — how to build and run every component.
 - **Connection manual:** `docs/SCENTIC_AGPL_CONNECTION_MANUAL.md` — how operators wire it up.
@@ -117,6 +117,8 @@ Response shape:
 }
 ```
 
+The shape above is the one planned when this document was first written. What the endpoint returns today is defined in `gateway/src/routes/health.ts`; the `patches_path` and `patch_file` values shown are not paths that exist in this repository — modifications are made as §8 describes.
+
 The endpoint is unauthenticated (it returns only metadata, no secrets or user data) and is reachable over the same internal route as the gateway. A public mirror of the same JSON is published at the public repository URL.
 
 ---
@@ -125,10 +127,8 @@ The endpoint is unauthenticated (it returns only metadata, no secrets or user da
 
 - **Public Git repository:** The gateway code, deployment scripts, docs, and patch files are published in a public Git repository at `https://github.com/pulsehound/scentic-agpl-services`. This is the canonical source-offer location.
 - **Upstream already public:** Kimai (https://github.com/kimai/kimai) and OpenSign (https://github.com/OpenSignLabs/OpenSign) are already public upstream repositories. The source offer links to them directly.
-- **Forks and patches published alongside the gateway code:**
-  - Any patches to Kimai or OpenSign are stored as patch files under `patches/kimai/` and `patches/opensign/` in this repository and applied at build time (see `scripts/apply-patches.sh`).
-  - Alternatively, forks of Kimai/OpenSign live as branches in this repository or as referenced public forks. The `modifications` field of the source-offer response points to the exact patch file or fork branch.
-- **Version pinning:** Each release tag in this repository pins the exact upstream Kimai/OpenSign commit it vendors, recorded in `vendor/kimai/UPSTREAM_COMMIT` and `vendor/opensign/UPSTREAM_COMMIT`.
+- **Modifications published alongside the gateway code:** OpenSign's are applied at image build from files under `deploy/` in this repository (§8). There are no patch files, no `scripts/apply-patches.sh`, and no fork branches.
+- **Version pinning:** The upstream commits the vendored checkouts are taken at are recorded in `docs/UPSTREAM_SOURCES.md`. The signing page's upstream image is pinned by digest in `deploy/Dockerfile.opensign`; the server's base image is named by the `OPENSIGN_BASE` argument of `deploy/Dockerfile.opensign-server`.
 
 ---
 
@@ -147,8 +147,9 @@ LABEL org.opencontainers.image.url="https://github.com/pulsehound/scentic-agpl-s
 Images affected:
 
 - `gateway/Dockerfile` → gateway image
-- `deploy/kimai/Dockerfile` (if a derived Kimai image is built) → Kimai image with patches applied
-- `deploy/opensign/Dockerfile` (if a derived OpenSign image is built) → OpenSign image with patches applied
+- `deploy/Dockerfile.opensign-server` → the OpenSign server image, modified as §8 describes
+- `deploy/Dockerfile.opensign` → the OpenSign signing page image, modified as §8 describes
+- Kimai has no derived image: the published one is run as it is
 
 Labels are inspected with `docker image inspect <image>` and are preserved when pushed to Artifact Registry.
 
@@ -165,29 +166,37 @@ Both upstream `LICENSE` files are preserved verbatim under `vendor/kimai/LICENSE
 
 ## 8. Modified upstream tracking
 
-Any modification to Kimai or OpenSign is tracked in one of two ways, and recorded in the `modifications` list of the source-offer response (§4):
+Kimai is run from its published image, unmodified.
 
-### Option A — Patch files (preferred for small, surgical changes)
+OpenSign is **modified**, and the modifications are in this repository. There is no `patches/` directory and no patch files: the changes are made when the two OpenSign images are built, by scripts that edit the upstream program inside the upstream image and stop the build if the text they expect is not there.
 
-- Patch files live in `patches/kimai/` and `patches/opensign/`.
-- Naming: `patches/<component>/NNNN-<short-description>.patch` (e.g., `patches/kimai/0001-scentic-sso.patch`).
-- Applied at build time by `scripts/apply-patches.sh` against the vendored upstream commit recorded in `vendor/<component>/UPSTREAM_COMMIT`.
-- Each patch file includes a header describing the purpose, author, and date.
+| What | Where | Applied to |
+|---|---|---|
+| The server image's build | `deploy/Dockerfile.opensign-server` | the upstream server image named by its `OPENSIGN_BASE` argument |
+| Edits to the server's source, each with the reason beside it | `deploy/opensign-server-patches.mjs` | `/usr/src/app` in that image |
+| Whole files that replace or are added to upstream's | `deploy/opensign-server-files/` (`SendMailOTPv1.js`, `AuthLoginAsMail.js` replace upstream's; `scenticEventHistory.js` is added) | `cloud/parsefunction/` in that image |
+| The signing page image's build | `deploy/Dockerfile.opensign` | the upstream page image pinned by digest in its `OPENSIGN_FRONTEND_BASE` argument |
+| Edits to the built signing page | `deploy/opensign-frontend-patches.mjs` | `/usr/src/app/build` in that image |
+| A script and stylesheet added to the signing page, and its wording | `deploy/opensign-ceremony/` | the same |
+| Third-party files the page used to load from other hosts, with source, licence and SHA-256 for each | `deploy/opensign-assets/vendor/` and its `MANIFEST.json` | the same |
 
-### Option B — Fork branches (for larger divergences)
+`vendor/opensign/` and `vendor/kimai/` are plain checkouts of the upstream repositories at the commits in `docs/UPSTREAM_SOURCES.md`, fetched by `scripts/update-vendor.sh`. They are not committed here, nothing in them is edited, and they are not what is deployed: they are there to read, and for `deploy/tests` to run the server edits against. The corresponding source of what is deployed is therefore the upstream image each Dockerfile names plus the files in the table, all of which are in this repository; `pnpm test:patches` applies every server edit to the vendored source and checks that each still applies.
 
-- A fork of the upstream lives as a branch in this repository (e.g., `forks/kimai-scentic`) or as a referenced public fork.
-- The fork branch tracks a clear upstream merge-base, recorded in the modification log below.
+### What is modified, in outline
 
-### Modification log
+Each edit carries its reason in a comment beside it in the files above, which are the authoritative list. In outline:
 
-Append a row here whenever a modification is added. Until AGPL-05 lands, this list is empty.
-
-| Date | Component | Type | Reference | Description |
-|---|---|---|---|---|
-| _(none yet)_ | | | | |
-
----
+| Component | Modification |
+|---|---|
+| OpenSign server | `saveFile.js` declares a variable upstream assigns undeclared; the "report this email" footer and upstream's product name are removed from mails; the product and contact name in a PDF's digital signature come from the environment |
+| OpenSign server | Who can open a document: only the server's own calls and signed-in accounts on its ACL; signers sign in with a six-digit code that works once (`SendMailOTPv1.js`, `AuthLoginAsMail.js`); signing and declining are bound to the signed-in signer; accounts are made by the server only; signers' accounts have no usable password |
+| OpenSign server | The master key is no longer written into the migration command line or printed on failure; request body limits come from the environment |
+| OpenSign server | Mail: the completion mail goes to signers only and is off unless enabled; messages for documents Scentic delivers itself are not sent (the next signer's invitation, the decline notice) |
+| OpenSign server | Documents whose signing Scentic hosts (`ScenticCeremony`): the page's functions and the code mail refuse them; only the server's own calls act on them |
+| OpenSign server | The completion certificate prints the name each signer confirmed for the document, and Scentic's record of the ceremony as an "Event history" section (`scenticEventHistory.js`) |
+| OpenSign signing page | Product name and tab titles; a six-digit code field; plain wording; Scentic's logo; messages shown in the page instead of browser dialogs; a bar and Start button (`deploy/opensign-ceremony/`) |
+| OpenSign signing page | Nothing is loaded from other hosts: Bootstrap's stylesheet, the handwriting fonts, the PDF worker, the animation player and the text font are served from the page itself; upstream's paid icon font is replaced by Font Awesome Free |
+| Kimai | None |
 
 ## 9. No Scentic proprietary code in AGPL source — verification process
 
