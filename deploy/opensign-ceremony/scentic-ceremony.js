@@ -21,8 +21,10 @@
 
   var FIELD = '.signYourselfBlock';
   var MAX_PAGES = 500;
-  // Start gives up looking after this long, and says so truthfully.
-  var MAX_SEARCH_MS = 20000;
+  // Start gives up looking after this long, and says so truthfully. Long enough for every page it
+  // may turn (350 ms each): a signature block on the last page of a long contract is the case
+  // Start exists for.
+  var MAX_SEARCH_MS = MAX_PAGES * 400;
 
   function view() {
     var p = location.pathname;
@@ -126,7 +128,8 @@
   async function onStart() {
     if (busy) return;
     busy = true;
-    var began = Date.now();
+    start.hidden = true;
+    hint.textContent = 'Looking for your first field\u2026';
     try {
       // From the first page, so "the first field" is the first in the document.
       var guard = 0;
@@ -137,7 +140,8 @@
         arrows = pageArrows();
       }
       // Page by page until one of this signer's fields opens: a page holding only another signer's
-      // fields is passed over.
+      // fields is passed over. The clock starts here, after the pages were turned back.
+      var began = Date.now();
       guard = 0;
       var opened = await openFirstOnPage();
       while (!opened && guard++ < MAX_PAGES && Date.now() - began < MAX_SEARCH_MS) {
