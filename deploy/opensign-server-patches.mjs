@@ -100,9 +100,22 @@ edit(STARTUP, [
       "    const migrateEnv = { ...process.env, APPLICATION_ID: serverAppId, SERVER_URL: cloudServerUrl };\n" +
       "    const withoutSecrets = text => {\n" +
       "      let out = String(text ?? '');\n" +
-      "      for (const secret of [process.env.MASTER_KEY, process.env.MONGODB_URI, process.env.SMTP_PASS, process.env.PASS_PHRASE]) {\n" +
-      "        if (secret && secret.length >= 4) out = out.split(secret).join('[redacted]');\n" +
+      "      const named = ['MASTER_KEY', 'MONGODB_URI', 'DATABASE_URI', 'SMTP_PASS', 'PASS_PHRASE', 'PFX_BASE64', 'MAILGUN_API_KEY', 'DO_SECRET_ACCESS_KEY'];\n" +
+      "      const secrets = named.map(name => process.env[name]).filter(Boolean);\n" +
+      "      // A database address's own user and password, as written and as decoded.\n" +
+      "      for (const uri of [process.env.MONGODB_URI, process.env.DATABASE_URI]) {\n" +
+      "        const login = /^[a-z0-9+.-]+:\\/\\/([^:@\\/]+)(?::([^@\\/]*))?@/i.exec(uri || '');\n" +
+      "        for (const part of [login?.[1], login?.[2]]) {\n" +
+      "          if (!part) continue;\n" +
+      "          secrets.push(part);\n" +
+      "          try { secrets.push(decodeURIComponent(part)); } catch { /* as written only */ }\n" +
+      "        }\n" +
       "      }\n" +
+      "      for (const secret of secrets.sort((a, b) => b.length - a.length)) {\n" +
+      "        if (secret.length >= 4) out = out.split(secret).join('[redacted]');\n" +
+      "      }\n" +
+      "      // Any database address at all, whatever it holds.\n" +
+      "      out = out.replace(/\\b(mongodb(?:\\+srv)?:\\/\\/)[^\\s'\"]+/gi, '$1[redacted]');\n" +
       "      return out;\n" +
       "    };\n" +
       "    exec(migrate, { env: migrateEnv }, (error, stdout, stderr) => {\n" +

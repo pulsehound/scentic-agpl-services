@@ -21,6 +21,8 @@
 
   var FIELD = '.signYourselfBlock';
   var MAX_PAGES = 500;
+  // Start gives up looking after this long, and says so truthfully.
+  var MAX_SEARCH_MS = 20000;
 
   function view() {
     var p = location.pathname;
@@ -44,8 +46,10 @@
     bar = el('div', 'scentic-bar');
     bar.setAttribute('role', 'banner');
     var mark = el('span', 'scentic-bar__mark', 'SCENTIC');
+    mark.setAttribute('role', 'img');
     mark.setAttribute('aria-label', 'Scentic');
     hint = el('span', 'scentic-bar__hint');
+    hint.setAttribute('aria-live', 'polite');
     start = el('button', 'scentic-bar__start', 'Start');
     start.type = 'button';
     start.hidden = true;
@@ -63,13 +67,19 @@
     return arrows.length === 2 ? { prev: arrows[0], next: arrows[1] } : null;
   }
 
-  // The fields on the page in view, in reading order: top to bottom, then left to right.
+  // This signer's fields on the page in view, in reading order: top to bottom, then left to right.
+  // OpenSign draws another signer's fields too, dimmed; those are not this signer's to be taken to.
   function fieldsInOrder() {
-    return Array.prototype.slice.call(document.querySelectorAll(FIELD)).sort(function (a, b) {
-      var ra = a.getBoundingClientRect();
-      var rb = b.getBoundingClientRect();
-      return ra.top - rb.top || ra.left - rb.left;
-    });
+    return Array.prototype.slice
+      .call(document.querySelectorAll(FIELD))
+      .filter(function (field) {
+        return parseFloat(getComputedStyle(field).opacity) >= 1;
+      })
+      .sort(function (a, b) {
+        var ra = a.getBoundingClientRect();
+        var rb = b.getBoundingClientRect();
+        return ra.top - rb.top || ra.left - rb.left;
+      });
   }
 
   // OpenSign listens on the field's inner face, not its frame.
@@ -100,9 +110,23 @@
     });
   }
 
+  // The first of this signer's fields on the page in view that opens a panel, opened; or null. A
+  // date the page fills in itself does not open one, and the next in order is tried.
+  async function openFirstOnPage() {
+    var fields = fieldsInOrder();
+    for (var i = 0; i < fields.length; i++) {
+      fields[i].scrollIntoView({ block: 'center' });
+      openField(fields[i]);
+      await wait(350);
+      if (fieldPanelOpen()) return fields[i];
+    }
+    return null;
+  }
+
   async function onStart() {
     if (busy) return;
     busy = true;
+    var began = Date.now();
     try {
       // From the first page, so "the first field" is the first in the document.
       var guard = 0;
@@ -112,35 +136,27 @@
         await wait(80);
         arrows = pageArrows();
       }
+      // Page by page until one of this signer's fields opens: a page holding only another signer's
+      // fields is passed over.
       guard = 0;
-      var fields = fieldsInOrder();
-      while (!fields.length && guard++ < MAX_PAGES) {
+      var opened = await openFirstOnPage();
+      while (!opened && guard++ < MAX_PAGES && Date.now() - began < MAX_SEARCH_MS) {
         arrows = pageArrows();
         if (!arrows || arrows.next.disabled) break;
         arrows.next.click();
-        await wait(300);
-        fields = fieldsInOrder();
+        await wait(350);
+        opened = await openFirstOnPage();
       }
       started = true;
       start.hidden = true;
-      if (!fields.length) {
-        // Nothing to take them to. Say nothing false; step aside.
-        hint.textContent = 'Review the document. When you are ready, choose Finish.';
-        return;
+      if (opened) {
+        mark(opened);
+        hint.textContent = 'Complete each marked field, then choose Finish.';
+      } else {
+        // Nothing was opened for them. Say only what is true: the page's own Finish points to
+        // anything still to complete.
+        hint.textContent = 'Review the document, then choose Finish. The page points to anything still to complete.';
       }
-      hint.textContent = 'Complete each marked field, then choose Finish.';
-      fields[0].scrollIntoView({ block: 'center' });
-      // The first field that opens: a date the page fills in itself, or one that is another
-      // signer's, does not, and the next in order is tried.
-      for (var i = 0; i < fields.length; i++) {
-        openField(fields[i]);
-        await wait(350);
-        if (fieldPanelOpen()) {
-          mark(fields[i]);
-          return;
-        }
-      }
-      mark(fields[0]);
     } catch (e) {
       start.hidden = true;
       started = true;
@@ -167,6 +183,8 @@
       start.hidden = true;
       hint.textContent = 'Secure electronic signature';
     }
+    // On the signer's pages only: the code screen and the signing page.
+    bar.hidden = v === 'other';
   }
 
   function boot() {

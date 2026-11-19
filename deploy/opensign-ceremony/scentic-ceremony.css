@@ -19,8 +19,8 @@
   --sc: 22% 0 0;
   --a: 47% 0.14 27; /* accent: the one warning colour */
   --ac: 100% 0 0;
-  --n: 94% 0.004 85; /* neutral: page arrows, quiet chips */
-  --nc: 22% 0 0;
+  --n: 42% 0.005 85; /* neutral: the page arrows, and the loading spinner, which must show on the canvas */
+  --nc: 100% 0 0;
   --b1: 100% 0 0; /* work surfaces */
   --b2: 98.2% 0.003 85; /* canvas #faf9f7 */
   --b3: 89% 0.006 85; /* borders */
@@ -54,7 +54,7 @@ body,
   outline-offset: 2px;
 }
 .op-btn-secondary {
-  border: 1px solid #d9d6d0;
+  border: 1px solid #767268; /* 4.5:1 on white: the control's edge is what marks it as one */
 }
 .op-btn-secondary:hover {
   background: #f1efeb;
@@ -118,7 +118,8 @@ body,
 .scentic-bar__start:hover {
   background: #000000;
 }
-.scentic-bar__start[hidden] {
+.scentic-bar__start[hidden],
+.scentic-bar[hidden] {
   display: none;
 }
 
