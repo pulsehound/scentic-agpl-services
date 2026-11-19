@@ -90,4 +90,29 @@ if (!html.includes(`.${tag}.js`) || renamed.some((n) => html.includes(`/${n}"`))
   console.error('index.html does not name the renamed scripts');
   process.exit(1);
 }
+// The signing page in Scentic's own look, and a Start button: deploy/opensign-ceremony. Two files
+// added beside the built ones, named by their content (assets are served immutable for a year), and
+// named in index.html after the page's own stylesheets so their values win.
+const CEREMONY = '/tmp/opensign-ceremony';
+const ceremony = {};
+for (const [kind, source] of [['css', 'scentic-ceremony.css'], ['js', 'scentic-ceremony.js']]) {
+  const body = readFileSync(`${CEREMONY}/${source}`);
+  const name = `scentic-ceremony.${createHash('sha256').update(body).digest('hex').slice(0, 8)}.${kind}`;
+  writeFileSync(`${BUILD}/assets/${name}`, body);
+  ceremony[kind] = name;
+}
+{
+  const page = readFileSync(`${BUILD}/index.html`, 'utf8');
+  if (!page.includes('</head>') || page.includes('scentic-ceremony.')) {
+    console.error('index.html: no </head>, or the ceremony layer is already there');
+    process.exit(1);
+  }
+  writeFileSync(
+    `${BUILD}/index.html`,
+    page.replace(
+      '</head>',
+      `  <link rel="stylesheet" href="/assets/${ceremony.css}">\n  <script defer src="/assets/${ceremony.js}"></script>\n</head>`,
+    ),
+  );
+}
 console.log(`opensign frontend patched (${fields} code fields, ${renamed.length} files renamed .${tag}, ${references} references)`);

@@ -32,4 +32,7 @@ RUN set -eu; \
 # words: see opensign-frontend-patches.mjs.
 COPY deploy/opensign-frontend-patches.mjs /tmp/opensign-frontend-patches.mjs
 COPY deploy/opensign-assets/logo.png /tmp/scentic-logo.png
-RUN node /tmp/opensign-frontend-patches.mjs && rm /tmp/opensign-frontend-patches.mjs /tmp/scentic-logo.png
+# The page in Scentic's own look, with a Start button that takes a signer to their first field:
+# deploy/opensign-ceremony (presentation and one navigation aid; it never signs, declines or fills).
+COPY deploy/opensign-ceremony /tmp/opensign-ceremony
+RUN node /tmp/opensign-frontend-patches.mjs && rm -r /tmp/opensign-frontend-patches.mjs /tmp/scentic-logo.png /tmp/opensign-ceremony

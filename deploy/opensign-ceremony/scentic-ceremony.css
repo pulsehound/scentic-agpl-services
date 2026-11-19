@@ -1,0 +1,187 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * The signing page in Scentic's own visual language, laid over OpenSign's built page at image
+ * build (deploy/opensign-frontend-patches.mjs adds this file to index.html).
+ *
+ * A counterparty reaches this page from a firm's email. It is the one screen of the product they
+ * ever see, and it looked like a different product from the email that sent them: navy pills on
+ * grey. The values below are the firm platform's own: a warm canvas, white work surfaces, black
+ * primary actions, thin neutral borders, 2-4px corners, no gradients.
+ *
+ * Only presentation: no rule here hides a control the signer needs or changes what a control does.
+ */
+:root,
+[data-theme='opensigncss'] {
+  /* daisyUI reads these as "L C H" for oklch(). */
+  --p: 17% 0 0; /* primary: near black */
+  --pc: 100% 0 0;
+  --s: 100% 0 0; /* secondary (Decline): a quiet outlined control, see below */
+  --sc: 22% 0 0;
+  --a: 47% 0.14 27; /* accent: the one warning colour */
+  --ac: 100% 0 0;
+  --n: 94% 0.004 85; /* neutral: page arrows, quiet chips */
+  --nc: 22% 0 0;
+  --b1: 100% 0 0; /* work surfaces */
+  --b2: 98.2% 0.003 85; /* canvas #faf9f7 */
+  --b3: 89% 0.006 85; /* borders */
+  --bc: 20% 0 0;
+  --rounded-box: 4px;
+  --rounded-btn: 3px;
+  --rounded-badge: 3px;
+  --tab-radius: 3px;
+  --btn-focus-scale: 1;
+  --animation-btn: 0s;
+}
+
+html,
+body,
+#root {
+  background: #faf9f7 !important;
+  color: #1b1b1b;
+  font-family: Inter, 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+}
+
+/* Buttons: square-shouldered, no drop shadow, a visible keyboard focus. */
+.op-btn {
+  box-shadow: none !important;
+  text-transform: none;
+  letter-spacing: 0.01em;
+  font-weight: 600;
+}
+.op-btn:focus-visible,
+.scentic-bar button:focus-visible {
+  outline: 2px solid #1b1b1b;
+  outline-offset: 2px;
+}
+.op-btn-secondary {
+  border: 1px solid #d9d6d0;
+}
+.op-btn-secondary:hover {
+  background: #f1efeb;
+  border-color: #1b1b1b;
+}
+.op-card,
+.op-modal-box {
+  border: 1px solid #e4e1db;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04) !important;
+}
+.op-input,
+.op-select,
+.op-textarea {
+  border-radius: 3px;
+}
+
+/* ── The bar the layer adds above the page (scentic-ceremony.js) ─────────────────────────────── */
+.scentic-bar {
+  position: sticky;
+  top: 0;
+  z-index: 40; /* above the page, below the page's own dialogs */
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 6px 16px;
+  background: #ffffff;
+  border-bottom: 1px solid #e4e1db;
+  font-size: 14px;
+  line-height: 1.3;
+}
+.scentic-bar__mark {
+  font-weight: 300;
+  letter-spacing: 0.42em;
+  font-size: 15px;
+  color: #1b1b1b;
+  white-space: nowrap;
+}
+.scentic-bar__rule {
+  width: 1px;
+  align-self: stretch;
+  margin: 6px 0;
+  background: #e4e1db;
+}
+.scentic-bar__hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: #5c5a55;
+}
+.scentic-bar__start {
+  flex: 0 0 auto;
+  border: 1px solid #1b1b1b;
+  background: #1b1b1b;
+  color: #ffffff;
+  border-radius: 3px;
+  padding: 7px 16px;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+}
+.scentic-bar__start:hover {
+  background: #000000;
+}
+.scentic-bar__start[hidden] {
+  display: none;
+}
+
+/* The field the signer is being taken to. */
+.scentic-next-field {
+  outline: 2px solid #1b1b1b !important;
+  outline-offset: 2px;
+}
+
+/* The selected way of signing (Draw, Upload image, Type) is a navy pill by a class of its own. */
+[class*='bg-[#002864]'] {
+  background-color: #1b1b1b !important;
+  border-radius: 3px !important;
+}
+
+/* ── The code screen: one centred panel, as the page a signer lands on after signing ─────────── */
+html[data-scentic-view='code'] .op-card {
+  max-width: 34rem;
+  margin: 8vh auto 0;
+  padding: 28px !important;
+}
+html[data-scentic-view='code'] .op-card > div {
+  width: 100% !important;
+}
+/* The bar above already carries the mark; a second logo in the panel said it twice. */
+html[data-scentic-view='code'] .op-card > div:first-child:has(> img) {
+  display: none;
+}
+html[data-scentic-view='code'] .op-card .op-btn {
+  width: 100%;
+  justify-content: center;
+}
+
+/* ── A phone ─────────────────────────────────────────────────────────────────────────────────── */
+@media (max-width: 767px) {
+  .scentic-bar {
+    padding: 6px 10px;
+    gap: 8px;
+  }
+  .scentic-bar__rule,
+  .scentic-bar__hint {
+    display: none;
+  }
+  .scentic-bar__mark {
+    flex: 1 1 auto;
+    font-size: 13px;
+  }
+  /* Thumb-sized targets on the controls that end the ceremony. */
+  [data-tut='reactourFifth'] .op-btn {
+    min-height: 40px;
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  html[data-scentic-view='code'] .op-card {
+    margin-top: 16px;
+    padding: 20px !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    scroll-behavior: auto !important;
+    transition: none !important;
+    animation-duration: 0.001s !important;
+  }
+}

@@ -67,6 +67,67 @@ edit(PDF, [
   ],
 ]);
 
+// The master key off the command line, and out of the log.
+//
+// On every start the server runs its migrations with `exec`, and built the command by writing the
+// master key into it: `... MASTER_KEY=<the key> npx parse-dbtool migrate`. The key was then in the
+// child's command line for any process on the machine to read, and when the command failed Node's
+// error message is "Command failed: <the whole command>", which the next line printed: the key, in
+// plain text, into the service's log, on a cold start that could not yet reach its own API.
+//
+// The command now names no secret. The child inherits the key from the server's own environment,
+// where it already is, beside the two values it did not have. What is printed on failure is the
+// exit code and the tool's own output with the key's value struck out, never the command.
+const STARTUP = '/usr/src/app/index.js';
+edit(STARTUP, [
+  [
+    "    const migrate = isWindows\n" +
+      "      ? `set APPLICATION_ID=${serverAppId}&& set SERVER_URL=${cloudServerUrl}&& set MASTER_KEY=${process.env.MASTER_KEY}&& npx parse-dbtool migrate`\n" +
+      "      : `APPLICATION_ID=${serverAppId} SERVER_URL=${cloudServerUrl} MASTER_KEY=${process.env.MASTER_KEY} npx parse-dbtool migrate`;\n" +
+      "    exec(migrate, (error, stdout, stderr) => {\n" +
+      "      if (error) {\n" +
+      "        console.error(`Error: ${error.message}`);\n" +
+      "        return;\n" +
+      "      }\n" +
+      "\n" +
+      "      if (stderr) {\n" +
+      "        console.error(`Error: ${stderr}`);\n" +
+      "        return;\n" +
+      "      }\n" +
+      "      console.log(`Command output: ${stdout}`);\n" +
+      "    });",
+    "    const migrate = 'npx parse-dbtool migrate';\n" +
+      "    const migrateEnv = { ...process.env, APPLICATION_ID: serverAppId, SERVER_URL: cloudServerUrl };\n" +
+      "    const withoutSecrets = text => {\n" +
+      "      let out = String(text ?? '');\n" +
+      "      for (const secret of [process.env.MASTER_KEY, process.env.MONGODB_URI, process.env.SMTP_PASS, process.env.PASS_PHRASE]) {\n" +
+      "        if (secret && secret.length >= 4) out = out.split(secret).join('[redacted]');\n" +
+      "      }\n" +
+      "      return out;\n" +
+      "    };\n" +
+      "    exec(migrate, { env: migrateEnv }, (error, stdout, stderr) => {\n" +
+      "      if (error) {\n" +
+      "        console.error(`Error: migrations did not run (exit ${error.code ?? 'unknown'}): ${withoutSecrets(stderr || stdout)}`);\n" +
+      "        return;\n" +
+      "      }\n" +
+      "\n" +
+      "      if (stderr) {\n" +
+      "        console.error(`Error: ${withoutSecrets(stderr)}`);\n" +
+      "        return;\n" +
+      "      }\n" +
+      "      console.log(`Command output: ${withoutSecrets(stdout)}`);\n" +
+      "    });",
+    'master key on the migration command line',
+  ],
+]);
+{
+  const startup = readFileSync(STARTUP, 'utf8');
+  if (/MASTER_KEY=\$\{/.test(startup) || /error\.message/.test(startup.slice(startup.indexOf("npx parse-dbtool migrate")))) {
+    console.error(`${STARTUP}: the master key is still written into a command, or a command is still printed`);
+    process.exit(1);
+  }
+}
+
 const SENDMAIL = '/usr/src/app/cloud/parsefunction/sendMailv3.js';
 edit(SENDMAIL, [
   [
