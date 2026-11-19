@@ -11,6 +11,14 @@
 #
 # Pinned to the digest that was running when this was written, so a rebuild changes only the name.
 ARG OPENSIGN_FRONTEND_BASE=mirror.gcr.io/opensign/opensign@sha256:4c62e38d9b9c5824f4dcc605b08b95a8fb25dce620a5fd122d76dfba2b9b2eb3
+# Where the text font comes from: any OpenSign server image (they all carry font/times.ttf; the
+# patch script refuses any other file by its hash). The page stamps typed text into a PDF in this
+# font and used to fetch it from upstream's CDN on every signature. It is Monotype's Times New
+# Roman, which upstream distributes with its server; it is copied from there at build and is not
+# committed to this repository.
+ARG OPENSIGN_FONT_SOURCE=us-east1-docker.pkg.dev/causal-hour-502018-c8/scentic-agpl/opensign-server:patched-1
+FROM ${OPENSIGN_FONT_SOURCE} AS fontsource
+
 FROM ${OPENSIGN_FRONTEND_BASE}
 
 ARG PRODUCT_NAME=Scentic
@@ -35,4 +43,21 @@ COPY deploy/opensign-assets/logo.png /tmp/scentic-logo.png
 # The page in Scentic's own look, with a Start button that takes a signer to their first field:
 # deploy/opensign-ceremony (presentation and one navigation aid; it never signs, declines or fills).
 COPY deploy/opensign-ceremony /tmp/opensign-ceremony
-RUN node /tmp/opensign-frontend-patches.mjs && rm -r /tmp/opensign-frontend-patches.mjs /tmp/scentic-logo.png /tmp/opensign-ceremony
+# Nothing is loaded from anybody else's server. The page fetched Bootstrap's stylesheet from
+# jsDelivr, an icon font and a text font from upstream's CDN, four handwriting fonts from Google,
+# the PDF renderer's worker from unpkg and a logo from a storage bucket. All are served from this
+# site: the licence-compatible ones are in deploy/opensign-assets/vendor (each with its source and
+# SHA-256 in MANIFEST.json), the worker and the animation player come from the image's own
+# node_modules, the text font from the server image. The icon font upstream links is the paid
+# Font Awesome Pro, which this repository has no licence to redistribute; the free edition is
+# served instead, and it has every icon the page uses but one (message-sms, a feature not offered).
+# The patch script fails the build if any of those hosts is still named anywhere in the page.
+COPY deploy/opensign-assets/vendor /tmp/opensign-vendor
+COPY --from=fontsource /usr/src/app/font/times.ttf /tmp/opensign-times.ttf
+RUN node /tmp/opensign-frontend-patches.mjs && rm -r /tmp/opensign-frontend-patches.mjs /tmp/scentic-logo.png /tmp/opensign-ceremony /tmp/opensign-vendor /tmp/opensign-times.ttf
+# Said again by the shell, so the claim does not rest on the script that made the change.
+RUN set -eu; \
+    cd /usr/src/app/build; \
+    for host in cdn.jsdelivr.net unpkg.com cdn.opensignlabs.com fonts.googleapis.com fonts.gstatic.com digitaloceanspaces.com; do \
+      ! grep -rlF "$host" --include='*.html' --include='*.js' --include='*.mjs' --include='*.css' --include='*.json' . || { echo "the page still names $host" >&2; exit 1; }; \
+    done

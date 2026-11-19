@@ -8,7 +8,9 @@
     "install:all": "pnpm install",
     "typecheck": "pnpm --filter gateway typecheck",
     "lint": "pnpm --filter gateway lint",
-    "test": "pnpm --filter gateway test",
+    "test": "pnpm --filter gateway test && pnpm --filter opensign-patches-tests test",
+    "test:gateway": "pnpm --filter gateway test",
+    "test:patches": "pnpm --filter opensign-patches-tests test",
     "build": "pnpm --filter gateway build",
     "dev": "pnpm --filter gateway dev"
   },

@@ -66,6 +66,35 @@ This repository is licensed under the GNU Affero General Public License v3.0 (AG
 
 See `docs/SOURCE_OFFER.md` for full details.
 
+## Tests
+
+```
+pnpm install
+pnpm test            # everything below
+pnpm test:gateway    # the gateway (gateway/src/tests)
+pnpm test:patches    # what this repository changes in OpenSign at image build (deploy/tests)
+```
+
+`deploy/tests` covers the parts that are applied to OpenSign when its images are built:
+
+| Suite | What it runs |
+|-------|--------------|
+| `server-patches.test.mjs` | Every edit in `deploy/opensign-server-patches.mjs` over a copy of the **real upstream server source** in `vendor/opensign` (fetched by `scripts/update-vendor.sh`, not committed): each applies to exactly one place, a second run is refused edit by edit, and every patched file still parses. Skipped, saying why, when `vendor/opensign` is not on disk. |
+| `frontend-patches.test.mjs` | Every transform in `deploy/opensign-frontend-patches.mjs` over text cut from the built signing page, the whole script over a small build folder laid out like it, and the hashes of the third-party files in `deploy/opensign-assets/vendor`. The page exists only built, inside the upstream image, so the proof that the real page takes the patch is the image build below. |
+| `ceremony.test.mjs` | `deploy/opensign-ceremony/scentic-ceremony.js` in jsdom against a page shaped like the signing page: the bar and Start, what Start never clicks, and what the bar says once a document is declined, expired, withdrawn or finished. |
+| `certificate.test.mjs` | The patched certificate generator, run on fixture documents; the text of the PDFs it makes is read back. |
+
+Building the images runs the same scripts for real and fails if any edit does not apply. The signing page's build also fails if the page still names a host it used to load from:
+
+```
+docker build -f deploy/Dockerfile.opensign -t local/opensign:test .
+docker build -f deploy/Dockerfile.opensign-server -t local/opensign-server:test .
+```
+
+Both default to base images in the project's registry; `--build-arg OPENSIGN_FONT_SOURCE=…` (page) and `--build-arg OPENSIGN_BASE=…` (server) name others.
+
+One gateway suite talks to a real PostgreSQL when told where one is, and is skipped otherwise: `CONTRACT_POSTGRES_URL=postgres://user:pass@host:port/db pnpm test:gateway` (an empty, throwaway database).
+
 ## License
 
 - **This repository (gateway code, docs, scripts, deploy configs):** AGPL-3.0

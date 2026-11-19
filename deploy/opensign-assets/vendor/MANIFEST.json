@@ -1,0 +1,124 @@
+{
+  "note": "Third-party files the signing page used to load from other hosts, served from the page itself instead. Each is unmodified from its source unless it says \"written for this repository\". deploy/tests checks every hash; deploy/opensign-frontend-patches.mjs checks them again at image build.",
+  "files": [
+    {
+      "path": "bootstrap-4.0.0/LICENSE",
+      "sha256": "7bdab4494c73e3d7271a70d395947a9eb2a68f08d98740fc2308843e319298f9",
+      "bytes": 1131,
+      "source": "https://cdn.jsdelivr.net/npm/bootstrap@4.0.0/LICENSE",
+      "licence": "MIT"
+    },
+    {
+      "path": "bootstrap-4.0.0/bootstrap.min.css",
+      "sha256": "2c0f3dcfe93d7e380c290fe4ab838ed8cadff1596d62697f5444be460d1f876d",
+      "bytes": 144877,
+      "source": "https://cdn.jsdelivr.net/npm/bootstrap@4.0.0/dist/css/bootstrap.min.css",
+      "licence": "MIT"
+    },
+    {
+      "path": "fontawesome-free-6.5.2/LICENSE.txt",
+      "sha256": "9b914eae88817d63b576eab5aafde7068c7a1abae125d7cdfb034f1da43a9afc",
+      "bytes": 7427,
+      "source": "npm:@fortawesome/fontawesome-free@6.5.2/LICENSE.txt",
+      "licence": "Font Awesome Free: CC-BY-4.0 (icons), OFL-1.1 (fonts), MIT (code)"
+    },
+    {
+      "path": "fontawesome-free-6.5.2/css/all.min.css",
+      "sha256": "5ceaaba22d75b58e04150311f596306562a3e595e27ed4b1dfa451b82dda9e50",
+      "bytes": 103009,
+      "source": "npm:@fortawesome/fontawesome-free@6.5.2/css/all.min.css",
+      "licence": "Font Awesome Free: CC-BY-4.0 (icons), OFL-1.1 (fonts), MIT (code)"
+    },
+    {
+      "path": "fontawesome-free-6.5.2/webfonts/fa-brands-400.woff2",
+      "sha256": "232c6f6a7678304f9efaa26f30b1610debc2ba9f4cd636b5e6751c8d73761b92",
+      "bytes": 117852,
+      "source": "npm:@fortawesome/fontawesome-free@6.5.2/webfonts/fa-brands-400.woff2",
+      "licence": "Font Awesome Free: CC-BY-4.0 (icons), OFL-1.1 (fonts), MIT (code)"
+    },
+    {
+      "path": "fontawesome-free-6.5.2/webfonts/fa-regular-400.woff2",
+      "sha256": "c27da6f833431da5aa295c44540bfac0fd8270ba6a3c4346427006d8a7b34b76",
+      "bytes": 25392,
+      "source": "npm:@fortawesome/fontawesome-free@6.5.2/webfonts/fa-regular-400.woff2",
+      "licence": "Font Awesome Free: CC-BY-4.0 (icons), OFL-1.1 (fonts), MIT (code)"
+    },
+    {
+      "path": "fontawesome-free-6.5.2/webfonts/fa-solid-900.woff2",
+      "sha256": "ae17c16afbea216707b2203ea1cf9bdb45b9bfe47d0f4ae3258ddbc6294dd02f",
+      "bytes": 156400,
+      "source": "npm:@fortawesome/fontawesome-free@6.5.2/webfonts/fa-solid-900.woff2",
+      "licence": "Font Awesome Free: CC-BY-4.0 (icons), OFL-1.1 (fonts), MIT (code)"
+    },
+    {
+      "path": "fontawesome-free-6.5.2/webfonts/fa-v4compatibility.woff2",
+      "sha256": "c7a869faca299d15be10a01f19d0765a7c4d46d8922d9b9317235c1e4a6f0982",
+      "bytes": 4792,
+      "source": "npm:@fortawesome/fontawesome-free@6.5.2/webfonts/fa-v4compatibility.woff2",
+      "licence": "Font Awesome Free: CC-BY-4.0 (icons), OFL-1.1 (fonts), MIT (code)"
+    },
+    {
+      "path": "handwriting/OFL-cedarville-cursive.txt",
+      "sha256": "0e441ae9f18ad0c294cc5b6ae3974c2db1614cab220598578b1b58c4cc334485",
+      "bytes": 4362,
+      "source": "https://github.com/google/fonts/blob/main/ofl/cedarvillecursive/OFL.txt",
+      "licence": "OFL-1.1"
+    },
+    {
+      "path": "handwriting/OFL-dancing-script.txt",
+      "sha256": "6f090277c00af96651ce6dbcc38ff1591047a3bffef486e80b6a32e8276a8201",
+      "bytes": 4443,
+      "source": "https://github.com/google/fonts/blob/main/ofl/dancingscript/OFL.txt",
+      "licence": "OFL-1.1"
+    },
+    {
+      "path": "handwriting/OFL-delicious-handrawn.txt",
+      "sha256": "3fa395232efa6d42e5af84de2503875c895b24a9299bb84aa54633c74bf8a0d2",
+      "bytes": 4409,
+      "source": "https://github.com/google/fonts/blob/main/ofl/delicioushandrawn/OFL.txt",
+      "licence": "OFL-1.1"
+    },
+    {
+      "path": "handwriting/OFL-fasthand.txt",
+      "sha256": "896b66a47308af2d268b0d93c59bb4c9e82870f63565b819e84f789c0825d992",
+      "bytes": 4386,
+      "source": "https://github.com/google/fonts/blob/main/ofl/fasthand/OFL.txt",
+      "licence": "OFL-1.1"
+    },
+    {
+      "path": "handwriting/cedarville-cursive.woff2",
+      "sha256": "ac7aa92ed78f9e9598a1efa3aa33b3963daf276b1f4851baa104f647d5f648d8",
+      "bytes": 23144,
+      "source": "https://fonts.gstatic.com/s/cedarvillecursive/v18/yYL00g_a2veiudhUmxjo5VKkoqA-B_nuIrpw.woff2",
+      "licence": "OFL-1.1"
+    },
+    {
+      "path": "handwriting/dancing-script.woff2",
+      "sha256": "570e4265bbcb453353ce2fdf63d179332d8daa92691d567547b8a383f3b46c3b",
+      "bytes": 23816,
+      "source": "https://fonts.gstatic.com/s/dancingscript/v29/If2cXTr6YS-zF4S-kcSWSVi_sxjsohD9F50Ruu7BMSo3Sup8.woff2",
+      "licence": "OFL-1.1"
+    },
+    {
+      "path": "handwriting/delicious-handrawn.woff2",
+      "sha256": "2326555b6a7faec1a227b0b8595f51530f981dc6077b5e6ed5aaeb4e585599d7",
+      "bytes": 26492,
+      "source": "https://fonts.gstatic.com/s/delicioushandrawn/v10/wlpsgx_NAUNkpmKQifcxkQchDFo3fJ1F25BC.woff2",
+      "licence": "OFL-1.1"
+    },
+    {
+      "path": "handwriting/fasthand.woff2",
+      "sha256": "81701671ab1c9710b3fc045c3b029f991a4a0e3891f3fdecd7be7e7a1e62f7e5",
+      "bytes": 50156,
+      "source": "https://fonts.gstatic.com/s/fasthand/v33/0yb9GDohyKTYn_ZEERkpaE0.woff2",
+      "licence": "OFL-1.1"
+    },
+    {
+      "path": "handwriting/handwriting.css",
+      "sha256": "fff697b94bd08314106659492ea5f424c77e781b60bc6b76d557e22862ab38ee",
+      "bytes": 1776,
+      "source": "written for this repository",
+      "licence": "AGPL-3.0-or-later"
+    }
+  ]
+}

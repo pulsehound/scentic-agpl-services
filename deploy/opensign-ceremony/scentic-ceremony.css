@@ -189,3 +189,53 @@ html[data-scentic-view='code'] .op-card .op-btn {
     animation-duration: 0.001s !important;
   }
 }
+
+/* A message from the page, in the page: where OpenSign raised a browser dialog (alert). Under the
+ * bar, the width of the page, in the one warning colour; it does not cover the document. */
+.scentic-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 16px;
+  background: #fdf3f1;
+  border-bottom: 1px solid #e3b7ae;
+  color: #7a1f12;
+  font: 400 14px/1.45 'Segoe UI', system-ui, -apple-system, Arial, sans-serif;
+}
+.scentic-notice[hidden] {
+  display: none;
+}
+.scentic-notice__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.scentic-notice__dismiss {
+  flex: 0 0 auto;
+  padding: 2px 10px;
+  background: transparent;
+  border: 1px solid #c98b7f;
+  border-radius: 3px;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.scentic-notice__dismiss:focus-visible {
+  outline: 2px solid #1b1b1b;
+  outline-offset: 2px;
+}
+
+/* The icon font is the free one, served from this site (deploy/opensign-assets/vendor). The page
+ * asks for styles only the paid font has (light, thin, duotone); they are drawn from the free solid
+ * face rather than left blank. */
+.fa-light,
+.fal,
+.fa-thin,
+.fat,
+.fa-duotone,
+.fad,
+.fa-sharp,
+.fass {
+  font-family: 'Font Awesome 6 Free' !important;
+  font-weight: 900 !important;
+}

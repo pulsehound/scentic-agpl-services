@@ -1,0 +1,44 @@
+{
+  "note": "The signing page's own wording, in plain words. Applied over OpenSign's English strings at image build (deploy/opensign-frontend-patches.mjs), which fails if upstream no longer has a key. scentic-ceremony.js tells the page's state by the titles and sentences marked in `states`; deploy/tests checks the two agree.",
+  "locale": {
+    "otp-verification": "Enter your code",
+    "enter-otp": "We emailed you a 6-digit code. Enter it to open the document.",
+    "otp-placeholder": "6-digit code",
+    "get-otp-alert": "To keep this document private, we’ll email a code to this address.",
+    "get-verification-code": "Email me a code",
+    "invalid-otp": "That code isn’t right, or it has expired. Check your latest email, or send a new code.",
+    "enter-otp-alert": "Please enter the code from your email.",
+    "resend": "Send a new code",
+    "welcome": "Welcome",
+
+    "valid-email-alert": "Please enter a valid email address.",
+    "something-went-wrong-mssg": "We couldn’t open this just now. Please refresh the page. If it happens again, the link may no longer be available — please contact the person who sent it to you.",
+    "user-not-found": "We couldn’t find a signing request for this email address. Please check the address, or contact the person who sent you the link.",
+    "user-not-exist": "We couldn’t open this document for you. Please contact the person who sent you the link.",
+    "document-deleted": "This document is no longer available. Please contact the person who sent it to you.",
+    "document-not-found": "This document is no longer available. Please contact the person who sent it to you.",
+    "document-signed-alert-7": "This document is no longer available.",
+
+    "document-declined": "Decline to sign",
+    "document-decline": "Decline to sign",
+    "decline-alert-1": "Are you sure you want to decline this document? Nobody will be able to sign it afterwards.",
+    "decline-alert-2": "You declined this document. Nothing more is needed from you.",
+    "decline-alert-3": "This document was declined, so it can no longer be signed.",
+    "decline-by": "Declined by",
+    "document-signed-alert-6": "This document was declined by one of the people asked to sign it.",
+
+    "expired-doc-title": "This request has expired",
+    "expired-on-mssg": "This document could be signed until {{expiredDate}}. Please contact the person who sent it to you.",
+
+    "document-signed-alert": "Thank you. You have signed this document.",
+    "document-signed-alert-1": "Thank you. You have signed this document. You can download or print a copy now; once everyone has signed, you will receive the completed document.",
+    "document-signed-alert-4": "Everyone has signed this document.",
+    "document-signed-alert-5": "Everyone has signed this document.",
+    "participant-completed-signing": "Everyone has signed this document."
+  },
+  "states": {
+    "declinedTitle": "document-declined",
+    "expiredTitle": "expired-doc-title",
+    "finished": ["document-signed-alert", "document-signed-alert-1", "document-signed-alert-4", "document-signed-alert-5", "participant-completed-signing"]
+  }
+}
