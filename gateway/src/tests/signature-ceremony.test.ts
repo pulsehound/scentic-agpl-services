@@ -682,6 +682,7 @@ describe('create: where the signers sign', () => {
       concurrentSigning: 'emulated',
       parallelSigning: 'supported',
       perSignerDecline: 'supported',
+      certificateEventHistory: 'supported',
     });
   });
 });

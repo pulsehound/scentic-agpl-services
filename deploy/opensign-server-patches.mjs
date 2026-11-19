@@ -9,7 +9,7 @@
 // At image build this file is run as a script (`node opensign-server-patches.mjs`) and patches
 // /usr/src/app. Imported, it does nothing until applyServerPatches is called with another root,
 // which is how deploy/tests runs every edit over the vendored upstream source.
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 const count = (text, part) => (part === '' ? 0 : text.split(part).length - 1);
@@ -420,6 +420,70 @@ export function applyServerPatches({ root = '/usr/src/app', filesDir = '/tmp/ope
         "  if (!request.master && !request.user) throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, 'Sign in to open this document.');\n" +
         '});',
       'login and anonymous-read guards',
+    ],
+  ]);
+
+  // ── The completion certificate ────────────────────────────────────────────────────────────────
+  //
+  // Where Scentic hosts the signing ceremony, its own record of it (the document's ScenticAudit:
+  // every link opened, code verified, view, signature and refusal, with time, address and browser)
+  // is printed on the certificate after the signers, as "Event history". The drawing is ours
+  // (opensign-server-files/scenticEventHistory.js), added beside the generator; the generator gains
+  // an import and one call, after the last signer and before the PDF is saved. A document with no
+  // ScenticAudit gets the certificate it got before.
+
+  /** Add a file of ours where upstream has none. */
+  function add(file, source) {
+    if (existsSync(file)) {
+      refuse(`${file}: ${readFileSync(file, 'utf8') === readFileSync(source, 'utf8') ? 'already patched (added)' : 'upstream now has a file of this name'}`);
+      return;
+    }
+    writeFileSync(file, readFileSync(source, 'utf8'));
+    applied.push({ file: relative(file), why: 'added', count: 1 });
+  }
+
+  add(`${FN}/pdf/scenticEventHistory.js`, `${FILES}/scenticEventHistory.js`);
+  edit(`${FN}/pdf/GenerateCertificate.js`, [
+    [
+      "import { formatDateTime } from '../../../Utils.js';\n",
+      "import { formatDateTime } from '../../../Utils.js';\n" + "import { drawScenticEventHistory } from './scenticEventHistory.js';\n",
+      'certificate event history import',
+    ],
+    [
+      '    yPosition8 = yPosition8 - 174;\n  }\n\n  const pdfBytes = await pdfDoc.save();\n  return pdfBytes;\n',
+      '    yPosition8 = yPosition8 - 174;\n  }\n\n' +
+        "  // Scentic: its own record of the ceremony, after the signers. Never the reason a certificate\n" +
+        '  // is not made: a record that cannot be drawn is left off and said so in the log.\n' +
+        '  try {\n' +
+        '    drawScenticEventHistory({\n' +
+        '      pdfDoc,\n' +
+        '      font: timesRomanFont,\n' +
+        '      events: docDetails?.ScenticAudit,\n' +
+        '      page: currentPage,\n' +
+        '      y: yPosition1,\n' +
+        '      startX,\n' +
+        '      startY,\n' +
+        '      borderColor,\n' +
+        '      titleColor,\n' +
+        '    });\n' +
+        '  } catch (err) {\n' +
+        "    console.log('event history left off the certificate:', err?.message);\n" +
+        '  }\n\n' +
+        '  const pdfBytes = await pdfDoc.save();\n  return pdfBytes;\n',
+      'certificate event history',
+    ],
+  ]);
+
+  // A certificate made again later (generatecertificate, by document id) is signed "Digitally signed
+  // by OpenSign", with upstream's address as the contact — the name a reader sees in their PDF
+  // viewer's signature panel. The platform's name, from APP_NAME like the mails; the contact as for
+  // the signed document itself.
+  edit(`${FN}/generateCertificatebydocId.js`, [
+    ["const eSignName = 'OpenSign';", "const eSignName = process.env.APP_NAME || 'Scentic';", 'certificate signature name'],
+    [
+      "const eSigncontact = 'hello@opensignlabs.com';",
+      "const eSigncontact = process.env.ESIGN_CONTACT || 'esign@scentic.com';",
+      'certificate signature contact',
     ],
   ]);
 

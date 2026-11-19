@@ -1078,7 +1078,7 @@ Request:
 | `signaturePngBase64` | yes | Standard base64 of a PNG (magic bytes checked), at most 1 MiB decoded. A leading `data:image/png;base64,` is accepted and dropped. Stored by OpenSign and drawn on the certificate. |
 | `ipAddress` | no | See above. |
 | `baseSha256` | yes | 64 hex characters, either case. |
-| `auditEvents` | no | Array, at most 500 entries. Each: `at` (required; any string `Date` parses, stored as ISO 8601 UTC), `event` (required, non-empty), `actor` (required string, may be empty), and optional `email`, `ipAddress` (an IP or empty), `userAgent`, `detail`. Every string is reduced to plain text (markup, control and direction characters removed, single line) and cut to 300 characters; `email` is lowercased. One bad entry refuses the whole request (`INVALID_INPUT`, `details[0].field` like `auditEvents[3].at`). Stored on the OpenSign document as `ScenticAudit` **before** `signPdf` runs, sorted by `at`. **Each submission replaces the stored list**, so send the complete history of the request every time, not only this signer's events. Omitted or `null` leaves the stored list as it is. |
+| `auditEvents` | no | Array, at most 500 entries. Each: `at` (required; any string `Date` parses, stored as ISO 8601 UTC), `event` (required, non-empty), `actor` (required string, may be empty), and optional `email`, `ipAddress` (an IP or empty), `userAgent`, `detail`. Every string is reduced to plain text (markup, control and direction characters removed, single line) and cut to 300 characters; `email` is lowercased. One bad entry refuses the whole request (`INVALID_INPUT`, `details[0].field` like `auditEvents[3].at`). Stored on the OpenSign document as `ScenticAudit` **before** `signPdf` runs, sorted by `at`, and printed on the certificate as "Event history" (§6.3.9.7). **Each submission replaces the stored list**, so send the complete history of the request every time, not only this signer's events. Omitted or `null` leaves the stored list as it is. |
 
 Order of work, under a per-workflow lock: read the document → refuse if closed (`INVALID_STATE`) → find the signer (`NOT_A_SIGNER`, `ALREADY_SIGNED`) → fetch the current PDF and compare its SHA-256 with `baseSha256` (`STALE_DOCUMENT`) → write `ScenticAudit` → sign in as the signer → `signPdf` with `X-Forwarded-For: <ipAddress>` → read the document back.
 
@@ -1160,9 +1160,13 @@ Response `200`:
 
 `POST .../poll` → `200` `data` gains two fields: `{ "status", "changed", "completedPdfReady", "certificateReady", "declineReason": "string | null", "declinedByEmail": "string" }`.
 
-#### 6.3.9.7 Capabilities
+#### 6.3.9.7 Capabilities and the certificate
 
-`GET /api/v1/providers/capabilities` gains: `"scenticCeremony": "emulated"`, `"concurrentSigning": "emulated"`, `"perSignerDecline": "supported"` (`"parallelSigning": "supported"` was already there).
+`GET /api/v1/providers/capabilities` gains: `"scenticCeremony": "emulated"`, `"concurrentSigning": "emulated"`, `"perSignerDecline": "supported"`, `"certificateEventHistory": "supported"` (`"parallelSigning": "supported"` was already there).
+
+The completion certificate prints `ScenticAudit` as an "Event history" section after the signers (`deploy/opensign-server-patches.mjs`, `deploy/opensign-server-files/scenticEventHistory.js`): one row per event in time order — time as `YYYY-MM-DD HH:mm:ss UTC`, event, who (`actor`, with `email` beneath), IP address (whole; an IPv6 address is drawn smaller rather than cut), and browser (`userAgent`, cut to its column with `...`); `detail` is printed beneath the event. It runs over as many pages as it needs, each continued page headed again. A document with no `ScenticAudit`, or an empty one, gets the certificate it got before.
+
+Limits, known: at most 500 events are printed. The certificate's font (Times New Roman) has Latin, Greek, Cyrillic, Hebrew and Arabic letters; any other character (Chinese, emoji) is printed as `?`. Hebrew is put in reading order in the event history, run by run, without full bidirectional layout (a line mixing Hebrew and Latin keeps the order of its runs; Arabic is drawn unjoined). OpenSign's own signer block above it is unchanged and draws a Hebrew name in the order it was typed, left to right.
 
 ### 6.4 Webhooks (gateway → Scentic)
 

@@ -360,6 +360,9 @@ export const SIGNATURE_CAPABILITIES = {
   // A signer's refusal names the signer: `declinedByEmail` in a status, and that signer's own
   // status reads 'declined'.
   perSignerDecline: 'supported',
+  // Scentic's own record of a ceremony (auditEvents on ceremony/sign) is printed on the completion
+  // certificate as "Event history" (deploy/opensign-server-files/scenticEventHistory.js).
+  certificateEventHistory: 'supported',
   smsVerification: 'unsupported',
   bulkSend: 'unsupported',
 } as const;

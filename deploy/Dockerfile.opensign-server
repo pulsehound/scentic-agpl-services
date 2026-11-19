@@ -68,8 +68,9 @@ RUN set -eu; \
 # email from OpenSign™" — is the firm's platform's, set by APP_NAME, Scentic unless told otherwise.
 RUN set -eu;     f=/usr/src/app/Utils.js;     sed -i "s/^export const appName = 'OpenSign™';/export const appName = process.env.APP_NAME || 'Scentic';/" "$f";     grep -q "export const appName = process.env.APP_NAME || 'Scentic';" "$f" || { echo "appName not patched" >&2; exit 1; }
 
-# The completion mail, the body-size limits, and who can open a document (email codes, signers'
-# accounts, the code email): see opensign-server-patches.mjs and deploy/opensign-server-files.
+# The completion mail, the body-size limits, who can open a document (email codes, signers'
+# accounts, the code email), and the certificate's event history: see opensign-server-patches.mjs
+# and deploy/opensign-server-files.
 COPY deploy/opensign-server-patches.mjs /tmp/opensign-server-patches.mjs
 COPY deploy/opensign-server-files /tmp/opensign-server-files
 RUN node /tmp/opensign-server-patches.mjs && rm -r /tmp/opensign-server-patches.mjs /tmp/opensign-server-files
