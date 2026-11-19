@@ -446,7 +446,8 @@ export function applyServerPatches({ root = '/usr/src/app', filesDir = '/tmp/ope
   edit(`${FN}/pdf/GenerateCertificate.js`, [
     [
       "import { formatDateTime } from '../../../Utils.js';\n",
-      "import { formatDateTime } from '../../../Utils.js';\n" + "import { drawScenticEventHistory } from './scenticEventHistory.js';\n",
+      "import { formatDateTime } from '../../../Utils.js';\n" +
+        "import { drawScenticEventHistory, scenticSignerName } from './scenticEventHistory.js';\n",
       'certificate event history import',
     ],
     [
@@ -459,6 +460,7 @@ export function applyServerPatches({ root = '/usr/src/app', filesDir = '/tmp/ope
         '      pdfDoc,\n' +
         '      font: timesRomanFont,\n' +
         '      events: docDetails?.ScenticAudit,\n' +
+        '      names: docDetails?.ScenticSignerNames,\n' +
         '      page: currentPage,\n' +
         '      y: yPosition1,\n' +
         '      startX,\n' +
@@ -471,6 +473,94 @@ export function applyServerPatches({ root = '/usr/src/app', filesDir = '/tmp/ope
         '  }\n\n' +
         '  const pdfBytes = await pdfDoc.save();\n  return pdfBytes;\n',
       'certificate event history',
+    ],
+  ]);
+
+  // The name in each signer's block. OpenSign prints the contact's name, and keeps one contact per
+  // email address for the whole platform: the name on one firm's certificate was whatever the first
+  // firm ever to write to that address had called them. The signer confirms their own name when
+  // they sign (the document's ScenticSignerNames, written by the gateway); that is what is printed,
+  // and the contact's name only where a document has none.
+  edit(`${FN}/pdf/GenerateCertificate.js`, [
+    [
+      '          return {\n            ...data,\n            ipAddress: x.ipAddress,\n',
+      '          return {\n            ...data,\n' +
+        '            Name: scenticSignerName(docDetails, data?.Email, data?.Name, timesRomanFont),\n' +
+        '            ipAddress: x.ipAddress,\n',
+      'certificate signer name',
+    ],
+  ]);
+  // The same in the signed PDF itself, whose signature says who it was signed for.
+  edit(PDF, [
+    [
+      "const signersName = _resDoc.Signers?.map(x => x.Name + ' <' + x.Email + '>');",
+      "const scenticName = x => (Array.isArray(_resDoc?.ScenticSignerNames) ? _resDoc.ScenticSignerNames : []).find(n => String(n?.email || '').toLowerCase() === String(x?.Email || '').toLowerCase())?.name || x.Name;\n" +
+        "        const signersName = _resDoc.Signers?.map(x => scenticName(x) + ' <' + x.Email + '>');",
+      'signature reason names',
+    ],
+  ]);
+
+  // ── Documents Scentic hosts the signing of ────────────────────────────────────────────────────
+  //
+  // A document made with the gateway's `ceremony: 'scentic'` carries ScenticCeremony: true. Scentic
+  // authenticates its signers, decides whose turn it is, and submits each signature through the
+  // gateway, which calls the functions below with the master key, naming the signer it acts for.
+  // OpenSign's own page must not be a second way in: it knows nothing of Scentic's order (the
+  // document has OpenSign's ordering off), so anybody on the document who learned its id could
+  // have signed out of turn there. For these documents each function answers the server's own
+  // calls only. No signer's session opens, views, signs or declines them; no code is mailed for
+  // them (opensign-server-files/SendMailOTPv1.js). Every other document is untouched.
+  edit(`${FN}/getDocument.js`, [
+    [
+      "          const IsEnableOTP = res?.get('IsEnableOTP') || false;\n          const document = JSON.parse(JSON.stringify(res));\n",
+      "          const IsEnableOTP = res?.get('IsEnableOTP') || false;\n" +
+        "          if (res.get('ScenticCeremony') === true && !request.master) {\n" +
+        '            return { error: "You don\'t have access of this document!" };\n' +
+        '          }\n' +
+        '          const document = JSON.parse(JSON.stringify(res));\n',
+      'getDocument for a scentic ceremony',
+    ],
+  ]);
+  edit(PDF, [
+    [
+      '    const resDoc = await docQuery.first({ useMasterKey: true });\n' +
+        '    if (!resDoc) {\n' +
+        "      throw new Parse.Error(Parse.Error.OBJECT_NOT_FOUND, 'Document not found.');\n" +
+        '    }\n',
+      '    const resDoc = await docQuery.first({ useMasterKey: true });\n' +
+        '    if (!resDoc) {\n' +
+        "      throw new Parse.Error(Parse.Error.OBJECT_NOT_FOUND, 'Document not found.');\n" +
+        '    }\n' +
+        "    if (resDoc.get('ScenticCeremony') === true && !req?.master) {\n" +
+        "      throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, 'This document is signed on another page.');\n" +
+        '    }\n',
+      'signPdf for a scentic ceremony',
+    ],
+  ]);
+  edit(`${FN}/declinedocument.js`, [
+    [
+      "      const isEnableOTP = updateDoc?.get('IsEnableOTP') || false;\n",
+      "      const isEnableOTP = updateDoc?.get('IsEnableOTP') || false;\n" +
+        "      if (updateDoc.get('ScenticCeremony') === true && !request.master) {\n" +
+        "        throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, 'This document is signed on another page.');\n" +
+        '      }\n',
+      'declinedoc for a scentic ceremony',
+    ],
+  ]);
+  edit(`${FN}/triggerEvent.js`, [
+    [
+      "    docQuery.select(['Name', 'IsEnableOTP', 'SignedUrl', 'AuditTrail']);",
+      "    docQuery.select(['Name', 'IsEnableOTP', 'SignedUrl', 'AuditTrail', 'ScenticCeremony']);",
+      'triggerevent reads the ceremony mark',
+    ],
+    [
+      // The server's own call needs no session: the gateway records a view for the signer it names.
+      '    if (isEnableOTP) {\n      let userId;\n',
+      "    if (docRes?.get('ScenticCeremony') === true && !request.master) {\n" +
+        "      return { message: 'User not found!' };\n" +
+        '    }\n' +
+        '    if (isEnableOTP && !request.master) {\n      let userId;\n',
+      'triggerevent for a scentic ceremony',
     ],
   ]);
 

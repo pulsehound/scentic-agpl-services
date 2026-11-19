@@ -31,6 +31,14 @@ export interface OpenSignDocument {
   DeclineBy?: { objectId?: string; email?: string; username?: string };
   /** Scentic's own record of the ceremony, printed on the certificate (ceremony/sign). */
   ScenticAudit?: unknown[];
+  /** Scentic hosts this document's signing; OpenSign's own page and code mail refuse it. */
+  ScenticCeremony?: boolean;
+  /**
+   * The name each signer confirmed when signing this document. On the document, never on the
+   * contact, which OpenSign shares across every firm. A list because an address has dots, which a
+   * stored key cannot.
+   */
+  ScenticSignerNames?: Array<{ email: string; name: string }>;
   /**
    * Who sent it. Present on the document OpenSign returns, and the correct
    * source for a later reminder — a reminder should come from whoever sent the

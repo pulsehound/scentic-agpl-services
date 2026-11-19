@@ -313,6 +313,11 @@ export class OpenSignClient {
     firmName?: string;
     /** OpenSign's own reminder mail every few days. Off where Scentic chases signers itself. */
     automaticReminders?: boolean;
+    /**
+     * Scentic hosts the signing: the document is marked so OpenSign's own page and its code mail
+     * refuse it (deploy/opensign-server-patches.mjs). Never set for a hosted document.
+     */
+    scenticCeremony?: boolean;
   }): Promise<OpenSignResult<{ objectId: string }>> {
     const session = await this.ensureAdminSession();
     if (!session.success) return { success: false, error: session.error };
@@ -366,6 +371,7 @@ export class OpenSignClient {
       ...(params.requestBody ? { RequestBody: params.requestBody } : {}),
       ...(params.senderName ? { SenderName: params.senderName } : {}),
       ...(params.firmName ? { FirmName: params.firmName } : {}),
+      ...(params.scenticCeremony ? { ScenticCeremony: true } : {}),
     });
     return created;
   }
@@ -559,14 +565,17 @@ export class OpenSignClient {
   //
   // Scentic authenticates the signer itself, shows the document, and stamps the signer's fields
   // onto the PDF on its own server. What reaches here is the finished page set, submitted to
-  // OpenSign *as that signer* so OpenSign still orders, seals and certifies it. Each call below is
-  // made with the signer's own session — the patched server binds a signature and a refusal to the
-  // signed-in account (deploy/opensign-server-patches.mjs) — and names the signer's address as the
-  // first X-Forwarded-For entry, which is where OpenSign reads the address it writes in its audit
-  // trail (vendor index.js getUserIP). Without it the trail would name this gateway.
+  // OpenSign *for that signer* so OpenSign still counts, seals and certifies it.
   //
-  // A session token is never logged, returned to a caller, or kept: it is asked for, used for one
-  // call and dropped.
+  // Each call below is the server's own — made with the master key, naming the signer it acts for
+  // — and not made as the signer. No session for a signer's account is ever created here: there is
+  // no token to leak, and OpenSign's own page, which works by such sessions, is closed to these
+  // documents (their ScenticCeremony mark; deploy/opensign-server-patches.mjs). The patched server
+  // takes a master-key signature, view or refusal for the contact or account named in the call.
+  //
+  // The signer's address goes as the first X-Forwarded-For entry, which is where OpenSign reads
+  // the address it writes in its audit trail (vendor index.js getUserIP). Without it the trail
+  // would name this gateway.
 
   /** The Parse account behind a signer's contact. */
   async getContactUserId(contactId: string): Promise<OpenSignResult<string>> {
@@ -583,52 +592,29 @@ export class OpenSignClient {
   }
 
   /**
-   * A session for one signer's account, by Parse's /loginAs with the master key — the same call the
-   * server's own code sign-in makes (deploy/opensign-server-files/AuthLoginAsMail.js). No password
-   * is involved; signers' accounts have none anybody knows.
+   * Only the platform's own account may open this document: every signer's account is taken off
+   * its ACL. linkcontacttodoc puts each signer's account on it, which is what lets OpenSign's page
+   * show them the document; where Scentic shows it, nobody needs that, and an account that cannot
+   * read the document cannot fetch it or its files by any other route either.
    */
-  async signerSession(userId: string): Promise<OpenSignResult<{ sessionToken: string }>> {
-    try {
-      const resp = await fetch(`${this.config.baseUrl}/loginAs`, {
-        method: 'POST',
-        headers: this.headers(true),
-        body: JSON.stringify({ userId }),
-      });
-      if (!resp.ok) {
-        return { success: false, error: { code: 'OPENSIGN_AUTH_FAILED', message: `OpenSign loginAs returned ${resp.status}` } };
-      }
-      const json = await resp.json() as { sessionToken?: string };
-      if (!json.sessionToken) {
-        return { success: false, error: { code: 'OPENSIGN_AUTH_FAILED', message: 'OpenSign loginAs gave no session' } };
-      }
-      return { success: true, data: { sessionToken: json.sessionToken } };
-    } catch {
-      return { success: false, error: { code: 'OPENSIGN_UNREACHABLE', message: 'OpenSign loginAs request failed' } };
-    }
+  async restrictToPlatform(docId: string): Promise<OpenSignResult<true>> {
+    const session = await this.ensureAdminSession();
+    if (!session.success) return { success: false, error: session.error };
+    if (!this.adminUserId) return { success: false, error: { code: 'OPENSIGN_API_ERROR', message: 'No platform account' } };
+    return this.updateDocument(docId, { ACL: { [this.adminUserId]: { read: true, write: true } } });
   }
 
-  /** A cloud function called as one signer, from that signer's address. */
-  private async callFunctionAs<T>(
-    name: string,
-    params: Record<string, unknown>,
-    as: { sessionToken: string; ipAddress: string },
-  ): Promise<OpenSignResult<T>> {
+  /** A cloud function called by the server itself, for a signer at that signer's address. */
+  private async callFunctionFor<T>(name: string, params: Record<string, unknown>, ipAddress: string): Promise<OpenSignResult<T>> {
     try {
       const resp = await fetch(`${this.config.baseUrl}/functions/${name}`, {
         method: 'POST',
-        headers: {
-          'X-Parse-Application-Id': this.config.appId,
-          'Content-Type': 'application/json',
-          'X-Parse-Session-Token': as.sessionToken,
-          // triggerevent and getDocument read the session from this header, not Parse's own.
-          sessiontoken: as.sessionToken,
-          'X-Forwarded-For': forwardedFor(as.ipAddress),
-        },
+        headers: { ...this.headers(true), 'X-Forwarded-For': forwardedFor(ipAddress) },
         body: JSON.stringify(params),
       });
       if (!resp.ok) {
         // Parse answers a refused cloud function with { code, error }. The number is kept — it is
-        // how "not your turn" is told from "not found" — the text is not: it may name the signer.
+        // how "refused" is told from "not found" — the text is not: it may name the signer.
         let upstreamCode: number | undefined;
         try {
           const body = await resp.json() as { code?: unknown };
@@ -647,11 +633,11 @@ export class OpenSignClient {
   }
 
   /** OpenSign's own "Viewed" audit entry for one signer. */
-  async recordViewed(params: { docId: string; contactId: string; sessionToken: string; ipAddress: string }): Promise<OpenSignResult<true>> {
-    const result = await this.callFunctionAs<{ message?: string }>(
+  async recordViewed(params: { docId: string; contactId: string; ipAddress: string }): Promise<OpenSignResult<true>> {
+    const result = await this.callFunctionFor<{ message?: string }>(
       'triggerevent',
       { event: 'viewed', contactId: params.contactId, body: { objectId: params.docId } },
-      { sessionToken: params.sessionToken, ipAddress: params.ipAddress },
+      params.ipAddress,
     );
     if (!result.success) return { success: false, error: result.error };
     // triggerevent answers 200 whatever happened and says which in words.
@@ -662,7 +648,7 @@ export class OpenSignClient {
   }
 
   /**
-   * Submit a signer's stamped PDF: OpenSign's signPdf, as that signer. OpenSign stores the PDF as
+   * Submit a signer's stamped PDF: OpenSign's signPdf, for that signer's contact. OpenSign stores the PDF as
    * the document's current file, writes the "Signed" audit entry with the signature image, and —
    * when this was the last signature — seals the document and makes its certificate.
    */
@@ -671,10 +657,9 @@ export class OpenSignClient {
     contactId: string;
     pdfBase64: string;
     signaturePngBase64: string;
-    sessionToken: string;
     ipAddress: string;
   }): Promise<OpenSignResult<{ url: string }>> {
-    const result = await this.callFunctionAs<{ status?: string; data?: string }>(
+    const result = await this.callFunctionFor<{ status?: string; data?: string }>(
       'signPdf',
       {
         pdfFile: params.pdfBase64,
@@ -683,7 +668,7 @@ export class OpenSignClient {
         signature: params.signaturePngBase64,
         isCustomCompletionMail: false,
       },
-      { sessionToken: params.sessionToken, ipAddress: params.ipAddress },
+      params.ipAddress,
     );
     if (!result.success) return { success: false, error: result.error };
     if (result.data?.status !== 'success') {
@@ -692,18 +677,17 @@ export class OpenSignClient {
     return { success: true, data: { url: result.data.data ?? '' } };
   }
 
-  /** A signer refuses the document: OpenSign's declinedoc, as that signer. */
+  /** A signer refuses the document: OpenSign's declinedoc, naming that signer's account. */
   async declineAsSigner(params: {
     docId: string;
     userId: string;
     reason: string;
-    sessionToken: string;
     ipAddress: string;
   }): Promise<OpenSignResult<true>> {
-    const result = await this.callFunctionAs<string>(
+    const result = await this.callFunctionFor<string>(
       'declinedoc',
       { docId: params.docId, reason: params.reason, userId: params.userId },
-      { sessionToken: params.sessionToken, ipAddress: params.ipAddress },
+      params.ipAddress,
     );
     if (!result.success) return { success: false, error: result.error };
     return { success: true, data: true };

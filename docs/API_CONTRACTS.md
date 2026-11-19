@@ -684,25 +684,34 @@ All OpenSign routes are scoped by `firmId`. The gateway resolves `firmId` → Op
 
 ---
 
-#### 6.3.0 Implemented `/signature/` routes (AGPL-02)
+#### 6.3.0 Implemented `/signature/` routes
 
-The following routes are implemented in `gateway/src/routes/signature.ts` and are the canonical Scentic-facing signature endpoints. All require HMAC auth and are Firm-scoped via the `:firmId` path parameter.
+The routes in `gateway/src/routes/signature.ts`, which are the Scentic-facing signature endpoints. All require HMAC auth; all but the first two are scoped to the firm in the path. §6.3.1–6.3.7 below are the contract planned before any of this was built and are kept for history: where they differ from this table and from §6.3.9, this table and §6.3.9 are what exists.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET`  | `/api/v1/providers/opensign/health` | OpenSign provider health probe. |
-| `POST` | `/api/v1/firms/:firmId/signature/init` | Initialize a Firm's OpenSign tenant (idempotent). |
-| `POST` | `/api/v1/firms/:firmId/signature/users/sync` | Sync a Scentic user into the Firm's OpenSign tenant. |
-| `POST` | `/api/v1/firms/:firmId/signature/workflows` | Create a signature workflow (upload PDF, link signers). Idempotent via `scenticSignatureWorkflowId`. |
-| `GET`  | `/api/v1/firms/:firmId/signature/workflows/:workflowId` | Get workflow status (polls OpenSign `getDocument`). |
-| `POST` | `/api/v1/firms/:firmId/signature/workflows/:workflowId/send` | Send workflow for signature. |
-| `POST` | `/api/v1/firms/:firmId/signature/workflows/:workflowId/cancel` | Cancel (decline) a workflow. |
-| `POST` | `/api/v1/firms/:firmId/signature/workflows/:workflowId/remind` | Send a reminder — returns `501 NOT_SUPPORTED` (OpenSign has no manual reminder API). |
-| `POST` | `/api/v1/firms/:firmId/signature/workflows/:workflowId/poll` | Poll a single workflow for status changes. |
-| `GET`  | `/api/v1/firms/:firmId/signature/workflows/:workflowId/completed` | Get completed-PDF / certificate readiness status. |
-| `POST` | `/api/v1/firms/:firmId/signature/poll-due` | Poll all due (non-terminal) workflows for a Firm. |
+| `GET`  | `/api/v1/providers/opensign/health` | Whether OpenSign is reachable. |
+| `GET`  | `/api/v1/providers/capabilities` | What the signing service supports, by name (`supported` / `emulated` / `unsupported`). |
+| `POST` | `/api/v1/firms/:firmId/signature/init` | Initialize a firm's OpenSign tenant (idempotent). Body `{ firmName }`. |
+| `POST` | `/api/v1/firms/:firmId/signature/users/sync` | Sync a Scentic user. Body `{ scenticUserId, email, name }`. |
+| `POST` | `/api/v1/firms/:firmId/signature/workflows` | Create a workflow: upload the PDF, place the fields, link the signers, and (unless Scentic delivers) mail the first invitation. Idempotent by `scenticSignatureWorkflowId`. Options include `sendInOrder`, `scenticDelivers`, `ceremony` (§6.3.9.5). |
+| `GET`  | `/api/v1/firms/:firmId/signature/workflows/:workflowId` | Status, read fresh from OpenSign (§6.3.9.6). |
+| `POST` | `.../workflows/:workflowId/send` | Marks a draft as sent and records the event. Invitations are sent at create. |
+| `POST` | `.../workflows/:workflowId/cancel` | Withdraw the request. Body `{ reason }`. The OpenSign document is archived (not declined); status reads `VOIDED`. `409 CONFLICT` once completed. |
+| `POST` | `.../workflows/:workflowId/remind` | Mail a reminder to the signers who have not signed. Body `{ signerEmails?: string[], senderName?: string }` (empty list: everyone outstanding). Returns `{ remindedCount }`. The mail links to OpenSign's page, so it is not for `ceremony: 'scentic'` workflows, whose messages Scentic sends. |
+| `GET`  | `.../workflows/:workflowId/signers` | Everyone asked to sign, in order: `{ signers: [{ email, role, order, state: 'pending'|'viewed'|'signed'|'declined', signingUrl? }] }`. `signingUrl` is the signer's link to OpenSign's page while it can still be used; it is never given for a `ceremony: 'scentic'` workflow, whose document that page refuses. |
+| `POST` | `.../workflows/:workflowId/signers/replace` | Somebody else signs in place of a signer who has not signed. Body `{ fromEmail, toEmail, toName }`. Returns `{ email, signingUrl }` (`signingUrl` is `""` for a `ceremony: 'scentic'` workflow). |
+| `POST` | `.../workflows/:workflowId/signers/revoke` | Take a signature back before completion, with any made after it. Body `{ email }`. Returns `{ clearedEmails }`. |
+| `POST` | `.../workflows/:workflowId/poll` | Read OpenSign and record a status change (outbox events on transitions). |
+| `GET`  | `.../workflows/:workflowId/completed` | Whether the signed PDF and certificate are ready: `{ ready, sha256?, certificateReady }`. |
+| `GET`  | `.../workflows/:workflowId/completed/file?kind=signed|certificate` | The executed PDF or its certificate, as bytes, with `X-Content-Sha256`. `409 CONFLICT` until everyone has signed. |
+| `GET`  | `.../workflows/:workflowId/ceremony/file` | §6.3.9.1 |
+| `POST` | `.../workflows/:workflowId/ceremony/viewed` | §6.3.9.2 |
+| `POST` | `.../workflows/:workflowId/ceremony/sign` | §6.3.9.3 |
+| `POST` | `.../workflows/:workflowId/ceremony/decline` | §6.3.9.4 |
+| `POST` | `/api/v1/firms/:firmId/signature/poll-due` | Poll every workflow of the firm that is not finished. |
 
-Cross-Firm access to any `:firmId`-scoped signature route returns `404 NOT_FOUND` (the mapping store is Firm-scoped, so a workflow created in firm A is invisible to firm B). Unsupported operations (`remind`) return `501 NOT_SUPPORTED` with a safe, generic message.
+A request signed for one firm with another firm's id in the path is `403 FIRM_SCOPE_VIOLATION`. A workflow that belongs to another firm is `404 NOT_FOUND`: the mapping store is firm-scoped, so it is invisible rather than refused.
 
 ---
 
@@ -959,36 +968,18 @@ Download the audit certificate for the completed workflow. Returns `application/
 - **Audit event:** `opensign.workflow.certificate`.
 - **Data minimization:** Certificate contains signer emails, timestamps, and IPs as recorded by OpenSign. These are forwarded only to the owning Firm.
 
-### 6.3.8 Implemented Signature surface (AGPL-02)
+### 6.3.8 Implemented signature surface
 
-The endpoints in §6.3.1–6.3.7 are the planned AGPL-00 contract. The **actually implemented** AGPL-02 signature endpoints (in `gateway/src/routes/signature.ts`) are listed below. They are Firm-scoped (`:firmId`) and require HMAC service-to-service auth (see §5). Paths use the canonical `/api/v1/...` prefix.
+See §6.3.0 for the routes that exist and §6.3.9 for the signing ceremony Scentic hosts. This section used to repeat the AGPL-02 route table, and said that `remind` returned `501 NOT_SUPPORTED` and that `cancel` used OpenSign's `declinedoc`; neither has been true since reminders were implemented and cancellation was changed to archive the document.
 
-| # | Method | Path | Purpose |
-|---|--------|------|---------|
-| 1 | GET  | `/api/v1/providers/opensign/health` | OpenSign provider health probe (reachability + app id). |
-| 2 | POST | `/api/v1/firms/:firmId/signature/init` | Initialize a Firm's OpenSign tenant mapping (idempotent). Body: `{ firmName }`. |
-| 3 | POST | `/api/v1/firms/:firmId/signature/users/sync` | Sync a Scentic user to an OpenSign user. Body: `{ scenticUserId, email, name }`. |
-| 4 | POST | `/api/v1/firms/:firmId/signature/workflows` | Create a signing workflow (upload PDF, create signers, optionally send). Idempotent via `scenticSignatureWorkflowId`. |
-| 5 | GET  | `/api/v1/firms/:firmId/signature/workflows/:workflowId` | Get workflow status (aggregate derived from `getDocument`). |
-| 6 | POST | `/api/v1/firms/:firmId/signature/workflows/:workflowId/send` | Send a draft workflow to signers. |
-| 7 | POST | `/api/v1/firms/:firmId/signature/workflows/:workflowId/cancel` | Cancel/void a workflow. Maps to OpenSign `declinedoc` (no native void). Body: `{ reason }`. |
-| 8 | POST | `/api/v1/firms/:firmId/signature/workflows/:workflowId/remind` | Send a manual reminder. Returns `501 NOT_SUPPORTED` — OpenSign has no manual reminder API; reminders are automatic per-doc. |
-| 9 | POST | `/api/v1/firms/:firmId/signature/workflows/:workflowId/poll` | Poll a single workflow for status changes (records outbox events on transitions). |
-| 10 | GET  | `/api/v1/firms/:firmId/signature/workflows/:workflowId/completed` | Get completed-PDF status (signed PDF + certificate availability). |
-| 11 | POST | `/api/v1/firms/:firmId/signature/poll-due` | Poll all due (non-terminal) workflows for a Firm. |
-
-**Notes on the implemented surface:**
-
-- The `remind` endpoint (row 8) is wired but returns `NOT_SUPPORTED` because OpenSign exposes no manual-reminder Cloud Function. Automatic reminders are configured per-document via `AutomaticReminders` + `RemindOnceInEvery` on `createdocumentfromapp`. See `docs/OPENSIGN_MAPPING.md`.
-- The `cancel` endpoint (row 7) uses `declinedoc` as the closest available function. OpenSign has no native void/cancel API. See `docs/OPENSIGN_MAPPING.md`.
-- All responses use the standard JSON envelope (`{ ok, data, meta }`). Errors use the standard error envelope (§3, §7).
-- Webhook dispatch to Scentic on terminal status changes is **not** wired in AGPL-02; outbox events are recorded for AGPL-03 to dispatch. See `docs/AGPL_02_CLOSEOUT.md`.
+- All responses use the JSON envelope `{ ok, data }`; errors use the error envelope (§3, §7).
+- OpenSign has no webhooks: status changes are found by `poll` / `poll-due` and recorded as outbox events, which the gateway's dispatcher delivers to Scentic (§6.4).
 
 ### 6.3.9 The signing ceremony Scentic hosts (round 75)
 
 Implemented in `gateway/src/routes/signature.ts`, `gateway/src/opensign/opensign-service.ts` and `gateway/src/opensign/ceremony.ts`; tested in `gateway/src/tests/signature-ceremony.test.ts`. This section is the contract Scentic's client is written from.
 
-**What it is.** Scentic authenticates the signer itself (an emailed link and an emailed one-time code), shows the document, collects the field values, and stamps them onto the PDF on its own server. It hands the stamped PDF to the gateway, which submits it to OpenSign *as that signer* (a session obtained for the signer's own OpenSign account with the master key), so OpenSign still counts the signatures, seals the last one and makes the certificate. OpenSign's own signing page stays deployed and keeps working for `ceremony: 'hosted'` workflows.
+**What it is.** Scentic authenticates the signer itself (an emailed link and an emailed one-time code), shows the document, collects the field values, and stamps them onto the PDF on its own server. It hands the stamped PDF to the gateway, which submits it to OpenSign *for that signer* — the server's own call, with the master key, naming the signer's contact — so OpenSign still counts the signatures, seals the last one and makes the certificate. No session for a signer's OpenSign account is created. OpenSign's own signing page stays deployed and keeps working for `ceremony: 'hosted'` workflows; a `ceremony: 'scentic'` document is closed to it (§6.3.9.8).
 
 **Common to every route below.**
 
@@ -996,7 +987,7 @@ Implemented in `gateway/src/routes/signature.ts`, `gateway/src/opensign/opensign
 - `:workflowId` is the `scenticSignatureWorkflowId` given at create. A workflow that does not exist, or belongs to another firm, is `404 NOT_FOUND` (`"Workflow not found"`) — the two are not distinguishable.
 - Errors use the envelope `{ "ok": false, "error": { "code": string, "message": string, "details"?: [{ "field": string, "issue": string }], "retryable": boolean } }`.
 - `email` is matched case-insensitively after trimming. `ipAddress` is one IPv4 or IPv6 address as written (no list, port, brackets or host name), or `""`/absent when unknown. It is sent to OpenSign as the first `X-Forwarded-For` entry, which is the address OpenSign writes in its audit trail and on the certificate; when empty the literal `unknown` is sent, so OpenSign never records the gateway's own address as the signer's.
-- The gateway never returns, logs or stores a signer's OpenSign session token.
+- The gateway makes no session for a signer's OpenSign account, so there is no token to return, log or store; it never returns or logs the master key.
 
 **Error codes used by the ceremony routes.**
 
@@ -1004,7 +995,7 @@ Implemented in `gateway/src/routes/signature.ts`, `gateway/src/opensign/opensign
 |------|--------|-------------|------|
 | 400 | `INVALID_INPUT` | false | A field is missing or malformed. `details[0].field` names it (`email`, `ipAddress`, `baseSha256`, `pdfBase64`, `signaturePngBase64`, `reason`, `auditEvents`, `auditEvents[3].at`, `ceremony`); `details[0].issue` says why (`required`, `not an email address`, `not an IP address`, `not a SHA-256 in hex`, `not base64`, `not a PDF`, `not a PNG`, `not a date`, `at most 500 events`, `at most 1000 characters`, …). |
 | 403 | `FIRM_SCOPE_VIOLATION` | false | The signed firm is not the firm in the path. |
-| 403 | `FORBIDDEN` | false | OpenSign itself refused the signer's account for this document (Parse `OPERATION_FORBIDDEN`): the account is not the signer's, or is no longer on the document. |
+| 403 | `FORBIDDEN` | false | OpenSign itself refused the call for this document (Parse `OPERATION_FORBIDDEN`), e.g. an out-of-turn signature on a `hosted` workflow sent in strict order. |
 | 404 | `NOT_FOUND` | false | Unknown workflow (or another firm's). |
 | 404 | `NOT_A_SIGNER` | false | `email` is not asked to sign this document (never was, or was replaced). |
 | 409 | `ALREADY_SIGNED` | false | That signer has already signed. Nothing is written. |
@@ -1027,7 +1018,7 @@ The document's **current** PDF: the PDF carrying every signature made so far (Op
 
 #### 6.3.9.2 `POST .../ceremony/viewed`
 
-Records OpenSign's "Viewed" audit entry for one signer (OpenSign `triggerevent`, as that signer).
+Records OpenSign's "Viewed" audit entry for one signer (OpenSign `triggerevent`, called by the server for that signer's contact).
 
 Request:
 
@@ -1046,13 +1037,14 @@ Response `200`:
 
 #### 6.3.9.3 `POST .../ceremony/sign`
 
-Submits one signer's stamped PDF (OpenSign `signPdf`, as that signer).
+Submits one signer's stamped PDF (OpenSign `signPdf`, called by the server for that signer's contact).
 
 Request:
 
 ```json
 {
   "email": "signer@example.com",
+  "signerName": "Alice Example",
   "pdfBase64": "<base64 of the whole stamped PDF>",
   "signaturePngBase64": "<base64 of a PNG of the signature>",
   "ipAddress": "203.0.113.7",
@@ -1074,13 +1066,14 @@ Request:
 | Field | Required | Rule |
 |-------|----------|------|
 | `email` | yes | A signer on the document who has not signed. |
+| `signerName` | yes for a `ceremony: 'scentic'` workflow; optional otherwise | The signer's own name, as they confirmed it on Scentic's page. Reduced to plain text on one line (markup, control and direction characters removed) and trimmed; 1–200 characters after that, otherwise `INVALID_INPUT` with `details[0].field = "signerName"` (`required`, `not a string`, `at most 200 characters`). Stored **on the document** as `ScenticSignerNames` — a list of `{ email, name }`, this signer's entry replaced and every other signer's kept — before `signPdf` runs. Never written to OpenSign's contact or account for the address, which OpenSign shares across every firm. It is the name the certificate prints for this signer and the name in the PDF's digital signature (§6.3.9.8). |
 | `pdfBase64` | yes | Standard base64 (no data-URL prefix, no whitespace). Decodes to bytes beginning `%PDF`. At most the configured limit: three quarters of (`GATEWAY_JSON_LIMIT` − 3 MiB), 45.75 MiB at the default `64mb`. |
 | `signaturePngBase64` | yes | Standard base64 of a PNG (magic bytes checked), at most 1 MiB decoded. A leading `data:image/png;base64,` is accepted and dropped. Stored by OpenSign and drawn on the certificate. |
 | `ipAddress` | no | See above. |
 | `baseSha256` | yes | 64 hex characters, either case. |
 | `auditEvents` | no | Array, at most 500 entries. Each: `at` (required; any string `Date` parses, stored as ISO 8601 UTC), `event` (required, non-empty), `actor` (required string, may be empty), and optional `email`, `ipAddress` (an IP or empty), `userAgent`, `detail`. Every string is reduced to plain text (markup, control and direction characters removed, single line) and cut to 300 characters; `email` is lowercased. One bad entry refuses the whole request (`INVALID_INPUT`, `details[0].field` like `auditEvents[3].at`). Stored on the OpenSign document as `ScenticAudit` **before** `signPdf` runs, sorted by `at`, and printed on the certificate as "Event history" (§6.3.9.7). **Each submission replaces the stored list**, so send the complete history of the request every time, not only this signer's events. Omitted or `null` leaves the stored list as it is. |
 
-Order of work, under a per-workflow lock: read the document → refuse if closed (`INVALID_STATE`) → find the signer (`NOT_A_SIGNER`, `ALREADY_SIGNED`) → fetch the current PDF and compare its SHA-256 with `baseSha256` (`STALE_DOCUMENT`) → write `ScenticAudit` → sign in as the signer → `signPdf` with `X-Forwarded-For: <ipAddress>` → read the document back.
+Order of work, under a per-workflow lock: read the document → refuse if closed (`INVALID_STATE`) → find the signer (`NOT_A_SIGNER`, `ALREADY_SIGNED`) → fetch the current PDF and compare its SHA-256 with `baseSha256` (`STALE_DOCUMENT`) → write `ScenticSignerNames` and `ScenticAudit` → `signPdf` (master key, the signer's contact, `X-Forwarded-For: <ipAddress>`) → read the document back. A submission refused as stale writes neither.
 
 Response `200`:
 
@@ -1096,7 +1089,7 @@ Response `200`:
 
 #### 6.3.9.4 `POST .../ceremony/decline`
 
-One signer refuses the document (OpenSign `declinedoc`, as that signer). The document is declined for everybody.
+One signer refuses the document (OpenSign `declinedoc`, called by the server naming that signer's account). The document is declined for everybody.
 
 Request:
 
@@ -1126,7 +1119,7 @@ Response `200`:
 ```
 
 - `"hosted"` (the default, also when the field is absent): exactly the request sent to OpenSign before this field existed.
-- `"scentic"`: OpenSign's `SendinOrder` and `SendInOrderStrict` are both `false` whatever `sendInOrder` says — Scentic enforces the order and lets the signers of one step sign at the same time. It also implies `scenticDelivers: true` (the gateway and OpenSign mail nobody; OpenSign's automatic reminders are off), because an invitation from here would link to OpenSign's page. Everything else is as for `hosted`.
+- `"scentic"`: OpenSign's `SendinOrder` and `SendInOrderStrict` are both `false` whatever `sendInOrder` says — Scentic enforces the order and lets the signers of one step sign at the same time. The document is marked `ScenticCeremony: true` and closed to OpenSign's own page (§6.3.9.8); if it cannot be closed, the create fails (`502 UPSTREAM_ERROR`) and the document is withdrawn. It also implies `scenticDelivers: true` (the gateway and OpenSign mail nobody; OpenSign's automatic reminders are off), because an invitation from here would link to OpenSign's page. Everything else is as for `hosted`.
 - Any other value: `400 INVALID_INPUT` (`details[0].field = "ceremony"`).
 - The response (the stored mapping) gains `"ceremony": "hosted" | "scentic"`. Re-creating an existing workflow returns the stored mapping unchanged, including its ceremony.
 - The ceremony routes are not restricted to `scentic` workflows; on a `hosted` workflow sent in strict order, OpenSign itself refuses an out-of-turn signature (`403 FORBIDDEN`).
@@ -1162,11 +1155,27 @@ Response `200`:
 
 #### 6.3.9.7 Capabilities and the certificate
 
-`GET /api/v1/providers/capabilities` gains: `"scenticCeremony": "emulated"`, `"concurrentSigning": "emulated"`, `"perSignerDecline": "supported"`, `"certificateEventHistory": "supported"` (`"parallelSigning": "supported"` was already there).
+`GET /api/v1/providers/capabilities` gains: `"scenticCeremony": "emulated"`, `"concurrentSigning": "emulated"`, `"perSignerDecline": "supported"`, `"signerConfirmedName": "supported"`, `"certificateEventHistory": "supported"` (`"parallelSigning": "supported"` was already there).
 
 The completion certificate prints `ScenticAudit` as an "Event history" section after the signers (`deploy/opensign-server-patches.mjs`, `deploy/opensign-server-files/scenticEventHistory.js`): one row per event in time order — time as `YYYY-MM-DD HH:mm:ss UTC`, event, who (`actor`, with `email` beneath), IP address (whole; an IPv6 address is drawn smaller rather than cut), and browser (`userAgent`, cut to its column with `...`); `detail` is printed beneath the event. It runs over as many pages as it needs, each continued page headed again. A document with no `ScenticAudit`, or an empty one, gets the certificate it got before.
 
 Limits, known: at most 500 events are printed. The certificate's font (Times New Roman) has Latin, Greek, Cyrillic, Hebrew and Arabic letters; any other character (Chinese, emoji) is printed as `?`. Hebrew is put in reading order in the event history, run by run, without full bidirectional layout (a line mixing Hebrew and Latin keeps the order of its runs; Arabic is drawn unjoined). OpenSign's own signer block above it is unchanged and draws a Hebrew name in the order it was typed, left to right.
+
+#### 6.3.9.8 Names, and OpenSign's own page
+
+**The signer's name.** OpenSign keeps one contact per email address for the whole platform, and it keeps the name it was first given: the second firm to send a document to an address would otherwise have the first firm's name for that person on its certificate. So:
+
+- No gateway response carries a signer's name. Status, `signers`, `poll` and the ceremony routes return addresses, states, times and IP addresses only. The `name` given for a signer at create is passed to OpenSign when the signer is linked (OpenSign's one contact for the address may already carry another name) and is never read back.
+- The name on a document is the one its signer confirmed: `signerName` on `ceremony/sign`, stored on that document only.
+- The certificate prints, for each signer, the name confirmed for that document; only where a document has none (a `hosted` workflow signed on OpenSign's page) does it print the contact's name, as before. The same applies to the "signed for" text in the PDF's digital signature, and to the event history where an event gives an address and no `actor`. A confirmed Hebrew name is drawn in reading order.
+
+**OpenSign's page is not a second way in.** A `ceremony: 'scentic'` document has OpenSign's ordering off, so OpenSign's page — which any signer could otherwise reach with the document's id and a code mailed to their own address — would let them sign out of turn. For a document marked `ScenticCeremony: true` (`deploy/opensign-server-patches.mjs`, `deploy/opensign-server-files/SendMailOTPv1.js`):
+
+- no code is mailed for it;
+- `getDocument`, `signPdf`, `declinedoc` and `triggerevent` answer the server's own calls (the master key) only, and refuse any signer's session, including that of a signer on the document;
+- the gateway takes every signer's account off the document's ACL after linking them (and again after a signer is replaced), so no account but the platform's own can read the document or its files by any other route.
+
+Hosted documents are untouched by all of this. Proven by running the patched functions against fixtures (`deploy/tests/scentic-ceremony-guard.test.mjs`) and by the gateway suite; not yet against a running OpenSign.
 
 ### 6.4 Webhooks (gateway → Scentic)
 

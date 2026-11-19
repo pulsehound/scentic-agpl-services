@@ -289,6 +289,7 @@ export function createSignatureRouter(service: OpenSignService): Router {
       const b = req.body ?? {};
       const result = await service.ceremonySign(req.params.firmId, req.params.workflowId, {
         email: b.email,
+        signerName: b.signerName,
         pdfBase64: b.pdfBase64,
         signaturePngBase64: b.signaturePngBase64,
         ipAddress: b.ipAddress,
@@ -352,7 +353,7 @@ export const SIGNATURE_CAPABILITIES = {
   signerLinks: 'supported',
   // The signing page can be Scentic's own: Scentic authenticates the signer, stamps the PDF and
   // submits it here (`ceremony: 'scentic'` on create, then the .../ceremony/* routes). Emulated: the
-  // gateway signs in to OpenSign as the signer; OpenSign has no such interface of its own.
+  // gateway submits to OpenSign for the signer; OpenSign has no such interface of its own.
   scenticCeremony: 'emulated',
   // In Scentic's ceremony the signers of one step may sign at the same time, each submission
   // checked against the PDF it was built on (STALE_DOCUMENT when another got there first).
@@ -360,6 +361,9 @@ export const SIGNATURE_CAPABILITIES = {
   // A signer's refusal names the signer: `declinedByEmail` in a status, and that signer's own
   // status reads 'declined'.
   perSignerDecline: 'supported',
+  // The name on the certificate is the one the signer confirmed for this document (signerName on
+  // ceremony/sign), not the one OpenSign's shared contact holds from some earlier request.
+  signerConfirmedName: 'supported',
   // Scentic's own record of a ceremony (auditEvents on ceremony/sign) is printed on the completion
   // certificate as "Event history" (deploy/opensign-server-files/scenticEventHistory.js).
   certificateEventHistory: 'supported',

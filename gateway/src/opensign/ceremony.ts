@@ -101,6 +101,33 @@ export function checkSha256(value: unknown, field = 'baseSha256'): Checked<strin
   return { ok: true, value: value.trim().toLowerCase() };
 }
 
+export const MAX_SIGNER_NAME = 200;
+
+/**
+ * The signer's own name, as they confirmed it: plain text on one line, 1 to 200 characters.
+ * `required` where Scentic hosts the ceremony; elsewhere it may be left out (null).
+ */
+export function checkSignerName(value: unknown, required: boolean): Checked<string | null> {
+  if (value === undefined || value === null) return required ? bad('signerName', 'required') : { ok: true, value: null };
+  if (typeof value !== 'string') return bad('signerName', 'not a string');
+  const name = plainText(value, MAX_SIGNER_NAME + 1);
+  if (name === '') return bad('signerName', 'required');
+  if (name.length > MAX_SIGNER_NAME) return bad('signerName', `at most ${MAX_SIGNER_NAME} characters`);
+  return { ok: true, value: name };
+}
+
+/**
+ * The document's confirmed names with one signer's set: theirs replaced, everybody else's kept.
+ * Anything stored that is not a name entry is dropped.
+ */
+export function withSignerName(existing: unknown, email: string, name: string): Array<{ email: string; name: string }> {
+  const kept = (Array.isArray(existing) ? existing : [])
+    .filter((e): e is { email: string; name: string } => !!e && typeof e === 'object' && typeof (e as { email?: unknown }).email === 'string' && typeof (e as { name?: unknown }).name === 'string')
+    .map((e) => ({ email: e.email.trim().toLowerCase(), name: e.name }))
+    .filter((e) => e.email !== email);
+  return [...kept, { email, name }];
+}
+
 /** Why a signer will not sign, in their words: required, trimmed, at most a thousand characters. */
 export function checkDeclineReason(value: unknown): Checked<string> {
   if (typeof value !== 'string') return bad('reason', 'required');

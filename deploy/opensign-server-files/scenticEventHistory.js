@@ -93,6 +93,31 @@ export function printable(font, value) {
   return visualOrder(out.replace(/ +/g, ' ').trim());
 }
 
+/**
+ * The name a signer confirmed for this document, or '' when they confirmed none.
+ *
+ * OpenSign keeps one contact for an email address across the whole platform, named by whoever
+ * first sent that address anything. The name that belongs on a document is the one its signer
+ * gave when signing it, which the gateway writes on the document itself: ScenticSignerNames, a
+ * list of { email, name } (a list, not a map: an address has dots, which a stored key cannot).
+ */
+export function confirmedName(names, email) {
+  if (!Array.isArray(names)) return '';
+  const wanted = String(email || '').trim().toLowerCase();
+  if (!wanted) return '';
+  const entry = names.find(n => n && typeof n === 'object' && String(n.email || '').trim().toLowerCase() === wanted);
+  return entry && typeof entry.name === 'string' ? entry.name.trim() : '';
+}
+
+/**
+ * The name to print for a signer: the one they confirmed, made drawable and put in reading order;
+ * the contact's stored name only when they confirmed none, as it was printed before.
+ */
+export function scenticSignerName(docDetails, email, fallback, font) {
+  const confirmed = confirmedName(docDetails?.ScenticSignerNames, email);
+  return confirmed ? printable(font, confirmed) : fallback;
+}
+
 /** The text, cut with "..." so it is no wider than `width` at `size`. */
 export function fitted(font, text, size, width) {
   if (font.widthOfTextAtSize(text, size) <= width) return text;
@@ -108,7 +133,7 @@ export function fitted(font, text, size, width) {
 }
 
 /** The events worth printing, cleaned and in the order they happened. */
-export function eventRows(font, events) {
+export function eventRows(font, events, names) {
   if (!Array.isArray(events)) return [];
   const rows = [];
   for (const [index, e] of events.slice(0, MAX_EVENTS).entries()) {
@@ -119,7 +144,8 @@ export function eventRows(font, events) {
       time: Number.isNaN(time) ? Infinity : time,
       when: utcStamp(e.at) || printable(font, e.at),
       event: printable(font, e.event),
-      actor: printable(font, e.actor),
+      // Who: as the record names them; where it gives only an address, the name they confirmed.
+      actor: printable(font, e.actor) || printable(font, confirmedName(names, e.email)),
       email: printable(font, e.email),
       ip: printable(font, e.ipAddress),
       browser: printable(font, e.userAgent),
@@ -135,8 +161,8 @@ export function eventRows(font, events) {
  * Draw the section. `page` and `y` are where the signers ended: the section starts there if a
  * heading and at least one row fit, otherwise on a new page. Returns the pages it added.
  */
-export function drawScenticEventHistory({ pdfDoc, font, events, page, y, startX = 15, startY = 15, borderColor = rgb(0.12, 0.12, 0.12), titleColor = rgb(0, 0.2, 0.4) }) {
-  const rows = eventRows(font, events);
+export function drawScenticEventHistory({ pdfDoc, font, events, names, page, y, startX = 15, startY = 15, borderColor = rgb(0.12, 0.12, 0.12), titleColor = rgb(0, 0.2, 0.4) }) {
+  const rows = eventRows(font, events, names);
   if (rows.length === 0) return 0;
 
   const { width, height } = page.getSize();

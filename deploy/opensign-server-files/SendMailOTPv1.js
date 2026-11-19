@@ -128,6 +128,12 @@ async function sendMailOTPv1(request) {
     if (!doc || !isAskedToSign(doc, email)) {
       throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, 'This signing link is no longer active.');
     }
+    // Scentic shows this document and takes its signatures on its own page, in its own order
+    // (the document's ScenticCeremony mark, set when it was made). No code from here opens it:
+    // this page would let whoever holds the document's id sign out of turn.
+    if (doc.get('ScenticCeremony') === true) {
+      throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, 'This document is signed on another page. Please use the link in your email.');
+    }
   } else if (!request.master && normalise(request.user?.get('email')) !== email) {
     // Without a document, only for the signed-in account's own address (OpenSign's profile page).
     throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, 'A code can only be sent to your own address.');

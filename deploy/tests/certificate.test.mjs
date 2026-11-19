@@ -195,6 +195,33 @@ describe.skipIf(!hasVendor)(`the certificate, from the patched upstream generato
     expect(made.three.all).not.toContain('Safari/537.36');
   });
 
+  it('each signer is named as they confirmed for this document, not as the shared contact has them; Hebrew in reading order', async () => {
+    // The document of a second firm: OpenSign's one contact for the address still carries the name
+    // the first firm gave it.
+    const doc = fixtureDoc([{ at: '2026-11-19T08:20:00Z', event: 'Signed', actor: '', email: 'alice@example.com' }]);
+    doc.Signers[0].Name = 'Alice A';
+    const stored = await textOf(await generate(doc));
+    expect(stored.all).toContain('Alice A');
+    expect(stored.all).toContain(HEBREW_NAME); // as before: the contact's name, in the order it was typed
+
+    doc.ScenticSignerNames = [
+      { email: 'Alice@Example.com', name: 'Robert B' },
+      { email: 'yaakov@example.co.il', name: HEBREW_NAME },
+    ];
+    const confirmed = await textOf(await generate(doc));
+    expect(confirmed.all).toContain('Robert B');
+    expect(confirmed.all).not.toContain('Alice A');
+    expect(confirmed.all).toContain(HEBREW_AS_DRAWN);
+    expect(confirmed.all).not.toContain(HEBREW_NAME);
+    // In the signer's block, and in the event history where the record gave only an address.
+    expect(confirmed.all.match(/Robert B/g).length).toBe(2);
+    // A name confirmed by one signer names nobody else, and what is not a name entry is passed over.
+    doc.ScenticSignerNames = [null, 'x', { email: 'yaakov@example.co.il' }, { email: 'someone@else.com', name: 'Mallory' }];
+    const others = await textOf(await generate(doc));
+    expect(others.all).toContain('Alice A');
+    expect(others.all).not.toContain('Mallory');
+  });
+
   it('a record that is not what it should be never stops the certificate', async () => {
     const odd = [
       null,

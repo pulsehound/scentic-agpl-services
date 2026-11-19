@@ -122,6 +122,7 @@ const ceremonyFile = (h: Harness, firmId = FIRM1, workflowId = WF, signedAs = fi
 
 const signBody = (email: string, stamped: Buffer, base: Buffer, extra: Record<string, unknown> = {}) => ({
   email,
+  signerName: 'Signer Confirmed',
   pdfBase64: stamped.toString('base64'),
   signaturePngBase64: PNG_B64,
   ipAddress: '203.0.113.7',
@@ -244,8 +245,10 @@ describe('ceremony endpoints', () => {
     const [call] = callsTo(h, 'triggerevent');
     expect(call!.body).toEqual({ event: 'viewed', contactId: 'contact-1', body: { objectId: 'os-doc-1' } });
     expect(call!.headers['x-forwarded-for']).toBe('198.51.100.4');
-    expect(call!.headers['sessiontoken']).toMatch(/^r:session-signer-user-1-/);
-    expect(call!.headers['x-parse-master-key']).toBeUndefined();
+    // The server's own call, naming the signer; no session of the signer's is made or used.
+    expect(call!.headers['x-parse-master-key']).toBe('test-master-key');
+    expect(call!.headers['sessiontoken']).toBeUndefined();
+    expect(call!.headers['x-parse-session-token']).toBeUndefined();
     expect(h.parse.doc().AuditTrail).toEqual([expect.objectContaining({ Activity: 'Viewed', ipAddress: '198.51.100.4' })]);
 
     // Idempotent: asked again, nothing more is written.
@@ -297,11 +300,10 @@ describe('ceremony endpoints', () => {
       isCustomCompletionMail: false,
     });
     expect(call!.headers['x-forwarded-for']).toBe('203.0.113.7');
-    expect(call!.headers['x-parse-session-token']).toMatch(/^r:session-signer-user-1-/);
-    expect(call!.headers['x-parse-master-key']).toBeUndefined();
-    // The session was asked for with the master key, for the contact's own account.
-    const login = h.parse.calls.find((c) => c.path === '/loginAs')!;
-    expect(login.body).toEqual({ userId: 'signer-user-1' });
+    expect(call!.headers['x-parse-master-key']).toBe('test-master-key');
+    expect(call!.headers['x-parse-session-token']).toBeUndefined();
+    // Nobody is signed in as the signer, ever.
+    expect(h.parse.calls.some((c) => c.path === '/loginAs')).toBe(false);
     expect(Buffer.compare(h.parse.currentFile(), stamped)).toBe(0);
     expect(h.parse.doc().AuditTrail).toEqual([expect.objectContaining({ Activity: 'Signed', ipAddress: '203.0.113.7' })]);
   });
@@ -513,9 +515,9 @@ describe('ceremony endpoints', () => {
 
     const [call] = callsTo(h, 'declinedoc');
     expect(call!.body).toEqual({ docId: 'os-doc-1', reason: 'The fee in clause 4 is wrong.', userId: 'signer-user-2' });
-    expect(call!.headers['x-parse-session-token']).toMatch(/^r:session-signer-user-2-/);
+    expect(call!.headers['x-parse-master-key']).toBe('test-master-key');
+    expect(call!.headers['x-parse-session-token']).toBeUndefined();
     expect(call!.headers['x-forwarded-for']).toBe('198.51.100.9');
-    expect(call!.headers['x-parse-master-key']).toBeUndefined();
 
     const status = await signedRequest(h.app, { method: 'GET', path: `/api/v1/firms/${FIRM1}/signature/workflows/${WF}`, firmId: FIRM1 });
     expect(status.status).toBe(200);
@@ -575,7 +577,7 @@ describe('ceremony endpoints', () => {
 
   // ── secrets ───────────────────────────────────────────────────────────
 
-  it('a session token never appears in a log line, a response or an event, on success or failure', async () => {
+  it("no signer's session is ever made, and the master key never appears in a log line, a response or an event, on success or failure", async () => {
     await createWorkflow(h);
     const responses: string[] = [];
     const keep = async (p: Promise<{ text?: string; body: unknown }>) => { const r = await p; responses.push(JSON.stringify(r.body) + (r.text ?? '')); };
@@ -592,7 +594,9 @@ describe('ceremony endpoints', () => {
     await keep(ceremony(h, 'viewed', { email: ALICE, ipAddress: '' }));
 
     const tokens = h.parse.tokens().filter((t) => t.startsWith('r:session-'));
-    expect(tokens.length).toBeGreaterThanOrEqual(5);
+    expect(tokens).toEqual([]);
+    expect(h.parse.calls.some((c) => c.path === '/loginAs')).toBe(false);
+    expect(callsTo(h, 'signPdf').length).toBeGreaterThanOrEqual(3);
     const events = JSON.stringify(await h.outbox.getAll());
     const everything = [...h.logs, ...responses, events].join('\n');
     for (const token of tokens) expect(everything).not.toContain(token);
@@ -601,6 +605,159 @@ describe('ceremony endpoints', () => {
     // Nor a signer's address in a log line.
     expect(h.logs.join('\n')).not.toContain(ALICE);
     expect(h.logs.join('\n')).not.toContain(BOB);
+  });
+});
+
+describe("the signer's own name, and OpenSign's page kept out of a ceremony Scentic hosts", () => {
+  let h: Harness;
+  beforeEach(() => { h = harness(); });
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+  it('signerName is required where Scentic hosts the ceremony, and refused when it is not a name', async () => {
+    await createWorkflow(h);
+    for (const signerName of [undefined, null, '', '   ', 7, 'x'.repeat(201), '<b></b>']) {
+      const res = await ceremony(h, 'sign', signBody(ALICE, pdf('a'), ORIGINAL, { signerName }));
+      expect(res.status, String(signerName).slice(0, 12)).toBe(400);
+      expect(res.body.error.code).toBe('INVALID_INPUT');
+      expect(res.body.error.details[0].field).toBe('signerName');
+    }
+    expect(callsTo(h, 'signPdf')).toHaveLength(0);
+    expect(h.parse.doc().ScenticSignerNames).toBeUndefined();
+  });
+
+  it('it is stored on the document before signPdf, as plain text, beside the other signers’ names — and on no contact or account', async () => {
+    await createWorkflow(h);
+    const one = pdf('alice');
+    expect((await ceremony(h, 'sign', signBody(ALICE, one, ORIGINAL, { signerName: '  Alice <i>Q.</i> Example\n' }))).status).toBe(200);
+    expect(h.parse.doc().ScenticSignerNames).toEqual([{ email: ALICE, name: 'Alice Q. Example' }]);
+    const put = h.parse.calls.findIndex((c) => c.method === 'PUT' && c.body && 'ScenticSignerNames' in c.body);
+    expect(put).toBeGreaterThan(-1);
+    expect(put).toBeLessThan(h.parse.calls.findIndex((c) => c.path === '/functions/signPdf'));
+
+    expect((await ceremony(h, 'sign', signBody(BOB, pdf('alice+bob'), one, { signerName: 'Robert Example' }))).status).toBe(200);
+    expect(h.parse.doc().ScenticSignerNames).toEqual([
+      { email: ALICE, name: 'Alice Q. Example' },
+      { email: BOB, name: 'Robert Example' },
+    ]);
+    // Nothing was ever written to a contact or an account.
+    const writes = h.parse.calls.filter((c) => c.method !== 'GET' && (c.path.includes('contracts_Contactbook') || c.path.includes('/classes/_User') || c.path.startsWith('/users')));
+    expect(writes).toEqual([]);
+    expect(h.parse.contacts().map((c) => c.Name)).toEqual(['Alice', 'Bob']);
+  });
+
+  it('a stale submission writes no name', async () => {
+    await createWorkflow(h);
+    const one = pdf('alice');
+    expect((await ceremony(h, 'sign', signBody(ALICE, one, ORIGINAL, { signerName: 'Alice Example' }))).status).toBe(200);
+    expect((await ceremony(h, 'sign', signBody(BOB, pdf('bob'), ORIGINAL, { signerName: 'Bob Example' }))).body.error.code).toBe('STALE_DOCUMENT');
+    expect(h.parse.doc().ScenticSignerNames).toEqual([{ email: ALICE, name: 'Alice Example' }]);
+  });
+
+  it('on a hosted workflow signerName may be left out, and is stored when given', async () => {
+    await createWorkflow(h, { ceremony: 'hosted', sendInOrder: false });
+    const one = pdf('alice');
+    const without = await ceremony(h, 'sign', signBody(ALICE, one, ORIGINAL, { signerName: undefined }));
+    expect(without.status).toBe(200);
+    expect(h.parse.doc().ScenticSignerNames).toBeUndefined();
+    expect((await ceremony(h, 'sign', signBody(BOB, pdf('both'), one, { signerName: 'Bob Example' }))).status).toBe(200);
+    expect(h.parse.doc().ScenticSignerNames).toEqual([{ email: BOB, name: 'Bob Example' }]);
+  });
+
+  it("a scentic-ceremony document is marked, and no signer's account can open it; a hosted one is as it was", async () => {
+    await createWorkflow(h);
+    const doc = h.parse.doc();
+    expect(doc.ScenticCeremony).toBe(true);
+    // Only the platform's own account is on the ACL: the signers linking put there are gone.
+    expect(doc.ACL).toEqual({ 'admin-user': { read: true, write: true } });
+
+    const other = harness();
+    await createWorkflow(other, { ceremony: 'hosted' });
+    expect(other.parse.doc().ScenticCeremony).toBeUndefined();
+    expect(Object.keys(other.parse.doc().ACL).sort()).toEqual(['admin-user', 'signer-user-1', 'signer-user-2']);
+  });
+
+  it('a signer replaced on a scentic-ceremony document: the new signer is not left on the ACL either', async () => {
+    await createWorkflow(h);
+    const res = await signedRequest(h.app, {
+      method: 'POST', path: `/api/v1/firms/${FIRM1}/signature/workflows/${WF}/signers/replace`,
+      bodyObj: { fromEmail: BOB, toEmail: 'carol@example.com', toName: 'Carol' }, firmId: FIRM1, idempotencyKey: 'r1',
+    });
+    expect(res.status).toBe(200);
+    expect(h.parse.doc().ACL).toEqual({ 'admin-user': { read: true, write: true } });
+    // And no link to OpenSign's page is handed out for a document it refuses.
+    expect(res.body.data).toEqual({ email: 'carol@example.com', signingUrl: '' });
+    const signers = await signedRequest(h.app, { method: 'GET', path: `/api/v1/firms/${FIRM1}/signature/workflows/${WF}/signers`, firmId: FIRM1 });
+    expect(signers.body.data.signers.every((s: { signingUrl?: string }) => s.signingUrl === undefined)).toBe(true);
+    expect(signers.body.data.signers.map((s: { email: string }) => s.email)).toEqual([ALICE, 'carol@example.com']);
+  });
+
+  it("OpenSign's own page cannot sign, view or decline a scentic-ceremony document, even as a signer on it with a session", async () => {
+    await createWorkflow(h);
+    // A session for Alice's own account, as OpenSign's page would hold after its code screen —
+    // which she can get, because the same account signs another firm's hosted document.
+    const login = await h.parse.fetch('http://localhost:8080/app/loginAs', {
+      method: 'POST', headers: { 'X-Parse-Application-Id': 'opensign', 'X-Parse-Master-Key': 'test-master-key' }, body: JSON.stringify({ userId: 'signer-user-1' }),
+    });
+    const { sessionToken } = await login.json() as { sessionToken: string };
+    const asAlice = (fn: string, body: unknown) => h.parse.fetch(`http://localhost:8080/app/functions/${fn}`, {
+      method: 'POST', headers: { 'X-Parse-Application-Id': 'opensign', 'X-Parse-Session-Token': sessionToken, sessiontoken: sessionToken }, body: JSON.stringify(body),
+    });
+    const sign = await asAlice('signPdf', { docId: 'os-doc-1', userId: 'contact-1', pdfFile: pdf('x').toString('base64'), signature: PNG_B64 });
+    expect(sign.status).toBe(400);
+    expect((await sign.json() as { code: number }).code).toBe(119);
+    expect((await (await asAlice('triggerevent', { event: 'viewed', contactId: 'contact-1', body: { objectId: 'os-doc-1' } })).json() as { result: { message: string } }).result.message).toBe('User not found!');
+    expect((await asAlice('declinedoc', { docId: 'os-doc-1', userId: 'signer-user-1', reason: 'no' })).status).toBe(400);
+    expect(h.parse.doc().AuditTrail).toEqual([]);
+    expect(h.parse.doc().IsDeclined).toBe(false);
+    // The gateway's own submission for her still goes through.
+    expect((await ceremony(h, 'sign', signBody(ALICE, pdf('a'), ORIGINAL))).status).toBe(200);
+  });
+
+  it('cross-firm: the name another firm gave an address is not on this firm’s document, and in no response for it', async () => {
+    const X = 'x@example.com';
+    const create = async (firmId: string, workflowId: string, name: string, firmName: string) => {
+      await h.opensignService!.initFirm({ scenticFirmId: firmId, firmName }, 'corr');
+      return signedRequest(h.app, {
+        method: 'POST', path: `/api/v1/firms/${firmId}/signature/workflows`, firmId, idempotencyKey: `c-${workflowId}`,
+        bodyObj: { scenticSignatureWorkflowId: workflowId, scenticDocumentId: 'd', documentName: 'c.pdf', documentBase64: ORIGINAL.toString('base64'), ceremony: 'scentic', signers: [{ scenticSignerId: 's', email: X, name, role: 'signer', order: 1 }] },
+      });
+    };
+    expect((await create(FIRM1, 'wf-a', 'Alice A', 'Firm A')).status).toBe(200);
+    const responses: string[] = [];
+    const keep = async (p: PromiseLike<{ body: unknown; text?: string; headers: Record<string, string> }>) => {
+      const r = await p;
+      responses.push(JSON.stringify(r.body) + (r.text ?? '') + JSON.stringify(r.headers));
+      return r;
+    };
+    const b = (method: string, tail: string, bodyObj?: unknown) => signedRequest(h.app, { method, path: `/api/v1/firms/${FIRM2}/signature/workflows/wf-b${tail}`, firmId: FIRM2, bodyObj, idempotencyKey: `b-${tail}-${Math.random()}` });
+    expect((await keep(create(FIRM2, 'wf-b', 'Bob B', 'Firm B'))).status).toBe(200);
+
+    // What OpenSign does, which is the reason for all of this: one contact for the address, still
+    // carrying the first firm's name, now attached to the second firm's document.
+    expect(h.parse.contacts()).toEqual([expect.objectContaining({ Email: X, Name: 'Alice A' })]);
+    expect(h.parse.doc('os-doc-2').Signers[0].Name).toBe('Alice A');
+
+    await keep(b('GET', ''));
+    await keep(b('GET', '/signers'));
+    await keep(b('POST', '/ceremony/viewed', { email: X, ipAddress: '203.0.113.7' }));
+    await keep(b('GET', '/ceremony/file'));
+    const signed = await keep(b('POST', '/ceremony/sign', signBody(X, pdf('b signed'), ORIGINAL, { signerName: 'Robert B' })));
+    expect(signed.status).toBe(200);
+    expect(signed.body).toMatchObject({ data: { signed: true, completed: true } });
+    await keep(b('GET', ''));
+    await keep(b('GET', '/signers'));
+    await keep(b('POST', '/poll'));
+    await keep(b('GET', '/completed'));
+    await keep(b('POST', '/remind', { signerEmails: [] }));
+
+    expect(h.parse.doc('os-doc-2').ScenticSignerNames).toEqual([{ email: X, name: 'Robert B' }]);
+    expect(h.parse.doc('os-doc-1').ScenticSignerNames).toBeUndefined();
+    expect(h.parse.contacts()[0]!.Name).toBe('Alice A');
+    const everything = [...responses, JSON.stringify((await h.outbox.getAll()).filter((e) => e.scenticFirmId === FIRM2)), ...h.logs].join('\n');
+    expect(everything).not.toContain('Alice A');
+    expect(responses.length).toBe(11);
+    // Nor does any response carry a name at all for a signer: only addresses and states.
+    expect(responses.join('\n')).not.toContain('Bob B');
   });
 });
 
@@ -683,6 +840,7 @@ describe('create: where the signers sign', () => {
       parallelSigning: 'supported',
       perSignerDecline: 'supported',
       certificateEventHistory: 'supported',
+      signerConfirmedName: 'supported',
     });
   });
 });

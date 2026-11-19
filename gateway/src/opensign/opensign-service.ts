@@ -39,7 +39,9 @@ import {
   checkPdfBase64,
   checkSha256,
   checkSignaturePng,
+  checkSignerName,
   sha256Hex,
+  withSignerName,
 } from './ceremony.js';
 import type {
   CreateOpenSignWorkflowParams,
@@ -358,6 +360,8 @@ export class OpenSignService {
       senderName: params.senderName || undefined,
       // Scentic chases signers on its own schedule, in its own words.
       automaticReminders: !scenticDelivers,
+      // Marked so OpenSign's own page cannot be a second way in to a document Scentic orders.
+      scenticCeremony,
     });
 
     if (!docResult.success) {
@@ -439,6 +443,17 @@ export class OpenSignService {
           payload: { operation: 'linkContactToDoc', signerId: signer.scenticSignerId },
           safeSummary: `OpenSign returned no contact for signer ${signer.scenticSignerId}`,
         });
+      }
+    }
+
+    // Scentic shows this document itself, so no signer's account needs to be able to open it in
+    // OpenSign: linking put each on the ACL, and they are taken off again. Not done, the request is
+    // not made: a document its signers could reach around Scentic is not the one that was asked for.
+    if (scenticCeremony) {
+      const restricted = await this.client.restrictToPlatform(opensignDocId);
+      if (!restricted.success) {
+        await this.client.cancelDocument(opensignDocId, '', 'could not be closed to its signers');
+        return { success: false, error: wrapUpstreamError('OpenSign', 'restrictToPlatform', restricted.error) };
       }
     }
 
@@ -1042,14 +1057,9 @@ export class OpenSignService {
       if (signer.data.state !== 'pending') {
         return { success: true, data: { viewed: true as const, recorded: false } };
       }
-      const session = await this.client.signerSession(signer.data.userId);
-      if (!session.success || !session.data) {
-        return { success: false, error: wrapUpstreamError('OpenSign', 'signerSession', session.error) };
-      }
       const recorded = await this.client.recordViewed({
         docId: doc.data.objectId,
         contactId: signer.data.contactId,
-        sessionToken: session.data.sessionToken,
         ipAddress: ip.value,
       });
       if (!recorded.success) {
@@ -1060,7 +1070,7 @@ export class OpenSignService {
   }
 
   /**
-   * Submit a signer's stamped PDF to OpenSign as that signer.
+   * Submit a signer's stamped PDF to OpenSign for that signer.
    *
    * Compare and swap: the caller names the hash of the PDF it stamped (`baseSha256`); if the
    * document's current PDF is not that one — another signer got there first — nothing is written
@@ -1072,7 +1082,7 @@ export class OpenSignService {
   async ceremonySign(
     scenticFirmId: string,
     scenticSignatureWorkflowId: string,
-    input: { email?: unknown; pdfBase64?: unknown; signaturePngBase64?: unknown; ipAddress?: unknown; baseSha256?: unknown; auditEvents?: unknown },
+    input: { email?: unknown; signerName?: unknown; pdfBase64?: unknown; signaturePngBase64?: unknown; ipAddress?: unknown; baseSha256?: unknown; auditEvents?: unknown },
   ): Promise<ServiceResult<{ signed: true; completed: boolean; sha256: string }>> {
     const email = checkEmail(input.email);
     if (!email.ok) return { success: false, error: invalidInput('Invalid request', [email]) };
@@ -1090,10 +1100,19 @@ export class OpenSignService {
     }
     const events = checkAuditEvents(input.auditEvents);
     if (!events.ok) return { success: false, error: invalidInput('Invalid request', [events]) };
+    // Shape first, so a malformed name is refused whatever the workflow; whether one is required
+    // depends on the workflow and is decided once it has been found.
+    const nameShape = checkSignerName(input.signerName, false);
+    if (!nameShape.ok) return { success: false, error: invalidInput('Invalid request', [nameShape]) };
 
     return this.ceremonyLocks.run(`${scenticFirmId}:${scenticSignatureWorkflowId}`, async () => {
       const doc = await this.ceremonyDocument(scenticFirmId, scenticSignatureWorkflowId, 'act');
       if (!doc.success) return doc;
+      // Where Scentic hosts the ceremony the signer confirms their own name, and it is required:
+      // the only other name there is belongs to a contact OpenSign shares across every firm.
+      const mapping = await this.store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId);
+      const name = checkSignerName(input.signerName, mapping?.ceremony === 'scentic' || doc.data.ScenticCeremony === true);
+      if (!name.ok) return { success: false, error: invalidInput('Invalid request', [name]) };
       const signer = await this.ceremonySigner(doc.data, email.value);
       if (!signer.success) return signer;
       if (signer.data.state === 'signed') {
@@ -1108,21 +1127,24 @@ export class OpenSignService {
 
       // Scentic's own record of the ceremony, for the certificate. Written before the signature:
       // the last signature makes the certificate straight away, from what the document holds then.
-      if (events.value) {
-        const saved = await this.client.updateDocument(doc.data.objectId, { ScenticAudit: events.value });
+      //
+      // With it, the name this signer confirmed — on the document, beside the other signers' names,
+      // and never on the contact or the account, which belong to every firm that writes to this
+      // address. The certificate and the signature print it (deploy/opensign-server-patches.mjs).
+      const fields: Record<string, unknown> = {
+        ...(events.value ? { ScenticAudit: events.value } : {}),
+        ...(name.value ? { ScenticSignerNames: withSignerName(doc.data.ScenticSignerNames, email.value, name.value) } : {}),
+      };
+      if (Object.keys(fields).length > 0) {
+        const saved = await this.client.updateDocument(doc.data.objectId, fields);
         if (!saved.success) return { success: false, error: wrapUpstreamError('OpenSign', 'updateDocument', saved.error) };
       }
 
-      const session = await this.client.signerSession(signer.data.userId);
-      if (!session.success || !session.data) {
-        return { success: false, error: wrapUpstreamError('OpenSign', 'signerSession', session.error) };
-      }
       const submitted = await this.client.signAsSigner({
         docId: doc.data.objectId,
         contactId: signer.data.contactId,
         pdfBase64: pdf.value.toString('base64'),
         signaturePngBase64: png.value,
-        sessionToken: session.data.sessionToken,
         ipAddress: ip.value,
       });
       if (!submitted.success) {
@@ -1183,15 +1205,10 @@ export class OpenSignService {
       if (signer.data.state === 'signed') {
         return { success: false, error: alreadySigned('That signer has already signed this document.') };
       }
-      const session = await this.client.signerSession(signer.data.userId);
-      if (!session.success || !session.data) {
-        return { success: false, error: wrapUpstreamError('OpenSign', 'signerSession', session.error) };
-      }
       const declined = await this.client.declineAsSigner({
         docId: doc.data.objectId,
         userId: signer.data.userId,
         reason: reason.value,
-        sessionToken: session.data.sessionToken,
         ipAddress: ip.value,
       });
       if (!declined.success) {
@@ -1243,7 +1260,8 @@ export class OpenSignService {
           role: row.role,
           order: row.order,
           state: row.state,
-          ...(open && row.contactId && row.state !== 'signed' && row.state !== 'declined'
+          // A link to OpenSign's page, which refuses a document Scentic hosts the signing of.
+          ...(open && doc.data.ScenticCeremony !== true && row.contactId && row.state !== 'signed' && row.state !== 'declined'
             ? { signingUrl: signingUrlFor(this.config.publicUrl, doc.data.objectId, row.email, row.contactId) }
             : {}),
         })),
@@ -1300,6 +1318,12 @@ export class OpenSignService {
       return { success: false, error: wrapUpstreamError('OpenSign', 'linkContactToDoc', linked.error) };
     }
 
+    // Linking put the new signer's account on the ACL; where Scentic hosts the signing it comes off.
+    if (doc.data.ScenticCeremony === true) {
+      const restricted = await this.client.restrictToPlatform(doc.data.objectId);
+      if (!restricted.success) return { success: false, error: wrapUpstreamError('OpenSign', 'restrictToPlatform', restricted.error) };
+    }
+
     await this.outbox.publish({
       eventType: 'OPENSIGN_SIGNER_REPLACED',
       scenticFirmId,
@@ -1308,7 +1332,9 @@ export class OpenSignService {
       safeSummary: `A signer was replaced on workflow ${scenticSignatureWorkflowId}`,
     });
 
-    return { success: true, data: { email, signingUrl: signingUrlFor(this.config.publicUrl, doc.data.objectId, email, linked.data.objectId) } };
+    // No link where Scentic hosts the signing: OpenSign's page refuses the document.
+    const signingUrl = doc.data.ScenticCeremony === true ? '' : signingUrlFor(this.config.publicUrl, doc.data.objectId, email, linked.data.objectId);
+    return { success: true, data: { email, signingUrl } };
   }
 
   /**

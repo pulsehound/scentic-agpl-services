@@ -7,9 +7,12 @@
  * address in X-Forwarded-For, in what order relative to the read before them. A double of the
  * client's methods cannot show any of that — it replaces the code that does it. This one sits
  * below the real OpenSignClient and answers the handful of Parse routes the gateway uses, keeping
- * a document, its files and its sessions the way the patched server does (deploy/
- * opensign-server-patches.mjs): a signature or a refusal is accepted only from the signer's own
- * signed-in account, and the address written in the trail is the first X-Forwarded-For entry.
+ * documents, their files and sessions the way the patched server does (deploy/
+ * opensign-server-patches.mjs): a signature, view or refusal is accepted from the server's own
+ * call (the master key) for the signer it names, or from that signer's own signed-in account —
+ * never the latter for a document marked ScenticCeremony; and the address written in the trail is
+ * the first X-Forwarded-For entry. As upstream, there is one contact per email address for every
+ * document on the server, and it keeps the name it was first given.
  *
  * Synthetic and in memory, made and thrown away by each test. It proves what the gateway sends,
  * not that a real OpenSign accepts it — that is the contract suite's and the staging run's to say.
@@ -34,10 +37,12 @@ interface FakeContact {
 export interface FakeParse {
   fetch: typeof fetch;
   calls: FakeCall[];
-  /** The document as the server holds it (one per fake). */
-  doc: () => Record<string, any>;
-  /** The bytes behind the document's current file. */
-  currentFile: () => Buffer;
+  /** A document as the server holds it; the first one made unless another is named. */
+  doc: (id?: string) => Record<string, any>;
+  /** The bytes behind a document's current file. */
+  currentFile: (id?: string) => Buffer;
+  /** The contacts the server holds: one per address, across every document. */
+  contacts: () => Array<{ objectId: string; Email: string; Name: string }>;
   /** Every session token ever issued, for asserting none of them leaked. */
   tokens: () => string[];
   /** Most signPdf calls in flight at one moment. */
@@ -57,7 +62,10 @@ export function makeFakeParse(): FakeParse {
   const sessions = new Map<string, string>();
   const contacts: FakeContact[] = [];
   const failures = new Map<string, { status: number; body: Record<string, unknown> }>();
+  const docs = new Map<string, Record<string, any>>();
+  // The document the call in hand is about.
   let doc: Record<string, any> | null = null;
+  const use = (id: unknown) => { doc = docs.get(String(id)) ?? null; };
   let fileCounter = 0;
   let sessionCounter = 0;
   let signing = 0;
@@ -68,8 +76,9 @@ export function makeFakeParse(): FakeParse {
 
   const self: FakeParse = {
     calls,
-    doc: () => doc!,
-    currentFile: () => files.get(doc!.SignedUrl || doc!.URL)!,
+    doc: (id = 'os-doc-1') => docs.get(id)!,
+    currentFile: (id = 'os-doc-1') => files.get(docs.get(id)!.SignedUrl || docs.get(id)!.URL)!,
+    contacts: () => contacts,
     tokens: () => [...sessions.keys()],
     maxConcurrentSigns: () => maxSigning,
     failNext: (fn, status, body) => { failures.set(fn, { status, body }); },
@@ -112,7 +121,12 @@ export function makeFakeParse(): FakeParse {
         const contact = contacts.find((c) => c.objectId === path.split('/').pop());
         return contact ? json(200, contact) : json(404, { code: 101, error: 'Object not found.' });
       }
+      if (path.startsWith('/classes/contracts_Document/') && method === 'GET') {
+        use(path.split('/').pop());
+        return master && doc ? json(200, JSON.parse(JSON.stringify(doc))) : json(404, { code: 101, error: 'Object not found.' });
+      }
       if (path.startsWith('/classes/contracts_Document/') && method === 'PUT') {
+        use(path.split('/').pop());
         if (!master || !doc) return json(403, { code: 119, error: 'forbidden' });
         for (const [key, value] of Object.entries(body ?? {})) {
           if (value && typeof value === 'object' && (value as any).__op === 'Delete') delete doc[key];
@@ -124,6 +138,8 @@ export function makeFakeParse(): FakeParse {
       if (path.startsWith('/functions/')) {
         const fn = path.slice('/functions/'.length);
         const params = body ?? {};
+        if (params.docId !== undefined) use(params.docId);
+        else if ((params.body as { objectId?: unknown } | undefined)?.objectId !== undefined) use((params.body as { objectId: unknown }).objectId);
         const failure = failures.get(fn);
         if (failure) {
           failures.delete(fn);
@@ -138,9 +154,10 @@ export function makeFakeParse(): FakeParse {
           }
           case 'createdocumentfromapp': {
             const d = params.document as Record<string, any>;
+            const id = `os-doc-${docs.size + 1}`;
             doc = {
               ...d,
-              objectId: 'os-doc-1',
+              objectId: id,
               IsCompleted: false,
               IsDeclined: false,
               IsArchive: false,
@@ -149,21 +166,27 @@ export function makeFakeParse(): FakeParse {
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
             };
-            return json(200, { result: { objectId: 'os-doc-1' } });
+            docs.set(id, doc);
+            return json(200, { result: { objectId: id } });
           }
           case 'linkcontacttodoc': {
             const email = String(params.email);
-            const n = contacts.length + 1;
-            const contact: FakeContact = {
-              objectId: `contact-${n}`,
-              Email: email,
-              Name: String(params.name ?? email),
-              UserId: { __type: 'Pointer', className: '_User', objectId: `signer-user-${n}` },
-            };
-            contacts.push(contact);
+            // One contact per address, whoever asks and whatever they call them: the first name stays.
+            let contact = contacts.find((c) => c.Email === email);
+            if (!contact) {
+              const n = contacts.length + 1;
+              contact = {
+                objectId: `contact-${n}`,
+                Email: email,
+                Name: String(params.name ?? email),
+                UserId: { __type: 'Pointer', className: '_User', objectId: `signer-user-${n}` },
+              };
+              contacts.push(contact);
+            }
             const placeholder = (doc!.Placeholders as any[]).find((p) => p.email === email);
             if (placeholder) placeholder.signerObjId = contact.objectId;
             doc!.Signers.push(contact);
+            doc!.ACL = { ...(doc!.ACL ?? {}), [contact.UserId.objectId]: { read: true, write: true } };
             return json(200, { result: { contactId: contact.objectId } });
           }
           case 'sendmailv3':
@@ -176,8 +199,10 @@ export function makeFakeParse(): FakeParse {
           case 'getsignedurl':
             return json(200, { result: `${String(params.url)}?sig=1` });
           case 'triggerevent': {
-            const user = sessions.get(headers['sessiontoken'] ?? '');
-            if (!user) return json(200, { result: { message: 'User not found!' } });
+            if (!master) {
+              if (!doc || doc.ScenticCeremony === true) return json(200, { result: { message: 'User not found!' } });
+              if (!sessions.get(headers['sessiontoken'] ?? '')) return json(200, { result: { message: 'User not found!' } });
+            }
             const contactId = String(params.contactId);
             const entry = { UserPtr: { __type: 'Pointer', className: 'contracts_Contactbook', objectId: contactId }, SignedUrl: doc!.SignedUrl || '', Activity: 'Viewed', ipAddress: firstForwarded, ViewedOn: new Date().toISOString() };
             const at = (doc!.AuditTrail as any[]).findIndex((x) => x?.UserPtr?.objectId === contactId);
@@ -193,9 +218,15 @@ export function makeFakeParse(): FakeParse {
               if (self.signDelayMs) await new Promise((resolve) => setTimeout(resolve, self.signDelayMs));
               if (!doc || doc.IsDeclined || doc.IsArchive) return json(400, { code: 101, error: 'Document not found.' });
               const contact = contacts.find((c) => c.objectId === params.userId);
-              if (!sessionUser) return json(400, { code: 209, error: 'User is not authenticated.' });
-              if (!contact || contact.UserId.objectId !== sessionUser) {
-                return json(400, { code: 119, error: 'You are not asked to sign this document.' });
+              if (!master) {
+                if (doc.ScenticCeremony === true) return json(400, { code: 119, error: 'This document is signed on another page.' });
+                if (!sessionUser) return json(400, { code: 209, error: 'User is not authenticated.' });
+                if (!contact || contact.UserId.objectId !== sessionUser) {
+                  return json(400, { code: 119, error: 'You are not asked to sign this document.' });
+                }
+              }
+              if (!contact || !(doc.Signers as any[]).some((s) => s.objectId === contact.objectId)) {
+                return json(400, { code: 141, error: 'Cannot read properties of undefined' });
               }
               const bytes = Buffer.from(String(params.pdfFile), 'base64');
               const stored = `http://files.test/signed-${++fileCounter}.pdf`;
@@ -217,8 +248,11 @@ export function makeFakeParse(): FakeParse {
           }
           case 'declinedoc': {
             if (!doc || doc.IsCompleted || doc.IsArchive) return json(400, { code: 101, error: 'Object not found.' });
-            if (!sessionUser) return json(400, { code: 209, error: 'User is not authenticated.' });
-            if (sessionUser !== params.userId) return json(400, { code: 119, error: 'You are not asked to sign this document.' });
+            if (!master) {
+              if (doc.ScenticCeremony === true) return json(400, { code: 119, error: 'This document is signed on another page.' });
+              if (!sessionUser) return json(400, { code: 209, error: 'User is not authenticated.' });
+              if (sessionUser !== params.userId) return json(400, { code: 119, error: 'You are not asked to sign this document.' });
+            }
             doc.IsDeclined = true;
             doc.DeclineReason = params.reason;
             doc.DeclineBy = { __type: 'Pointer', className: '_User', objectId: params.userId };
