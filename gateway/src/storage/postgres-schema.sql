@@ -113,11 +113,18 @@ CREATE TABLE IF NOT EXISTS opensign_workflow_mappings (
   opensign_document_id TEXT NOT NULL,
   opensign_workflow_id TEXT NOT NULL,
   opensign_status TEXT NOT NULL DEFAULT 'DRAFT',
+  ceremony TEXT NOT NULL DEFAULT 'hosted',
   status TEXT NOT NULL DEFAULT 'ACTIVE',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE(scentic_firm_id, scentic_signature_workflow_id)
 );
+
+-- Where the signers sign ('hosted': OpenSign's page; 'scentic': Scentic's). Added to tables made
+-- before it existed. Forward: this statement, run on every start, a no-op once applied. Rollback:
+-- none needed — an older gateway neither reads nor writes the column, and it has a default;
+-- to remove it: ALTER TABLE opensign_workflow_mappings DROP COLUMN ceremony;
+ALTER TABLE opensign_workflow_mappings ADD COLUMN IF NOT EXISTS ceremony TEXT NOT NULL DEFAULT 'hosted';
 
 CREATE TABLE IF NOT EXISTS opensign_signer_mappings (
   id TEXT PRIMARY KEY,

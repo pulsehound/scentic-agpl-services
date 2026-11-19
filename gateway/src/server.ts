@@ -8,6 +8,7 @@ import { KimaiClient } from './kimai/kimai-client.js';
 import { KimaiService } from './kimai/kimai-service.js';
 import { OpenSignClient } from './opensign/opensign-client.js';
 import { OpenSignService } from './opensign/opensign-service.js';
+import { maxPdfBytesFromJsonLimit } from './opensign/ceremony.js';
 import { WebhookDispatcher, createWebhookDispatcherConfig } from './events/webhook-dispatcher.js';
 import { createStoreBundle, createStoreConfigFromEnv } from './storage/store-factory.js';
 
@@ -51,6 +52,8 @@ async function main() {
       enabled: config.opensignEnabled,
       pollIntervalSeconds: config.opensignPollIntervalSeconds,
       completionTimeoutSeconds: config.opensignCompletionTimeoutSeconds,
+      // The same setting that limits a request body (app.ts), so the two cannot disagree.
+      ceremonyMaxPdfBytes: maxPdfBytesFromJsonLimit(process.env.GATEWAY_JSON_LIMIT || '64mb'),
     });
   }
 

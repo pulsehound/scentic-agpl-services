@@ -555,6 +555,160 @@ export class OpenSignClient {
     return this.callFunction<{ url: string }>('generatecertificate', { docId }, true);
   }
 
+  // ── The signing ceremony Scentic hosts ────────────────────────────────
+  //
+  // Scentic authenticates the signer itself, shows the document, and stamps the signer's fields
+  // onto the PDF on its own server. What reaches here is the finished page set, submitted to
+  // OpenSign *as that signer* so OpenSign still orders, seals and certifies it. Each call below is
+  // made with the signer's own session — the patched server binds a signature and a refusal to the
+  // signed-in account (deploy/opensign-server-patches.mjs) — and names the signer's address as the
+  // first X-Forwarded-For entry, which is where OpenSign reads the address it writes in its audit
+  // trail (vendor index.js getUserIP). Without it the trail would name this gateway.
+  //
+  // A session token is never logged, returned to a caller, or kept: it is asked for, used for one
+  // call and dropped.
+
+  /** The Parse account behind a signer's contact. */
+  async getContactUserId(contactId: string): Promise<OpenSignResult<string>> {
+    const contact = await this.restCall<{ UserId?: { objectId?: string } }>(
+      'GET',
+      `/classes/contracts_Contactbook/${encodeURIComponent(contactId)}`,
+      undefined,
+      true,
+    );
+    if (!contact.success) return { success: false, error: contact.error };
+    const userId = contact.data?.UserId?.objectId;
+    if (!userId) return { success: false, error: { code: 'OPENSIGN_API_ERROR', message: 'OpenSign contact has no account' } };
+    return { success: true, data: userId };
+  }
+
+  /**
+   * A session for one signer's account, by Parse's /loginAs with the master key — the same call the
+   * server's own code sign-in makes (deploy/opensign-server-files/AuthLoginAsMail.js). No password
+   * is involved; signers' accounts have none anybody knows.
+   */
+  async signerSession(userId: string): Promise<OpenSignResult<{ sessionToken: string }>> {
+    try {
+      const resp = await fetch(`${this.config.baseUrl}/loginAs`, {
+        method: 'POST',
+        headers: this.headers(true),
+        body: JSON.stringify({ userId }),
+      });
+      if (!resp.ok) {
+        return { success: false, error: { code: 'OPENSIGN_AUTH_FAILED', message: `OpenSign loginAs returned ${resp.status}` } };
+      }
+      const json = await resp.json() as { sessionToken?: string };
+      if (!json.sessionToken) {
+        return { success: false, error: { code: 'OPENSIGN_AUTH_FAILED', message: 'OpenSign loginAs gave no session' } };
+      }
+      return { success: true, data: { sessionToken: json.sessionToken } };
+    } catch {
+      return { success: false, error: { code: 'OPENSIGN_UNREACHABLE', message: 'OpenSign loginAs request failed' } };
+    }
+  }
+
+  /** A cloud function called as one signer, from that signer's address. */
+  private async callFunctionAs<T>(
+    name: string,
+    params: Record<string, unknown>,
+    as: { sessionToken: string; ipAddress: string },
+  ): Promise<OpenSignResult<T>> {
+    try {
+      const resp = await fetch(`${this.config.baseUrl}/functions/${name}`, {
+        method: 'POST',
+        headers: {
+          'X-Parse-Application-Id': this.config.appId,
+          'Content-Type': 'application/json',
+          'X-Parse-Session-Token': as.sessionToken,
+          // triggerevent and getDocument read the session from this header, not Parse's own.
+          sessiontoken: as.sessionToken,
+          'X-Forwarded-For': forwardedFor(as.ipAddress),
+        },
+        body: JSON.stringify(params),
+      });
+      if (!resp.ok) {
+        // Parse answers a refused cloud function with { code, error }. The number is kept — it is
+        // how "not your turn" is told from "not found" — the text is not: it may name the signer.
+        let upstreamCode: number | undefined;
+        try {
+          const body = await resp.json() as { code?: unknown };
+          if (typeof body?.code === 'number') upstreamCode = body.code;
+        } catch { /* no body */ }
+        return { success: false, error: { code: 'OPENSIGN_API_ERROR', message: `OpenSign function ${name} returned ${resp.status}`, upstreamCode } };
+      }
+      const json = await resp.json() as { result?: T; error?: string };
+      if (json.error) {
+        return { success: false, error: { code: 'OPENSIGN_API_ERROR', message: `OpenSign function ${name} failed` } };
+      }
+      return { success: true, data: json.result };
+    } catch {
+      return { success: false, error: { code: 'OPENSIGN_UNREACHABLE', message: `OpenSign ${name} request failed` } };
+    }
+  }
+
+  /** OpenSign's own "Viewed" audit entry for one signer. */
+  async recordViewed(params: { docId: string; contactId: string; sessionToken: string; ipAddress: string }): Promise<OpenSignResult<true>> {
+    const result = await this.callFunctionAs<{ message?: string }>(
+      'triggerevent',
+      { event: 'viewed', contactId: params.contactId, body: { objectId: params.docId } },
+      { sessionToken: params.sessionToken, ipAddress: params.ipAddress },
+    );
+    if (!result.success) return { success: false, error: result.error };
+    // triggerevent answers 200 whatever happened and says which in words.
+    if (result.data?.message !== 'event called!') {
+      return { success: false, error: { code: 'OPENSIGN_API_ERROR', message: 'OpenSign did not record the event' } };
+    }
+    return { success: true, data: true };
+  }
+
+  /**
+   * Submit a signer's stamped PDF: OpenSign's signPdf, as that signer. OpenSign stores the PDF as
+   * the document's current file, writes the "Signed" audit entry with the signature image, and —
+   * when this was the last signature — seals the document and makes its certificate.
+   */
+  async signAsSigner(params: {
+    docId: string;
+    contactId: string;
+    pdfBase64: string;
+    signaturePngBase64: string;
+    sessionToken: string;
+    ipAddress: string;
+  }): Promise<OpenSignResult<{ url: string }>> {
+    const result = await this.callFunctionAs<{ status?: string; data?: string }>(
+      'signPdf',
+      {
+        pdfFile: params.pdfBase64,
+        docId: params.docId,
+        userId: params.contactId,
+        signature: params.signaturePngBase64,
+        isCustomCompletionMail: false,
+      },
+      { sessionToken: params.sessionToken, ipAddress: params.ipAddress },
+    );
+    if (!result.success) return { success: false, error: result.error };
+    if (result.data?.status !== 'success') {
+      return { success: false, error: { code: 'OPENSIGN_API_ERROR', message: 'OpenSign did not accept the signature' } };
+    }
+    return { success: true, data: { url: result.data.data ?? '' } };
+  }
+
+  /** A signer refuses the document: OpenSign's declinedoc, as that signer. */
+  async declineAsSigner(params: {
+    docId: string;
+    userId: string;
+    reason: string;
+    sessionToken: string;
+    ipAddress: string;
+  }): Promise<OpenSignResult<true>> {
+    const result = await this.callFunctionAs<string>(
+      'declinedoc',
+      { docId: params.docId, reason: params.reason, userId: params.userId },
+      { sessionToken: params.sessionToken, ipAddress: params.ipAddress },
+    );
+    if (!result.success) return { success: false, error: result.error };
+    return { success: true, data: true };
+  }
+
   // ── Unsupported operations ────────────────────────────────────────────
   // OpenSign has no native "void/cancel" API. Decline is the closest.
   // OpenSign has no native "delegate signer" API via Cloud Functions.
@@ -608,6 +762,15 @@ export class OpenSignClient {
  * that template is only this marker, and the patched mail function (deploy/opensign-server-patches.mjs)
  * answers success without sending anything that carries it.
  */
+/**
+ * The first X-Forwarded-For entry OpenSign will record as the signer's address. Where Scentic does
+ * not know it, "unknown" (the token RFC 7239 gives for exactly this) — never left out, because
+ * then OpenSign would record this gateway's own address as the signer's.
+ */
+export function forwardedFor(ipAddress: string): string {
+  return ipAddress.trim() || 'unknown';
+}
+
 export const SCENTIC_DELIVERS_MARKER = 'data-scentic-delivers';
 
 export const SCENTIC_DELIVERS_TEMPLATE = {

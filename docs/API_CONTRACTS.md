@@ -984,6 +984,186 @@ The endpoints in §6.3.1–6.3.7 are the planned AGPL-00 contract. The **actuall
 - All responses use the standard JSON envelope (`{ ok, data, meta }`). Errors use the standard error envelope (§3, §7).
 - Webhook dispatch to Scentic on terminal status changes is **not** wired in AGPL-02; outbox events are recorded for AGPL-03 to dispatch. See `docs/AGPL_02_CLOSEOUT.md`.
 
+### 6.3.9 The signing ceremony Scentic hosts (round 75)
+
+Implemented in `gateway/src/routes/signature.ts`, `gateway/src/opensign/opensign-service.ts` and `gateway/src/opensign/ceremony.ts`; tested in `gateway/src/tests/signature-ceremony.test.ts`. This section is the contract Scentic's client is written from.
+
+**What it is.** Scentic authenticates the signer itself (an emailed link and an emailed one-time code), shows the document, collects the field values, and stamps them onto the PDF on its own server. It hands the stamped PDF to the gateway, which submits it to OpenSign *as that signer* (a session obtained for the signer's own OpenSign account with the master key), so OpenSign still counts the signatures, seals the last one and makes the certificate. OpenSign's own signing page stays deployed and keeps working for `ceremony: 'hosted'` workflows.
+
+**Common to every route below.**
+
+- HMAC service auth (§5) and the headers of §2. The `X-Scentic-Firm-Id` header must equal `:firmId`, otherwise `403 FIRM_SCOPE_VIOLATION`.
+- `:workflowId` is the `scenticSignatureWorkflowId` given at create. A workflow that does not exist, or belongs to another firm, is `404 NOT_FOUND` (`"Workflow not found"`) — the two are not distinguishable.
+- Errors use the envelope `{ "ok": false, "error": { "code": string, "message": string, "details"?: [{ "field": string, "issue": string }], "retryable": boolean } }`.
+- `email` is matched case-insensitively after trimming. `ipAddress` is one IPv4 or IPv6 address as written (no list, port, brackets or host name), or `""`/absent when unknown. It is sent to OpenSign as the first `X-Forwarded-For` entry, which is the address OpenSign writes in its audit trail and on the certificate; when empty the literal `unknown` is sent, so OpenSign never records the gateway's own address as the signer's.
+- The gateway never returns, logs or stores a signer's OpenSign session token.
+
+**Error codes used by the ceremony routes.**
+
+| HTTP | `code` | `retryable` | When |
+|------|--------|-------------|------|
+| 400 | `INVALID_INPUT` | false | A field is missing or malformed. `details[0].field` names it (`email`, `ipAddress`, `baseSha256`, `pdfBase64`, `signaturePngBase64`, `reason`, `auditEvents`, `auditEvents[3].at`, `ceremony`); `details[0].issue` says why (`required`, `not an email address`, `not an IP address`, `not a SHA-256 in hex`, `not base64`, `not a PDF`, `not a PNG`, `not a date`, `at most 500 events`, `at most 1000 characters`, …). |
+| 403 | `FIRM_SCOPE_VIOLATION` | false | The signed firm is not the firm in the path. |
+| 403 | `FORBIDDEN` | false | OpenSign itself refused the signer's account for this document (Parse `OPERATION_FORBIDDEN`): the account is not the signer's, or is no longer on the document. |
+| 404 | `NOT_FOUND` | false | Unknown workflow (or another firm's). |
+| 404 | `NOT_A_SIGNER` | false | `email` is not asked to sign this document (never was, or was replaced). |
+| 409 | `ALREADY_SIGNED` | false | That signer has already signed. Nothing is written. |
+| 409 | `STALE_DOCUMENT` | **true** | `baseSha256` is not the hash of the document's current PDF — somebody else signed in between. Nothing is written. Fetch `ceremony/file` again, stamp again, retry with the new hash. |
+| 409 | `INVALID_STATE` | false | The document can no longer be acted on: withdrawn (cancelled/archived), declined, completed, or expired. `message` says which. |
+| 413 | `PAYLOAD_TOO_LARGE` | false | The stamped PDF is over the configured limit, the signature PNG is over 1 MiB, or the whole request body is over `GATEWAY_JSON_LIMIT` (default `64mb`). |
+| 501 | `NOT_SUPPORTED` | false | OpenSign is not enabled on this gateway. |
+| 502 | `UPSTREAM_ERROR` | true | OpenSign failed or was unreachable. The message never carries OpenSign's own text. |
+| 500 | `INTERNAL_ERROR` | false | Unexpected. |
+
+#### 6.3.9.1 `GET /api/v1/firms/:firmId/signature/workflows/:workflowId/ceremony/file`
+
+The document's **current** PDF: the PDF carrying every signature made so far (OpenSign `SignedUrl`), or the original (`URL`) before anyone has signed.
+
+- Request: no body.
+- `200`: the bytes. Headers: `Content-Type: application/pdf`, `Content-Length`, `X-Content-Sha256: <64 lowercase hex — SHA-256 of exactly these bytes>`, `Cache-Control: no-store`.
+- The `X-Content-Sha256` value is what a later `ceremony/sign` names as `baseSha256`.
+- `409 INVALID_STATE` when the request was withdrawn (cancelled/archived). A declined or completed document can still be read.
+- Also `403 FIRM_SCOPE_VIOLATION`, `404 NOT_FOUND`, `502 UPSTREAM_ERROR`.
+
+#### 6.3.9.2 `POST .../ceremony/viewed`
+
+Records OpenSign's "Viewed" audit entry for one signer (OpenSign `triggerevent`, as that signer).
+
+Request:
+
+```json
+{ "email": "signer@example.com", "ipAddress": "203.0.113.7" }
+```
+
+Response `200`:
+
+```json
+{ "ok": true, "data": { "viewed": true, "recorded": true } }
+```
+
+- Idempotent. `recorded` is `true` the first time and `false` when the signer had already viewed, signed or declined — in which case nothing is sent to OpenSign and the first view's time and address stand.
+- Errors: `INVALID_INPUT` (`email`, `ipAddress`), `NOT_A_SIGNER`, `INVALID_STATE`, `NOT_FOUND`, `FIRM_SCOPE_VIOLATION`, `UPSTREAM_ERROR`.
+
+#### 6.3.9.3 `POST .../ceremony/sign`
+
+Submits one signer's stamped PDF (OpenSign `signPdf`, as that signer).
+
+Request:
+
+```json
+{
+  "email": "signer@example.com",
+  "pdfBase64": "<base64 of the whole stamped PDF>",
+  "signaturePngBase64": "<base64 of a PNG of the signature>",
+  "ipAddress": "203.0.113.7",
+  "baseSha256": "<X-Content-Sha256 of the ceremony/file the PDF was stamped onto>",
+  "auditEvents": [
+    {
+      "at": "2026-11-19T08:00:00.000Z",
+      "event": "Link opened",
+      "actor": "Alice Example",
+      "email": "signer@example.com",
+      "ipAddress": "203.0.113.7",
+      "userAgent": "Mozilla/5.0 …",
+      "detail": "…"
+    }
+  ]
+}
+```
+
+| Field | Required | Rule |
+|-------|----------|------|
+| `email` | yes | A signer on the document who has not signed. |
+| `pdfBase64` | yes | Standard base64 (no data-URL prefix, no whitespace). Decodes to bytes beginning `%PDF`. At most the configured limit: three quarters of (`GATEWAY_JSON_LIMIT` − 3 MiB), 45.75 MiB at the default `64mb`. |
+| `signaturePngBase64` | yes | Standard base64 of a PNG (magic bytes checked), at most 1 MiB decoded. A leading `data:image/png;base64,` is accepted and dropped. Stored by OpenSign and drawn on the certificate. |
+| `ipAddress` | no | See above. |
+| `baseSha256` | yes | 64 hex characters, either case. |
+| `auditEvents` | no | Array, at most 500 entries. Each: `at` (required; any string `Date` parses, stored as ISO 8601 UTC), `event` (required, non-empty), `actor` (required string, may be empty), and optional `email`, `ipAddress` (an IP or empty), `userAgent`, `detail`. Every string is reduced to plain text (markup, control and direction characters removed, single line) and cut to 300 characters; `email` is lowercased. One bad entry refuses the whole request (`INVALID_INPUT`, `details[0].field` like `auditEvents[3].at`). Stored on the OpenSign document as `ScenticAudit` **before** `signPdf` runs, sorted by `at`. **Each submission replaces the stored list**, so send the complete history of the request every time, not only this signer's events. Omitted or `null` leaves the stored list as it is. |
+
+Order of work, under a per-workflow lock: read the document → refuse if closed (`INVALID_STATE`) → find the signer (`NOT_A_SIGNER`, `ALREADY_SIGNED`) → fetch the current PDF and compare its SHA-256 with `baseSha256` (`STALE_DOCUMENT`) → write `ScenticAudit` → sign in as the signer → `signPdf` with `X-Forwarded-For: <ipAddress>` → read the document back.
+
+Response `200`:
+
+```json
+{ "ok": true, "data": { "signed": true, "completed": false, "sha256": "<64 hex>" } }
+```
+
+- `completed` is `true` when this was the last signature and OpenSign has sealed the document.
+- `sha256`: when `completed` is `false`, the SHA-256 of the submitted PDF — OpenSign stores it untouched, so it is the next `baseSha256`. When `completed` is `true`, the hash OpenSign recorded for the sealed PDF (`DocumentHash`), or `""` if it recorded none. `ceremony/file`'s `X-Content-Sha256` is always authoritative.
+- **Concurrency.** Two submissions for one workflow never interleave inside one gateway instance (in-process lock around check + submit); the second sees the first's result and gets `STALE_DOCUMENT`. Across gateway instances the lock does not reach: Scentic's own database claim on the request is what keeps two submissions for one workflow from running at once.
+- **Not idempotent by key.** A retry after a lost response gets `ALREADY_SIGNED` if the first attempt landed; treat that as success after confirming with the status route.
+- Errors: `INVALID_INPUT`, `PAYLOAD_TOO_LARGE`, `NOT_A_SIGNER`, `ALREADY_SIGNED`, `STALE_DOCUMENT`, `INVALID_STATE`, `FORBIDDEN`, `NOT_FOUND`, `FIRM_SCOPE_VIOLATION`, `UPSTREAM_ERROR`.
+
+#### 6.3.9.4 `POST .../ceremony/decline`
+
+One signer refuses the document (OpenSign `declinedoc`, as that signer). The document is declined for everybody.
+
+Request:
+
+```json
+{ "email": "signer@example.com", "reason": "The fee in clause 4 is wrong.", "ipAddress": "203.0.113.7" }
+```
+
+- `reason` is required: trimmed, markup and control characters removed (line breaks kept), 1–1000 characters.
+
+Response `200`:
+
+```json
+{ "ok": true, "data": { "declined": true } }
+```
+
+- Asked again by the same signer after it succeeded: `200` again, nothing sent to OpenSign, the first reason stands.
+- A document already declined by somebody else, completed, withdrawn or expired: `INVALID_STATE`. A signer who has signed: `ALREADY_SIGNED`.
+- For documents created with `scenticDelivers: true` or `ceremony: 'scentic'`, OpenSign's own "declined" email to the document's creator (the platform's shared admin mailbox) is not sent (`deploy/opensign-server-patches.mjs`); Scentic sends its own notices.
+- Errors: `INVALID_INPUT` (`email`, `reason`, `ipAddress`), `NOT_A_SIGNER`, `ALREADY_SIGNED`, `INVALID_STATE`, `FORBIDDEN`, `NOT_FOUND`, `FIRM_SCOPE_VIOLATION`, `UPSTREAM_ERROR`.
+
+#### 6.3.9.5 Create: `ceremony`
+
+`POST /api/v1/firms/:firmId/signature/workflows` accepts one more optional field:
+
+```json
+{ "ceremony": "scentic" }
+```
+
+- `"hosted"` (the default, also when the field is absent): exactly the request sent to OpenSign before this field existed.
+- `"scentic"`: OpenSign's `SendinOrder` and `SendInOrderStrict` are both `false` whatever `sendInOrder` says — Scentic enforces the order and lets the signers of one step sign at the same time. It also implies `scenticDelivers: true` (the gateway and OpenSign mail nobody; OpenSign's automatic reminders are off), because an invitation from here would link to OpenSign's page. Everything else is as for `hosted`.
+- Any other value: `400 INVALID_INPUT` (`details[0].field = "ceremony"`).
+- The response (the stored mapping) gains `"ceremony": "hosted" | "scentic"`. Re-creating an existing workflow returns the stored mapping unchanged, including its ceremony.
+- The ceremony routes are not restricted to `scentic` workflows; on a `hosted` workflow sent in strict order, OpenSign itself refuses an out-of-turn signature (`403 FORBIDDEN`).
+
+#### 6.3.9.6 Status: who declined
+
+`GET /api/v1/firms/:firmId/signature/workflows/:workflowId` → `200`:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "status": "DRAFT | SENT | IN_PROGRESS | COMPLETED | DECLINED | EXPIRED | VOIDED | FAILED",
+    "opensignDocumentId": "string",
+    "ceremony": "hosted | scentic",
+    "signers": [
+      { "email": "signer@example.com", "status": "Viewed | Signed | declined", "signedAt": "ISO?", "viewedAt": "ISO?", "ipAddress": "string?" }
+    ],
+    "declineReason": "string | null",
+    "declinedByEmail": "signer@example.com | \"\"",
+    "expiresAt": "ISO | null",
+    "completedPdfReady": false,
+    "certificateReady": false
+  }
+}
+```
+
+- `declinedByEmail` is the address of the signer who declined (OpenSign `DeclineBy`, resolved through the document's signers), or `""` when nobody declined or it cannot be told.
+- That signer's own entry in `signers` has `status: "declined"` (lowercase); if they had never opened the document an entry `{ "email", "status": "declined" }` is added. Before this, a per-signer declined state could not occur: OpenSign records a refusal on the document and writes nothing to its audit trail.
+- `GET .../signers` reports the same signer with `state: "declined"`.
+
+`POST .../poll` → `200` `data` gains two fields: `{ "status", "changed", "completedPdfReady", "certificateReady", "declineReason": "string | null", "declinedByEmail": "string" }`.
+
+#### 6.3.9.7 Capabilities
+
+`GET /api/v1/providers/capabilities` gains: `"scenticCeremony": "emulated"`, `"concurrentSigning": "emulated"`, `"perSignerDecline": "supported"` (`"parallelSigning": "supported"` was already there).
+
 ### 6.4 Webhooks (gateway → Scentic)
 
 The gateway is the **source** of these webhooks; Scentic core is the **receiver**. They are delivered to `SCENTIC_CORE_URL + /api/integrations/agpl/events` (Scentic-side route, defined by Scentic core).
@@ -1100,6 +1280,11 @@ All errors use the JSON error envelope (§3). `code` is a stable machine-readabl
 | 404 | `NOT_FOUND` (`FIRM_NOT_FOUND`, `MAPPING_NOT_FOUND`, `ENTRY_NOT_FOUND`, `WORKFLOW_NOT_FOUND`, `PARTICIPANT_NOT_FOUND`) | No | Referenced resource does not exist in the gateway mapping or upstream. |
 | 409 | `CONFLICT` (`FIRM_ALREADY_INITIALIZED`, `FIRM_ALREADY_DISABLED`, `KIMAI_TEAM_IN_USE`, `KIMAI_USER_IN_USE`, `KIMAI_CUSTOMER_IN_USE`, `KIMAI_PROJECT_IN_USE`, `WORKFLOW_EXISTS`, `DUPLICATE_SCENTIC_ENTRY`, `ENTRY_EXPORTED`, `WORKFLOW_NOT_REMINDABLE`, `WORKFLOW_NOT_CANCELLABLE`, `WORKFLOW_NOT_COMPLETED`, `PARTICIPANT_ALREADY_SIGNED`, `ALREADY_EXPORTED`) | Case-by-case | State conflict. `retryable` is `true` only for `WORKFLOW_NOT_COMPLETED`. |
 | 413 | `DOCUMENT_TOO_LARGE` | No | PDF exceeds 25 MiB. |
+| 404 | `NOT_A_SIGNER` | No | Signing ceremony (§6.3.9): the address is not asked to sign the document. |
+| 409 | `ALREADY_SIGNED` | No | Signing ceremony: that signer has already signed. |
+| 409 | `STALE_DOCUMENT` | Yes | Signing ceremony: the PDF the submission was built on is no longer current. Fetch, stamp again, retry. |
+| 409 | `INVALID_STATE` | No | Signing ceremony: the document is withdrawn, declined, completed or expired. |
+| 413 | `PAYLOAD_TOO_LARGE` | No | The request body, the stamped PDF or the signature image is over its limit. |
 | 422 | `UPSTREAM_VALIDATION` | No | Upstream (Kimai/OpenSign) rejected the payload. `error.upstream` carries the upstream message. |
 | 422 | `SIGNED_PDF_INVALID` | No | Signed PDF failed signature/certificate verification. |
 | 429 | `RATE_LIMITED` | Yes | Gateway or upstream rate limit hit. Response includes `Retry-After` header (seconds). |

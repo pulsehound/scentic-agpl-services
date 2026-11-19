@@ -37,17 +37,54 @@ function contactOf(placeholder: OpenSignPlaceholder): string | undefined {
   return placeholder.signerObjId ?? placeholder.signerPtr?.objectId ?? undefined;
 }
 
+type DeclineFields = Partial<Pick<OpenSignDocument, 'IsDeclined' | 'DeclineBy' | 'Signers'>>;
+
+/**
+ * The address of the signer who declined, or '' when nobody did or it cannot be told.
+ *
+ * OpenSign records a refusal on the document, not on the signer: `IsDeclined`, a reason, and
+ * `DeclineBy` — the *account* that refused. Its audit trail gets no entry, so nothing in the trail
+ * ever says "Declined" and a signer's own state could never read as declined. The account is tied
+ * back to a signer through the Signers list, whose contacts each name their account.
+ */
+export function declinedByEmail(doc: Pick<OpenSignDocument, 'Placeholders'> & DeclineFields): string {
+  if (!doc.IsDeclined) return '';
+  const accountId = doc.DeclineBy?.objectId;
+  const asked = new Map<string, string>();
+  for (const p of doc.Placeholders ?? []) {
+    const email = (p.email ?? '').trim().toLowerCase();
+    if (!email) continue;
+    asked.set(email, email);
+    const contactId = contactOf(p);
+    if (contactId) asked.set(`contact:${contactId}`, email);
+  }
+  if (accountId) {
+    const contact = (doc.Signers ?? []).find((s) => s?.UserId?.objectId === accountId);
+    if (contact) {
+      const byContact = asked.get(`contact:${contact.objectId}`);
+      if (byContact) return byContact;
+      const byAddress = asked.get((contact.Email ?? '').trim().toLowerCase());
+      if (byAddress) return byAddress;
+    }
+  }
+  // The account's own address, where the read included it — only if it is somebody asked to sign.
+  const own = (doc.DeclineBy?.email ?? doc.DeclineBy?.username ?? '').trim().toLowerCase();
+  return asked.get(own) ?? '';
+}
+
 /** The people asked to sign or approve, in order, with where each has got to. */
-export function signerRows(doc: Pick<OpenSignDocument, 'Placeholders' | 'AuditTrail'>): SignerRow[] {
+export function signerRows(doc: Pick<OpenSignDocument, 'Placeholders' | 'AuditTrail'> & DeclineFields): SignerRow[] {
   const trail = doc.AuditTrail ?? [];
+  const declined = declinedByEmail(doc);
   return (doc.Placeholders ?? [])
     .filter((p) => !NOT_SIGNING.has((p.Role ?? 'signer').toLowerCase()) && p.email)
     .map((placeholder, index) => {
       const contactId = contactOf(placeholder);
       const mine = contactId ? trail.filter((entry) => entry.UserPtr?.objectId === contactId) : [];
+      const address = (placeholder.email ?? '').trim().toLowerCase();
       const state: SignerState = mine.some((e) => SIGNED.has(e.Activity))
         ? 'signed'
-        : mine.some((e) => e.Activity === 'Declined')
+        : (declined !== '' && declined === address) || mine.some((e) => e.Activity === 'Declined')
           ? 'declined'
           : mine.some((e) => e.Activity === 'Viewed')
             ? 'viewed'

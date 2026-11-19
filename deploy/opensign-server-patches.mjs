@@ -257,6 +257,30 @@ edit(`${FN}/declinedocument.js`, [
   ],
 ]);
 
+// A signer's refusal is mailed to the document's creator — the platform's single admin account,
+// which creates every firm's documents. Where Scentic sends every message itself (the document's
+// own template is only the marker, as for sendmailv3 above) Scentic tells the firm, in its own
+// words, and nothing goes to the shared mailbox.
+edit(`${FN}/declinedocument.js`, [
+  [
+    'async function sendDeclineMail(doc, publicUrl, userId, reason) {\n  try {\n',
+    'async function sendDeclineMail(doc, publicUrl, userId, reason) {\n  try {\n' +
+      "    if (String(doc?.RequestBody || '').includes('data-scentic-delivers')) {\n" +
+      "      console.log('scentic delivers this message');\n" +
+      '      return;\n' +
+      '    }\n',
+    'decline mail where scentic delivers',
+  ],
+]);
+{
+  const decline = readFileSync(`${FN}/declinedocument.js`, 'utf8');
+  const guard = decline.indexOf("includes('data-scentic-delivers')");
+  if (guard === -1 || guard > decline.indexOf('await sendSystemMail(')) {
+    console.error(`${FN}/declinedocument.js: the decline mail is not held back where Scentic delivers`);
+    process.exit(1);
+  }
+}
+
 edit(`${FN}/getSignedUrl.js`, [
   [
     '    if (docId || templateId) {\n      try {\n',

@@ -27,6 +27,10 @@ export interface OpenSignDocument {
   ExpiryDate?: ParseDateValue;
   TimeToCompleteDays?: number;
   Signers: OpenSignSignerRef[];
+  /** The account that declined, where a signer did (a pointer, or the account itself when included). */
+  DeclineBy?: { objectId?: string; email?: string; username?: string };
+  /** Scentic's own record of the ceremony, printed on the certificate (ceremony/sign). */
+  ScenticAudit?: unknown[];
   /**
    * Who sent it. Present on the document OpenSign returns, and the correct
    * source for a later reminder — a reminder should come from whoever sent the
@@ -43,6 +47,10 @@ export interface OpenSignSignerRef {
   objectId: string;
   __type: string;
   className: string;
+  /** Present when the contact itself was included in the read, as getDocument does for Signers. */
+  Email?: string;
+  Name?: string;
+  UserId?: { objectId?: string };
 }
 
 export interface OpenSignPlaceholder {
@@ -131,7 +139,7 @@ export interface OpenSignExtendedUser {
 export interface OpenSignResult<T> {
   success: boolean;
   data?: T;
-  error?: { code: string; message: string };
+  error?: { code: string; message: string; upstreamCode?: number };
 }
 
 export interface OpenSignHealthStatus {

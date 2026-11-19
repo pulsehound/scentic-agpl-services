@@ -102,6 +102,16 @@ export function createApp(deps: AppDeps): express.Application {
     const correlationId = getContext()?.correlationId ?? '';
     clearContext();
 
+    // A body over the limit, refused by the JSON parser before any route saw it. It used to fall
+    // through to the unhandled branch below and come back as a bare 500.
+    if ((err as { type?: string }).type === 'entity.too.large') {
+      res.status(413).json({
+        ok: false,
+        error: { code: 'PAYLOAD_TOO_LARGE', message: 'The request body is too large.', retryable: false },
+      });
+      return;
+    }
+
     if ('code' in err && 'statusCode' in err && 'toApiError' in err) {
       const gwErr = err as GatewayError & { toApiError: () => unknown };
       res.status(gwErr.statusCode).json({

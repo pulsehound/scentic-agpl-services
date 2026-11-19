@@ -382,6 +382,7 @@ export class InMemoryMappingStore implements MappingStore {
           opensignDocumentId,
           opensignWorkflowId,
           opensignStatus,
+          ceremony: params.ceremony === 'scentic' ? 'scentic' : 'hosted',
           status: 'ACTIVE' as MappingStatus,
           createdAt: now,
           updatedAt: now,

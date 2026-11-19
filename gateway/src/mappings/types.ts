@@ -198,10 +198,22 @@ export interface OpenSignWorkflowMapping {
   opensignDocumentId: string;
   opensignWorkflowId: string;
   opensignStatus: string;
+  /** Where the signers sign: OpenSign's own page ('hosted'), or Scentic's ('scentic'). */
+  ceremony: SignatureCeremony;
   status: MappingStatus;
   createdAt: string;
   updatedAt: string;
 }
+
+/**
+ * Who shows the document to a signer and collects their signature.
+ *
+ * 'hosted' is OpenSign's own signing page, reached by the link in an invitation. 'scentic' is
+ * Scentic's page: Scentic authenticates the signer, stamps the PDF and submits it through the
+ * ceremony routes; OpenSign orders nothing (Scentic enforces the order, and lets the signers of one
+ * step sign at the same time) but still seals and certifies.
+ */
+export type SignatureCeremony = 'hosted' | 'scentic';
 
 export interface OpenSignSignerMapping {
   id: string;
@@ -273,4 +285,6 @@ export interface CreateOpenSignWorkflowParams {
    * where this service mails the invitation and OpenSign mails the next signer.
    */
   scenticDelivers?: boolean;
+  /** Where the signers sign. 'hosted' unless said otherwise. */
+  ceremony?: SignatureCeremony;
 }

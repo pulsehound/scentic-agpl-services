@@ -70,6 +70,10 @@ export function createSignatureRouter(service: OpenSignService): Router {
       if (!b.scenticSignatureWorkflowId || !b.scenticDocumentId || !b.documentName || !b.documentBase64) {
         return next(invalidInput('scenticSignatureWorkflowId, scenticDocumentId, documentName, and documentBase64 are required'));
       }
+      // Named, it must be one of the two: a misspelt ceremony must not quietly become the other.
+      if (b.ceremony !== undefined && b.ceremony !== 'hosted' && b.ceremony !== 'scentic') {
+        return next(invalidInput('Invalid request', [{ field: 'ceremony', issue: "must be 'hosted' or 'scentic'" }]));
+      }
       const result = await service.createWorkflow({
         scenticFirmId: req.params.firmId,
         scenticSignatureWorkflowId: b.scenticSignatureWorkflowId,
@@ -91,6 +95,7 @@ export function createSignatureRouter(service: OpenSignService): Router {
         redirectUrl: httpsUrlOrEmpty(b.redirectUrl),
         dateFormat: typeof b.dateFormat === 'string' ? b.dateFormat : '',
         scenticDelivers: b.scenticDelivers === true,
+        ceremony: b.ceremony === 'scentic' ? 'scentic' : 'hosted',
       }, ctx?.correlationId ?? '');
       if (!result.success) return next(result.error);
       res.json({ ok: true, data: result.data });
@@ -249,6 +254,62 @@ export function createSignatureRouter(service: OpenSignService): Router {
     } catch (err) { next(err); }
   });
 
+  // ── The signing ceremony Scentic hosts ──────────────────────────────────────────────────────
+  //
+  // Scentic authenticates the signer and shows the document itself; these are what it needs from
+  // the signing service to do so. All four are for the firm in the path, like every route above.
+
+  // The document's PDF as it stands now — with every signature made so far. X-Content-Sha256 is
+  // what a later submission names as the PDF it was built on.
+  router.get('/api/v1/firms/:firmId/signature/workflows/:workflowId/ceremony/file', async (req, res, next) => {
+    try {
+      const result = await service.getCeremonyFile(req.params.firmId, req.params.workflowId);
+      if (!result.success) return next(result.error);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Length', String(result.data.bytes.length));
+      res.setHeader('X-Content-Sha256', result.data.sha256);
+      res.setHeader('Cache-Control', 'no-store');
+      res.end(result.data.bytes);
+    } catch (err) { next(err); }
+  });
+
+  // The signer opened the document.
+  router.post('/api/v1/firms/:firmId/signature/workflows/:workflowId/ceremony/viewed', async (req, res, next) => {
+    try {
+      const b = req.body ?? {};
+      const result = await service.ceremonyViewed(req.params.firmId, req.params.workflowId, { email: b.email, ipAddress: b.ipAddress });
+      if (!result.success) return next(result.error);
+      res.json({ ok: true, data: result.data });
+    } catch (err) { next(err); }
+  });
+
+  // The signer's stamped PDF, submitted to the signing service as that signer.
+  router.post('/api/v1/firms/:firmId/signature/workflows/:workflowId/ceremony/sign', async (req, res, next) => {
+    try {
+      const b = req.body ?? {};
+      const result = await service.ceremonySign(req.params.firmId, req.params.workflowId, {
+        email: b.email,
+        pdfBase64: b.pdfBase64,
+        signaturePngBase64: b.signaturePngBase64,
+        ipAddress: b.ipAddress,
+        baseSha256: b.baseSha256,
+        auditEvents: b.auditEvents,
+      });
+      if (!result.success) return next(result.error);
+      res.json({ ok: true, data: result.data });
+    } catch (err) { next(err); }
+  });
+
+  // The signer refuses the document.
+  router.post('/api/v1/firms/:firmId/signature/workflows/:workflowId/ceremony/decline', async (req, res, next) => {
+    try {
+      const b = req.body ?? {};
+      const result = await service.ceremonyDecline(req.params.firmId, req.params.workflowId, { email: b.email, reason: b.reason, ipAddress: b.ipAddress });
+      if (!result.success) return next(result.error);
+      res.json({ ok: true, data: result.data });
+    } catch (err) { next(err); }
+  });
+
   // Poll all due workflows
   router.post('/api/v1/firms/:firmId/signature/poll-due', async (req, res, next) => {
     try {
@@ -289,6 +350,16 @@ export const SIGNATURE_CAPABILITIES = {
   revokeSignature: 'emulated',
   // Scentic can send every message itself, given each signer's link.
   signerLinks: 'supported',
+  // The signing page can be Scentic's own: Scentic authenticates the signer, stamps the PDF and
+  // submits it here (`ceremony: 'scentic'` on create, then the .../ceremony/* routes). Emulated: the
+  // gateway signs in to OpenSign as the signer; OpenSign has no such interface of its own.
+  scenticCeremony: 'emulated',
+  // In Scentic's ceremony the signers of one step may sign at the same time, each submission
+  // checked against the PDF it was built on (STALE_DOCUMENT when another got there first).
+  concurrentSigning: 'emulated',
+  // A signer's refusal names the signer: `declinedByEmail` in a status, and that signer's own
+  // status reads 'declined'.
+  perSignerDecline: 'supported',
   smsVerification: 'unsupported',
   bulkSend: 'unsupported',
 } as const;

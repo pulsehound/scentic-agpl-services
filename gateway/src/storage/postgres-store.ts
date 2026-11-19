@@ -323,12 +323,12 @@ export class PostgresMappingStore implements MappingStore, NonceStore, EventOutb
     const ts = now();
     const id = crypto.randomUUID();
     const res = await this.pool.query(
-      `INSERT INTO opensign_workflow_mappings (id, scentic_firm_id, scentic_signature_workflow_id, scentic_matter_id, scentic_document_id, scentic_document_version_id, opensign_document_id, opensign_workflow_id, opensign_status, status, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'ACTIVE', $10, $10)
+      `INSERT INTO opensign_workflow_mappings (id, scentic_firm_id, scentic_signature_workflow_id, scentic_matter_id, scentic_document_id, scentic_document_version_id, opensign_document_id, opensign_workflow_id, opensign_status, ceremony, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $11, 'ACTIVE', $10, $10)
        ON CONFLICT (scentic_firm_id, scentic_signature_workflow_id) DO UPDATE
        SET opensign_document_id = EXCLUDED.opensign_document_id, opensign_workflow_id = EXCLUDED.opensign_workflow_id, opensign_status = EXCLUDED.opensign_status, updated_at = EXCLUDED.updated_at
        RETURNING *`,
-      [id, params.scenticFirmId, params.scenticSignatureWorkflowId, params.scenticMatterId, params.scenticDocumentId, params.scenticDocumentVersionId, opensignDocumentId, opensignWorkflowId, opensignStatus, ts],
+      [id, params.scenticFirmId, params.scenticSignatureWorkflowId, params.scenticMatterId, params.scenticDocumentId, params.scenticDocumentVersionId, opensignDocumentId, opensignWorkflowId, opensignStatus, ts, params.ceremony === 'scentic' ? 'scentic' : 'hosted'],
     );
     return this.rowToOpenSignWorkflowMapping(res.rows[0]);
   }
@@ -466,7 +466,7 @@ export class PostgresMappingStore implements MappingStore, NonceStore, EventOutb
     return { id: r.id, scenticFirmId: r.scentic_firm_id, scenticUserId: r.scentic_user_id, opensignUserId: r.opensign_user_id, opensignEmail: r.opensign_email, opensignSessionToken: r.opensign_session_token, status: r.status, createdAt: toIso(r.created_at), updatedAt: toIso(r.updated_at) };
   }
   private rowToOpenSignWorkflowMapping(r: any): OpenSignWorkflowMapping {
-    return { id: r.id, scenticFirmId: r.scentic_firm_id, scenticSignatureWorkflowId: r.scentic_signature_workflow_id, scenticMatterId: r.scentic_matter_id, scenticDocumentId: r.scentic_document_id, scenticDocumentVersionId: r.scentic_document_version_id, opensignDocumentId: r.opensign_document_id, opensignWorkflowId: r.opensign_workflow_id, opensignStatus: r.opensign_status, status: r.status, createdAt: toIso(r.created_at), updatedAt: toIso(r.updated_at) };
+    return { id: r.id, scenticFirmId: r.scentic_firm_id, scenticSignatureWorkflowId: r.scentic_signature_workflow_id, scenticMatterId: r.scentic_matter_id, scenticDocumentId: r.scentic_document_id, scenticDocumentVersionId: r.scentic_document_version_id, opensignDocumentId: r.opensign_document_id, opensignWorkflowId: r.opensign_workflow_id, opensignStatus: r.opensign_status, ceremony: r.ceremony === 'scentic' ? 'scentic' : 'hosted', status: r.status, createdAt: toIso(r.created_at), updatedAt: toIso(r.updated_at) };
   }
   private rowToOpenSignSignerMapping(r: any): OpenSignSignerMapping {
     return { id: r.id, scenticFirmId: r.scentic_firm_id, scenticSignatureWorkflowId: r.scentic_signature_workflow_id, scenticSignerId: r.scentic_signer_id, opensignSignerId: r.opensign_signer_id, signerEmailHash: r.signer_email_hash, status: r.status, createdAt: toIso(r.created_at), updatedAt: toIso(r.updated_at) };

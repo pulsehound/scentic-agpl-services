@@ -28,12 +28,25 @@ import type {
   OpenSignSignerStatus,
 } from './types.js';
 import { deriveDocumentStatus } from './types.js';
-import { closedReason, isChangeError, signerRows, withSignatureRevoked, withSignerReplaced, type SignerState } from './signer-changes.js';
+import { closedReason, declinedByEmail, isChangeError, signerRows, withSignatureRevoked, withSignerReplaced, type SignerState } from './signer-changes.js';
+import {
+  DEFAULT_MAX_PDF_BYTES,
+  KeyedMutex,
+  checkAuditEvents,
+  checkDeclineReason,
+  checkEmail,
+  checkIpAddress,
+  checkPdfBase64,
+  checkSha256,
+  checkSignaturePng,
+  sha256Hex,
+} from './ceremony.js';
 import type {
   CreateOpenSignWorkflowParams,
   SyncOpenSignFirmParams,
   SyncOpenSignUserParams,
   OpenSignWorkflowMapping,
+  SignatureCeremony,
 } from '../mappings/types.js';
 import {
   notFound,
@@ -43,6 +56,12 @@ import {
   notSupported,
   upstreamUnavailable,
   wrapUpstreamError,
+  invalidState,
+  notASigner,
+  alreadySigned,
+  staleDocument,
+  payloadTooLarge,
+  forbidden,
   type GatewayError,
 } from '../http/errors.js';
 
@@ -52,6 +71,26 @@ export interface OpenSignServiceConfig {
   completionTimeoutSeconds: number;
   /** Where a signer opens the document. The frontend, not the API. */
   publicUrl: string;
+  /** The largest stamped PDF a ceremony submission may carry, decoded. From the body limit. */
+  ceremonyMaxPdfBytes?: number;
+}
+
+/**
+ * The audit trail's view of each signer, with a refusal put on the signer who made it.
+ *
+ * OpenSign writes a refusal on the document and nothing in the trail, so the trail alone can never
+ * say a signer declined. Their entry (they will have opened the document) becomes 'declined'; with
+ * no entry at all, one is added.
+ */
+export function signerStatusesWithDecline(doc: OpenSignDocument): { signers: OpenSignSignerStatus[]; declinedByEmail: string } {
+  const signers = signerStatusesFrom(doc);
+  const declinedBy = declinedByEmail(doc);
+  if (declinedBy) {
+    const own = signers.filter((s) => s.email === declinedBy && s.status !== 'Signed' && s.status !== 'Approved');
+    if (own.length > 0) for (const entry of own) entry.status = 'declined';
+    else if (!signers.some((s) => s.email === declinedBy)) signers.push({ email: declinedBy, status: 'declined' });
+  }
+  return { signers, declinedByEmail: declinedBy };
 }
 
 type ServiceResult<T> = { success: true; data: T } | { success: false; error: GatewayError };
@@ -272,7 +311,11 @@ export class OpenSignService {
     // Create document in OpenSign
     // The wording OpenSign uses for the next signer of a document signed in order, in its own
     // variable syntax — the same template the gateway sends, so every signer reads the same mail.
-    const scenticDelivers = params.scenticDelivers === true;
+    //
+    // Where Scentic hosts the ceremony there is no OpenSign page to invite anybody to, so every
+    // message is Scentic's whether or not the caller also said so.
+    const scenticCeremony = params.ceremony === 'scentic';
+    const scenticDelivers = params.scenticDelivers === true || scenticCeremony;
     const relay = scenticDelivers
       ? { subject: SCENTIC_DELIVERS_TEMPLATE.subject, html: SCENTIC_DELIVERS_TEMPLATE.body }
       : signingMail({
@@ -299,7 +342,10 @@ export class OpenSignService {
       // "unauthorized" rather than as anything to do with an address.
       placeholders: buildPlaceholders(signers, params.fields ?? [], Math.random, dateFormatOrDefault(params.dateFormat)),
       timeToCompleteDays: expiresInDays,
-      sendinOrder: params.sendInOrder === true && signers.length > 1,
+      // Scentic's ceremony: OpenSign orders nothing (SendinOrder and SendInOrderStrict both off).
+      // Scentic decides whose turn it is and lets the signers of one step sign at the same time;
+      // OpenSign's strict order would refuse the second of two people signing in one step.
+      sendinOrder: !scenticCeremony && params.sendInOrder === true && signers.length > 1,
       // Each signer enters a code emailed to them before the document opens: the id in a signing
       // link alone shows nothing to a forwarded invitation or to somebody since replaced.
       isEnableOTP: true,
@@ -421,7 +467,7 @@ export class OpenSignService {
 
   // ── Get workflow status ───────────────────────────────────────────────
 
-  async getWorkflowStatus(scenticFirmId: string, scenticSignatureWorkflowId: string, correlationId: string): Promise<ServiceResult<{ status: OpenSignDocumentStatus; opensignDocumentId: string; signers: OpenSignSignerStatus[]; declineReason: string | null; expiresAt: string | null; completedPdfReady: boolean; certificateReady: boolean }>> {
+  async getWorkflowStatus(scenticFirmId: string, scenticSignatureWorkflowId: string, correlationId: string): Promise<ServiceResult<{ status: OpenSignDocumentStatus; opensignDocumentId: string; ceremony: SignatureCeremony; signers: OpenSignSignerStatus[]; declineReason: string | null; declinedByEmail: string; expiresAt: string | null; completedPdfReady: boolean; certificateReady: boolean }>> {
     if (!this.config.enabled) {
       return { success: false, error: notSupported('OpenSign is not enabled') };
     }
@@ -463,15 +509,18 @@ export class OpenSignService {
     // the caller receives a list of things that happened with no way to say who
     // they happened to. Scentic could not match a single entry to a recipient,
     // so "check for updates" reported nothing had changed however much had.
-    const signers = signerStatusesFrom(doc);
+    // A refusal is on the document, not in the trail: put on the signer who made it.
+    const { signers, declinedByEmail: declinedBy } = signerStatusesWithDecline(doc);
 
     return {
       success: true,
       data: {
         status,
         opensignDocumentId: mapping.opensignDocumentId,
+        ceremony: mapping.ceremony ?? 'hosted',
         signers,
         declineReason: doc.DeclineReason ?? null,
+        declinedByEmail: declinedBy,
         expiresAt: parseDate(doc.ExpiryDate)?.toISOString() ?? null,
         completedPdfReady: !!doc.SignedUrl && doc.IsCompleted,
         certificateReady: !!doc.CertificateUrl,
@@ -657,7 +706,7 @@ export class OpenSignService {
 
   // ── Poll workflow ─────────────────────────────────────────────────────
 
-  async pollWorkflow(scenticFirmId: string, scenticSignatureWorkflowId: string, correlationId: string): Promise<ServiceResult<{ status: OpenSignDocumentStatus; changed: boolean; completedPdfReady: boolean; certificateReady: boolean }>> {
+  async pollWorkflow(scenticFirmId: string, scenticSignatureWorkflowId: string, correlationId: string): Promise<ServiceResult<{ status: OpenSignDocumentStatus; changed: boolean; completedPdfReady: boolean; certificateReady: boolean; declineReason: string | null; declinedByEmail: string }>> {
     if (!this.config.enabled) {
       return { success: false, error: notSupported('OpenSign is not enabled') };
     }
@@ -670,7 +719,18 @@ export class OpenSignService {
     // Skip polling if already in terminal state
     const terminalStates = ['COMPLETED', 'DECLINED', 'EXPIRED', 'VOIDED', 'FAILED'];
     if (terminalStates.includes(mapping.opensignStatus)) {
-      return { success: true, data: { status: mapping.opensignStatus as OpenSignDocumentStatus, changed: false, completedPdfReady: mapping.opensignStatus === 'COMPLETED', certificateReady: mapping.opensignStatus === 'COMPLETED' } };
+      // Nothing more can change, so OpenSign is not asked — except who declined and why, which is
+      // on the document and nowhere here. Unreachable, that reads as unknown, not as a failure.
+      let declineReason: string | null = null;
+      let declinedBy = '';
+      if (mapping.opensignStatus === 'DECLINED') {
+        const declinedDoc = await this.client.getDocument(mapping.opensignDocumentId);
+        if (declinedDoc.success && declinedDoc.data?.objectId) {
+          declineReason = declinedDoc.data.DeclineReason ?? null;
+          declinedBy = declinedByEmail(declinedDoc.data);
+        }
+      }
+      return { success: true, data: { status: mapping.opensignStatus as OpenSignDocumentStatus, changed: false, completedPdfReady: mapping.opensignStatus === 'COMPLETED', certificateReady: mapping.opensignStatus === 'COMPLETED', declineReason, declinedByEmail: declinedBy } };
     }
 
     const docResult = await this.client.getDocument(mapping.opensignDocumentId);
@@ -757,6 +817,8 @@ export class OpenSignService {
         changed,
         completedPdfReady: newStatus === 'COMPLETED' && !!doc.SignedUrl,
         certificateReady: newStatus === 'COMPLETED' && !!doc.CertificateUrl,
+        declineReason: newStatus === 'DECLINED' ? doc.DeclineReason ?? null : null,
+        declinedByEmail: declinedByEmail(doc),
       },
     };
   }
@@ -862,6 +924,287 @@ export class OpenSignService {
       return { success: false, error: wrapUpstreamError('OpenSign', 'fetchDocumentFile', { code: 'OPENSIGN_API_ERROR', message: 'Not a PDF' }) };
     }
     return { success: true, data: { bytes: file.data, sha256: hashOf('sha256').update(file.data).digest('hex') } };
+  }
+
+
+  // ── The signing ceremony Scentic hosts ────────────────────────────────
+  //
+  // Scentic authenticates the signer (an emailed link and an emailed code), shows the document,
+  // and stamps what the signer fills in onto the PDF on its own server. These four operations are
+  // what it needs from here: the PDF as it stands, a record that the signer opened it, the
+  // submission of the stamped PDF as that signer, and a refusal. OpenSign still holds the
+  // document, counts the signatures, seals the last one and makes the certificate.
+
+  /** One submission at a time per workflow, in this process. See KeyedMutex for what that covers. */
+  private ceremonyLocks = new KeyedMutex();
+
+  /** The workflow's document, read fresh, or why the ceremony cannot touch it. */
+  private async ceremonyDocument(
+    scenticFirmId: string,
+    scenticSignatureWorkflowId: string,
+    purpose: 'read' | 'act',
+  ): Promise<ServiceResult<OpenSignDocument>> {
+    if (!this.config.enabled) {
+      return { success: false, error: notSupported('OpenSign is not enabled') };
+    }
+    const mapping = await this.store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId);
+    if (!mapping || mapping.status !== 'ACTIVE') {
+      return { success: false, error: notFound('Workflow not found') };
+    }
+    if (mapping.opensignStatus === 'VOIDED') {
+      return { success: false, error: invalidState('This request was withdrawn.') };
+    }
+    const docResult = await this.client.getDocument(mapping.opensignDocumentId);
+    if (!docResult.success || !docResult.data) {
+      return { success: false, error: wrapUpstreamError('OpenSign', 'getDocument', docResult.error) };
+    }
+    const doc = docResult.data;
+    // OpenSign's getDocument leaves archived documents out of its query and answers 200 with
+    // `{ error }` instead of a document: a withdrawn request arrives here as an object with no id.
+    if (!doc.objectId || doc.IsArchive) {
+      return { success: false, error: invalidState('This request was withdrawn.') };
+    }
+    if (purpose === 'act') {
+      const closed = closedReason(doc);
+      if (closed) return { success: false, error: invalidState(closed.message) };
+      if (deriveDocumentStatus(doc) === 'EXPIRED') {
+        return { success: false, error: invalidState('This request has expired.') };
+      }
+    }
+    return { success: true, data: doc };
+  }
+
+  /** The document's PDF as it stands now: with every signature made so far, or the original. */
+  private async currentPdf(doc: OpenSignDocument): Promise<ServiceResult<{ bytes: Buffer; sha256: string }>> {
+    const stored = doc.SignedUrl || doc.URL;
+    if (!stored) return { success: false, error: notFound('The document has no file.') };
+    const file = await this.client.fetchDocumentFile(doc.objectId, stored);
+    if (!file.success || !file.data) {
+      return { success: false, error: wrapUpstreamError('OpenSign', 'fetchDocumentFile', file.error) };
+    }
+    if (file.data.subarray(0, 4).toString('latin1') !== '%PDF') {
+      return { success: false, error: wrapUpstreamError('OpenSign', 'fetchDocumentFile', { code: 'OPENSIGN_API_ERROR', message: 'Not a PDF' }) };
+    }
+    return { success: true, data: { bytes: file.data, sha256: sha256Hex(file.data) } };
+  }
+
+  /**
+   * The current PDF, for Scentic to show and to stamp. Its hash is what a later submission names as
+   * the PDF it was built on. Refused once the request is withdrawn; a declined or completed
+   * document can still be read — the people on it may need to see what was refused or signed.
+   */
+  async getCeremonyFile(scenticFirmId: string, scenticSignatureWorkflowId: string): Promise<ServiceResult<{ bytes: Buffer; sha256: string }>> {
+    const doc = await this.ceremonyDocument(scenticFirmId, scenticSignatureWorkflowId, 'read');
+    if (!doc.success) return doc;
+    return this.currentPdf(doc.data);
+  }
+
+  /** The signer on this document with that address, and the account that signs as them. */
+  private async ceremonySigner(doc: OpenSignDocument, email: string): Promise<ServiceResult<{ contactId: string; userId: string; state: SignerState }>> {
+    const row = signerRows(doc).find((r) => r.email === email);
+    if (!row || !row.contactId) {
+      return { success: false, error: notASigner('That address is not asked to sign this document.') };
+    }
+    // getDocument includes each contact, and with it the account; asked for only when it did not.
+    let userId = (doc.Signers ?? []).find((s) => s?.objectId === row.contactId)?.UserId?.objectId ?? '';
+    if (!userId) {
+      const looked = await this.client.getContactUserId(row.contactId);
+      if (!looked.success || !looked.data) {
+        return { success: false, error: wrapUpstreamError('OpenSign', 'getContactUserId', looked.error) };
+      }
+      userId = looked.data;
+    }
+    return { success: true, data: { contactId: row.contactId, userId, state: row.state } };
+  }
+
+  /**
+   * OpenSign's "Viewed" entry for one signer, with the signer's own address.
+   *
+   * Recorded once. OpenSign's triggerevent rewrites the signer's whole entry each time it is
+   * called — a second call would move the time, and one made after signing would turn "Signed"
+   * back into "Viewed" — so a signer already past this point is answered without calling it.
+   */
+  async ceremonyViewed(
+    scenticFirmId: string,
+    scenticSignatureWorkflowId: string,
+    input: { email?: unknown; ipAddress?: unknown },
+  ): Promise<ServiceResult<{ viewed: true; recorded: boolean }>> {
+    const email = checkEmail(input.email);
+    if (!email.ok) return { success: false, error: invalidInput('Invalid request', [email]) };
+    const ip = checkIpAddress(input.ipAddress);
+    if (!ip.ok) return { success: false, error: invalidInput('Invalid request', [ip]) };
+
+    return this.ceremonyLocks.run(`${scenticFirmId}:${scenticSignatureWorkflowId}`, async () => {
+      const doc = await this.ceremonyDocument(scenticFirmId, scenticSignatureWorkflowId, 'act');
+      if (!doc.success) return doc;
+      const signer = await this.ceremonySigner(doc.data, email.value);
+      if (!signer.success) return signer;
+      if (signer.data.state !== 'pending') {
+        return { success: true, data: { viewed: true as const, recorded: false } };
+      }
+      const session = await this.client.signerSession(signer.data.userId);
+      if (!session.success || !session.data) {
+        return { success: false, error: wrapUpstreamError('OpenSign', 'signerSession', session.error) };
+      }
+      const recorded = await this.client.recordViewed({
+        docId: doc.data.objectId,
+        contactId: signer.data.contactId,
+        sessionToken: session.data.sessionToken,
+        ipAddress: ip.value,
+      });
+      if (!recorded.success) {
+        return { success: false, error: wrapUpstreamError('OpenSign', 'recordViewed', recorded.error) };
+      }
+      return { success: true, data: { viewed: true as const, recorded: true } };
+    });
+  }
+
+  /**
+   * Submit a signer's stamped PDF to OpenSign as that signer.
+   *
+   * Compare and swap: the caller names the hash of the PDF it stamped (`baseSha256`); if the
+   * document's current PDF is not that one — another signer got there first — nothing is written
+   * and the caller fetches the current PDF, stamps it again and retries. The check and the
+   * submission run under a per-workflow lock in this process. Across gateway instances the lock
+   * does not reach; there Scentic's own database claim on the request keeps two submissions for
+   * one workflow from running at once.
+   */
+  async ceremonySign(
+    scenticFirmId: string,
+    scenticSignatureWorkflowId: string,
+    input: { email?: unknown; pdfBase64?: unknown; signaturePngBase64?: unknown; ipAddress?: unknown; baseSha256?: unknown; auditEvents?: unknown },
+  ): Promise<ServiceResult<{ signed: true; completed: boolean; sha256: string }>> {
+    const email = checkEmail(input.email);
+    if (!email.ok) return { success: false, error: invalidInput('Invalid request', [email]) };
+    const ip = checkIpAddress(input.ipAddress);
+    if (!ip.ok) return { success: false, error: invalidInput('Invalid request', [ip]) };
+    const base = checkSha256(input.baseSha256);
+    if (!base.ok) return { success: false, error: invalidInput('Invalid request', [base]) };
+    const pdf = checkPdfBase64(input.pdfBase64, this.config.ceremonyMaxPdfBytes ?? DEFAULT_MAX_PDF_BYTES);
+    if (!pdf.ok) {
+      return { success: false, error: pdf.issue === 'too large' ? payloadTooLarge('The document is too large.') : invalidInput('Invalid request', [pdf]) };
+    }
+    const png = checkSignaturePng(input.signaturePngBase64);
+    if (!png.ok) {
+      return { success: false, error: png.issue === 'too large' ? payloadTooLarge('The signature image is too large.') : invalidInput('Invalid request', [png]) };
+    }
+    const events = checkAuditEvents(input.auditEvents);
+    if (!events.ok) return { success: false, error: invalidInput('Invalid request', [events]) };
+
+    return this.ceremonyLocks.run(`${scenticFirmId}:${scenticSignatureWorkflowId}`, async () => {
+      const doc = await this.ceremonyDocument(scenticFirmId, scenticSignatureWorkflowId, 'act');
+      if (!doc.success) return doc;
+      const signer = await this.ceremonySigner(doc.data, email.value);
+      if (!signer.success) return signer;
+      if (signer.data.state === 'signed') {
+        return { success: false, error: alreadySigned('That signer has already signed this document.') };
+      }
+
+      const current = await this.currentPdf(doc.data);
+      if (!current.success) return current;
+      if (current.data.sha256 !== base.value) {
+        return { success: false, error: staleDocument('The document has changed since it was opened. Fetch it again, apply the signature again, and retry.') };
+      }
+
+      // Scentic's own record of the ceremony, for the certificate. Written before the signature:
+      // the last signature makes the certificate straight away, from what the document holds then.
+      if (events.value) {
+        const saved = await this.client.updateDocument(doc.data.objectId, { ScenticAudit: events.value });
+        if (!saved.success) return { success: false, error: wrapUpstreamError('OpenSign', 'updateDocument', saved.error) };
+      }
+
+      const session = await this.client.signerSession(signer.data.userId);
+      if (!session.success || !session.data) {
+        return { success: false, error: wrapUpstreamError('OpenSign', 'signerSession', session.error) };
+      }
+      const submitted = await this.client.signAsSigner({
+        docId: doc.data.objectId,
+        contactId: signer.data.contactId,
+        pdfBase64: pdf.value.toString('base64'),
+        signaturePngBase64: png.value,
+        sessionToken: session.data.sessionToken,
+        ipAddress: ip.value,
+      });
+      if (!submitted.success) {
+        // Parse's OPERATION_FORBIDDEN: OpenSign itself refused this account for this document.
+        if (submitted.error?.upstreamCode === 119) {
+          return { success: false, error: forbidden('The signing service refused this signer for this document.') };
+        }
+        // OBJECT_NOT_FOUND: declined or withdrawn between the read above and the write.
+        if (submitted.error?.upstreamCode === 101) {
+          return { success: false, error: invalidState('This document can no longer be signed.') };
+        }
+        return { success: false, error: wrapUpstreamError('OpenSign', 'signPdf', submitted.error) };
+      }
+
+      // Read back rather than assumed: whether that was the last signature is OpenSign's to say.
+      const after = await this.client.getDocument(doc.data.objectId);
+      if (!after.success || !after.data?.objectId) {
+        return { success: false, error: wrapUpstreamError('OpenSign', 'getDocument', after.error) };
+      }
+      if (signerRows(after.data).find((r) => r.email === email.value)?.state !== 'signed') {
+        return { success: false, error: wrapUpstreamError('OpenSign', 'signPdf', { code: 'OPENSIGN_API_ERROR', message: 'Signature not recorded' }) };
+      }
+      const completed = after.data.IsCompleted === true;
+      // Not completed: OpenSign stores the submitted bytes untouched, so their hash is the next
+      // base. Completed: OpenSign sealed the PDF with its own certificate, and says what it hashed.
+      const sealed = /^[0-9a-f]{64}$/i.test(after.data.DocumentHash ?? '') ? after.data.DocumentHash!.toLowerCase() : '';
+      return { success: true, data: { signed: true as const, completed, sha256: completed ? sealed : sha256Hex(pdf.value) } };
+    });
+  }
+
+  /**
+   * A signer refuses the document, in their own words. OpenSign's declinedoc as that signer: the
+   * document is declined for everybody, with the reason and who gave it.
+   */
+  async ceremonyDecline(
+    scenticFirmId: string,
+    scenticSignatureWorkflowId: string,
+    input: { email?: unknown; reason?: unknown; ipAddress?: unknown },
+  ): Promise<ServiceResult<{ declined: true }>> {
+    const email = checkEmail(input.email);
+    if (!email.ok) return { success: false, error: invalidInput('Invalid request', [email]) };
+    const reason = checkDeclineReason(input.reason);
+    if (!reason.ok) return { success: false, error: invalidInput('Invalid request', [reason]) };
+    const ip = checkIpAddress(input.ipAddress);
+    if (!ip.ok) return { success: false, error: invalidInput('Invalid request', [ip]) };
+
+    return this.ceremonyLocks.run(`${scenticFirmId}:${scenticSignatureWorkflowId}`, async () => {
+      const read = await this.ceremonyDocument(scenticFirmId, scenticSignatureWorkflowId, 'read');
+      if (!read.success) return read;
+      // Asked twice by the same signer: it is declined, by them, already.
+      if (read.data.IsDeclined && declinedByEmail(read.data) === email.value) {
+        return { success: true, data: { declined: true as const } };
+      }
+      const doc = await this.ceremonyDocument(scenticFirmId, scenticSignatureWorkflowId, 'act');
+      if (!doc.success) return doc;
+      const signer = await this.ceremonySigner(doc.data, email.value);
+      if (!signer.success) return signer;
+      if (signer.data.state === 'signed') {
+        return { success: false, error: alreadySigned('That signer has already signed this document.') };
+      }
+      const session = await this.client.signerSession(signer.data.userId);
+      if (!session.success || !session.data) {
+        return { success: false, error: wrapUpstreamError('OpenSign', 'signerSession', session.error) };
+      }
+      const declined = await this.client.declineAsSigner({
+        docId: doc.data.objectId,
+        userId: signer.data.userId,
+        reason: reason.value,
+        sessionToken: session.data.sessionToken,
+        ipAddress: ip.value,
+      });
+      if (!declined.success) {
+        if (declined.error?.upstreamCode === 119) {
+          return { success: false, error: forbidden('The signing service refused this signer for this document.') };
+        }
+        if (declined.error?.upstreamCode === 101) {
+          return { success: false, error: invalidState('This document can no longer be declined.') };
+        }
+        return { success: false, error: wrapUpstreamError('OpenSign', 'declinedoc', declined.error) };
+      }
+      return { success: true, data: { declined: true as const } };
+    });
   }
 
   // ── Signers, their links, and changing them ───────────────────────────

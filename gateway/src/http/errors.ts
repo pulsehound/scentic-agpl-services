@@ -19,7 +19,13 @@ export type ErrorCode =
   | 'UPSTREAM_UNAVAILABLE'
   | 'UPSTREAM_ERROR'
   | 'INTERNAL_ERROR'
-  | 'IDEMPOTENCY_KEY_REUSE';
+  | 'IDEMPOTENCY_KEY_REUSE'
+  // The signing ceremony Scentic hosts (routes/signature.ts, .../ceremony/*).
+  | 'INVALID_STATE'
+  | 'NOT_A_SIGNER'
+  | 'ALREADY_SIGNED'
+  | 'STALE_DOCUMENT'
+  | 'PAYLOAD_TOO_LARGE';
 
 export interface ApiError {
   code: ErrorCode;
@@ -72,6 +78,33 @@ export function invalidInput(message: string, details?: Array<{ field: string; i
 
 export function conflict(message: string): GatewayError {
   return new GatewayError('CONFLICT', message, 409, undefined, false);
+}
+
+/** The document can no longer be acted on: withdrawn, declined, completed or expired. */
+export function invalidState(message: string): GatewayError {
+  return new GatewayError('INVALID_STATE', message, 409, undefined, false);
+}
+
+/** The address is not asked to sign this document. */
+export function notASigner(message: string): GatewayError {
+  return new GatewayError('NOT_A_SIGNER', message, 404, undefined, false);
+}
+
+/** That signer has already signed; a second signature is never taken. */
+export function alreadySigned(message: string): GatewayError {
+  return new GatewayError('ALREADY_SIGNED', message, 409, undefined, false);
+}
+
+/**
+ * The PDF the caller worked from is no longer the current one — somebody else signed in between.
+ * Retryable, after fetching the current file and stamping it again.
+ */
+export function staleDocument(message: string): GatewayError {
+  return new GatewayError('STALE_DOCUMENT', message, 409, undefined, true);
+}
+
+export function payloadTooLarge(message: string): GatewayError {
+  return new GatewayError('PAYLOAD_TOO_LARGE', message, 413, undefined, false);
 }
 
 export function rateLimited(message: string): GatewayError {

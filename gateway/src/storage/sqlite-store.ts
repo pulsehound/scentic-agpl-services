@@ -48,6 +48,13 @@ export class SqliteMappingStore implements MappingStore, NonceStore, EventOutbox
     const schemaPath = join(__dirname, 'schema.sql');
     const schema = readFileSync(schemaPath, 'utf-8');
     this.db.exec(schema);
+    // A database made before the ceremony was recorded: CREATE TABLE IF NOT EXISTS leaves its
+    // table as it was, and SQLite has no ADD COLUMN IF NOT EXISTS. Forward only; the column has a
+    // default, so an older build reading this database is unaffected (rollback: nothing to undo).
+    const workflowColumns = this.db.prepare("PRAGMA table_info('opensign_workflow_mappings')").all() as Array<{ name: string }>;
+    if (!workflowColumns.some((c) => c.name === 'ceremony')) {
+      this.db.exec("ALTER TABLE opensign_workflow_mappings ADD COLUMN ceremony TEXT NOT NULL DEFAULT 'hosted'");
+    }
   }
 
   close(): void {
@@ -263,9 +270,10 @@ export class SqliteMappingStore implements MappingStore, NonceStore, EventOutbox
       return { ...existing, opensignDocumentId, opensignWorkflowId, opensignStatus, updatedAt: ts };
     }
     const id = crypto.randomUUID();
-    this.db.prepare('INSERT INTO opensign_workflow_mappings (id, scentic_firm_id, scentic_signature_workflow_id, scentic_matter_id, scentic_document_id, scentic_document_version_id, opensign_document_id, opensign_workflow_id, opensign_status, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(id, params.scenticFirmId, params.scenticSignatureWorkflowId, params.scenticMatterId, params.scenticDocumentId, params.scenticDocumentVersionId, opensignDocumentId, opensignWorkflowId, opensignStatus, 'ACTIVE', ts, ts);
-    return { id, scenticFirmId: params.scenticFirmId, scenticSignatureWorkflowId: params.scenticSignatureWorkflowId, scenticMatterId: params.scenticMatterId, scenticDocumentId: params.scenticDocumentId, scenticDocumentVersionId: params.scenticDocumentVersionId, opensignDocumentId, opensignWorkflowId, opensignStatus, status: 'ACTIVE', createdAt: ts, updatedAt: ts };
+    const ceremony = params.ceremony === 'scentic' ? 'scentic' : 'hosted';
+    this.db.prepare('INSERT INTO opensign_workflow_mappings (id, scentic_firm_id, scentic_signature_workflow_id, scentic_matter_id, scentic_document_id, scentic_document_version_id, opensign_document_id, opensign_workflow_id, opensign_status, ceremony, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, params.scenticFirmId, params.scenticSignatureWorkflowId, params.scenticMatterId, params.scenticDocumentId, params.scenticDocumentVersionId, opensignDocumentId, opensignWorkflowId, opensignStatus, ceremony, 'ACTIVE', ts, ts);
+    return { id, scenticFirmId: params.scenticFirmId, scenticSignatureWorkflowId: params.scenticSignatureWorkflowId, scenticMatterId: params.scenticMatterId, scenticDocumentId: params.scenticDocumentId, scenticDocumentVersionId: params.scenticDocumentVersionId, opensignDocumentId, opensignWorkflowId, opensignStatus, ceremony, status: 'ACTIVE', createdAt: ts, updatedAt: ts };
   }
 
   async updateOpenSignWorkflowStatus(scenticFirmId: string, scenticSignatureWorkflowId: string, opensignStatus: string): Promise<void> {
@@ -378,7 +386,7 @@ export class SqliteMappingStore implements MappingStore, NonceStore, EventOutbox
     return { id: r.id, scenticFirmId: r.scentic_firm_id, scenticUserId: r.scentic_user_id, opensignUserId: r.opensign_user_id, opensignEmail: r.opensign_email, opensignSessionToken: r.opensign_session_token, status: r.status, createdAt: r.created_at, updatedAt: r.updated_at };
   }
   private rowToOpenSignWorkflowMapping(r: any): OpenSignWorkflowMapping {
-    return { id: r.id, scenticFirmId: r.scentic_firm_id, scenticSignatureWorkflowId: r.scentic_signature_workflow_id, scenticMatterId: r.scentic_matter_id, scenticDocumentId: r.scentic_document_id, scenticDocumentVersionId: r.scentic_document_version_id, opensignDocumentId: r.opensign_document_id, opensignWorkflowId: r.opensign_workflow_id, opensignStatus: r.opensign_status, status: r.status, createdAt: r.created_at, updatedAt: r.updated_at };
+    return { id: r.id, scenticFirmId: r.scentic_firm_id, scenticSignatureWorkflowId: r.scentic_signature_workflow_id, scenticMatterId: r.scentic_matter_id, scenticDocumentId: r.scentic_document_id, scenticDocumentVersionId: r.scentic_document_version_id, opensignDocumentId: r.opensign_document_id, opensignWorkflowId: r.opensign_workflow_id, opensignStatus: r.opensign_status, ceremony: r.ceremony === 'scentic' ? 'scentic' : 'hosted', status: r.status, createdAt: r.created_at, updatedAt: r.updated_at };
   }
   private rowToOpenSignSignerMapping(r: any): OpenSignSignerMapping {
     return { id: r.id, scenticFirmId: r.scentic_firm_id, scenticSignatureWorkflowId: r.scentic_signature_workflow_id, scenticSignerId: r.scentic_signer_id, opensignSignerId: r.opensign_signer_id, signerEmailHash: r.signer_email_hash, status: r.status, createdAt: r.created_at, updatedAt: r.updated_at };

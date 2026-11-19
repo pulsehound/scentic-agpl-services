@@ -359,6 +359,8 @@ export function makeApp(opts: MakeAppOpts = {}): TestApp {
     opensignClient = opts.opensignClient ?? makeMockOpenSignClient();
     opensignService = new OpenSignService(opensignClient as unknown as OpenSignClient, store, outbox, {
       enabled: true,
+      // The real client builds signing links from it; the method doubles never did.
+      publicUrl: config.opensignPublicUrl || 'http://localhost:3001',
       pollIntervalSeconds: config.opensignPollIntervalSeconds,
       completionTimeoutSeconds: config.opensignCompletionTimeoutSeconds,
     });
