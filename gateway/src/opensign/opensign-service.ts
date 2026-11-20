@@ -33,8 +33,11 @@ import {
   DEFAULT_MAX_PDF_BYTES,
   KeyedMutex,
   checkAuditEvents,
+  checkDocumentPosition,
+  checkRelatedDocuments,
   checkDeclineReason,
   checkEmail,
+  checkFirmName,
   checkIpAddress,
   checkPdfBase64,
   checkSha256,
@@ -268,6 +271,12 @@ export class OpenSignService {
     if (!params.signers || params.signers.length === 0) {
       return { success: false, error: invalidInput('At least one signer is required') };
     }
+    // The sender's address, for the certificate. One address or nothing: never a list or a host.
+    const originatorIp = checkIpAddress(params.originatorIp, 'originatorIp');
+    if (!originatorIp.ok) return { success: false, error: invalidInput('Invalid request', [originatorIp]) };
+    // The firm's name as it is today, if the caller says; otherwise the one it was set up with.
+    const firmName = checkFirmName(params.firmName);
+    if (!firmName.ok) return { success: false, error: invalidInput('Invalid request', [firmName]) };
 
     // Check existing (idempotent)
     const existing = await this.store.getOpenSignWorkflowMapping(params.scenticFirmId, params.scenticSignatureWorkflowId);
@@ -356,6 +365,8 @@ export class OpenSignService {
       // link alone shows nothing to a forwarded invitation or to somebody since replaced.
       isEnableOTP: true,
       firmName: firmMapping.opensignTenantName || undefined,
+      certificateFirmName: firmName.value || undefined,
+      originatorIp: originatorIp.value || undefined,
       // Scentic tells the firm; OpenSign would mail its own admin account for every signature.
       notifyOnSignatures: false,
       redirectUrl: params.redirectUrl || undefined,
@@ -1117,7 +1128,7 @@ export class OpenSignService {
   async ceremonySign(
     scenticFirmId: string,
     scenticSignatureWorkflowId: string,
-    input: { email?: unknown; signerName?: unknown; pdfBase64?: unknown; signaturePngBase64?: unknown; ipAddress?: unknown; baseSha256?: unknown; auditEvents?: unknown },
+    input: { email?: unknown; signerName?: unknown; pdfBase64?: unknown; signaturePngBase64?: unknown; ipAddress?: unknown; baseSha256?: unknown; auditEvents?: unknown; relatedDocuments?: unknown; position?: unknown },
   ): Promise<ServiceResult<{ signed: true; completed: boolean; sha256: string }>> {
     const email = checkEmail(input.email);
     if (!email.ok) return { success: false, error: invalidInput('Invalid request', [email]) };
@@ -1135,6 +1146,11 @@ export class OpenSignService {
     }
     const events = checkAuditEvents(input.auditEvents);
     if (!events.ok) return { success: false, error: invalidInput('Invalid request', [events]) };
+    // The documents sent together in this request, and which of them this one is.
+    const position = checkDocumentPosition(input.position);
+    if (!position.ok) return { success: false, error: invalidInput('Invalid request', [position]) };
+    const related = checkRelatedDocuments(input.relatedDocuments, position.value);
+    if (!related.ok) return { success: false, error: invalidInput('Invalid request', [related]) };
     // The signer confirms their own name, and it is required: the only other name there is
     // belongs to a contact OpenSign shares across every firm.
     const name = checkSignerName(input.signerName, true);
@@ -1185,6 +1201,8 @@ export class OpenSignService {
       const fields: Record<string, unknown> = {
         ...(events.value ? { ScenticAudit: events.value } : {}),
         ...(name.value ? { ScenticSignerNames: withSignerName(doc.data.ScenticSignerNames, email.value, name.value) } : {}),
+        // The whole list each time, like the events: what is sent replaces what was stored.
+        ...(related.value ? { ScenticRelatedDocuments: related.value } : {}),
       };
       if (Object.keys(fields).length > 0) {
         const saved = await this.client.updateDocument(doc.data.objectId, fields);
@@ -1207,9 +1225,14 @@ export class OpenSignService {
         if (submitted.error?.upstreamCode === 101) {
           return { success: false, error: invalidState('This document can no longer be signed.') };
         }
-        // No answer in time. The lock is about to be let go while OpenSign may still be writing:
-        // say so where every instance will see it, for as long as OpenSign could plausibly take.
-        if (submitted.error?.timedOut) {
+        // Anything else that is not OpenSign saying no — no answer in time, a connection that
+        // dropped, a 502, 503 or 504 from whatever stands in front of it, a 500 from OpenSign
+        // itself — leaves it unknown whether the signature was taken. The lock is about to be let
+        // go while OpenSign may still be writing: say so where every instance will see it, for as
+        // long as OpenSign could plausibly take. Only a refusal is certain: a 4xx answer.
+        const status = submitted.error?.httpStatus;
+        const refused = typeof status === 'number' && status >= 400 && status < 500;
+        if (!refused) {
           await this.store.setOpenSignWorkflowSignInDoubt(scenticFirmId, scenticSignatureWorkflowId, {
             until: new Date(Date.now() + SIGN_IN_DOUBT_MS).toISOString(),
             sha256: current.data.sha256,

@@ -447,7 +447,7 @@ export function applyServerPatches({ root = '/usr/src/app', filesDir = '/tmp/ope
     [
       "import { formatDateTime } from '../../../Utils.js';\n",
       "import { formatDateTime } from '../../../Utils.js';\n" +
-        "import { drawScenticEventHistory, scenticSignerName } from './scenticEventHistory.js';\n",
+        "import { drawScenticEventHistory, drawScenticRelatedDocuments, scenticOrganization, scenticSignerName } from './scenticEventHistory.js';\n",
       'certificate event history import',
     ],
     [
@@ -490,7 +490,84 @@ export function applyServerPatches({ root = '/usr/src/app', filesDir = '/tmp/ope
       'certificate signer name',
     ],
   ]);
-  // The same in the signed PDF itself, whose signature says who it was signed for.
+  // "Organization". OpenSign prints the company of the account that owns the document, and one
+  // platform account owns every firm's documents: every firm's certificate said "Scentic". The
+  // gateway writes the sending firm's name on the document when it creates it (ScenticFirmName;
+  // FirmName on documents made before that); that is what is printed, and the account's company
+  // only for a document that names no firm.
+  edit(`${FN}/pdf/GenerateCertificate.js`, [
+    [
+      "  const company = docDetails?.ExtUserPtr?.Company || '';\n",
+      "  const company = scenticOrganization(docDetails, docDetails?.ExtUserPtr?.Company || '', timesRomanFont, width - 30 - 110);\n",
+      'certificate organization',
+    ],
+  ]);
+
+  // "Documents in this request": where several documents were sent to be signed together, each
+  // one's certificate lists them all (the document's ScenticRelatedDocuments, written by the
+  // gateway), between the summary and the originator. The list can be any length, so what follows
+  // it can no longer sit at a fixed height on the first page: the originator block's four heights
+  // and the page it is drawn on become variables, set to where the list ended. The signers'
+  // blocks already follow from there. A document with no list is drawn exactly as before.
+  edit(`${FN}/pdf/GenerateCertificate.js`, [
+    [
+      '  const page = pdfDoc.addPage();\n  const { width, height } = page.getSize();\n',
+      '  let page = pdfDoc.addPage();\n  const { width, height } = page.getSize();\n',
+      'certificate page can move on',
+    ],
+    [
+      '  const originatorHeaderY = signersY - 20;\n  const nameY = originatorHeaderY - 17;\n  const emailY = nameY - 20;\n  const ipY = emailY - 20;\n',
+      '  let originatorHeaderY = signersY - 20;\n  let nameY = originatorHeaderY - 17;\n  let emailY = nameY - 20;\n  let ipY = emailY - 20;\n',
+      'certificate originator can move down',
+    ],
+    [
+      "  page.drawText('Document originator', {\n",
+      "  // Scentic: the documents sent together in this request, after the summary. Never the reason a\n" +
+        '  // certificate is not made: a list that cannot be drawn is left off and said so in the log.\n' +
+        '  try {\n' +
+        '    const related = drawScenticRelatedDocuments({\n' +
+        '      pdfDoc,\n' +
+        '      font: timesRomanFont,\n' +
+        '      documents: docDetails?.ScenticRelatedDocuments,\n' +
+        '      page,\n' +
+        '      y: originatorHeaderY,\n' +
+        '      startX,\n' +
+        '      startY,\n' +
+        '      borderColor,\n' +
+        '      titleColor,\n' +
+        '    });\n' +
+        '    if (related) {\n' +
+        '      page = related.page;\n' +
+        '      originatorHeaderY = related.y;\n' +
+        '      nameY = originatorHeaderY - 17;\n' +
+        '      emailY = nameY - 20;\n' +
+        '      ipY = emailY - 20;\n' +
+        '    }\n' +
+        '  } catch (err) {\n' +
+        "    console.log('documents in this request left off the certificate:', err?.message);\n" +
+        '  }\n\n' +
+        "  page.drawText('Document originator', {\n",
+      'certificate related documents',
+    ],
+  ]);
+  {
+    // What the three changes above are for, checked in the file as it now is.
+    const certificate = readFileSync(`${FN}/pdf/GenerateCertificate.js`, 'utf8');
+    const organization = certificate.indexOf("page.drawText('Organization :'");
+    const related = certificate.indexOf('drawScenticRelatedDocuments({');
+    const originator = certificate.indexOf("page.drawText('Document originator'");
+    if (certificate.includes("const company = docDetails?.ExtUserPtr?.Company || '';") || count(certificate, 'scenticOrganization(docDetails,') !== 1) {
+      throw new Error(`${FN}/pdf/GenerateCertificate.js: the certificate's organization is not the sending firm's name`);
+    }
+    if (organization === -1 || related === -1 || originator === -1 || !(organization < related && related < originator)) {
+      throw new Error(`${FN}/pdf/GenerateCertificate.js: the documents in a request are not listed between the summary and the originator`);
+    }
+    if (/\bconst (page|originatorHeaderY|nameY|emailY|ipY) =/.test(certificate)) {
+      throw new Error(`${FN}/pdf/GenerateCertificate.js: the originator block cannot move below the documents in a request`);
+    }
+  }
+  // The signer's confirmed name again, in the signed PDF itself, whose signature says who it was
+  // signed for.
   edit(PDF, [
     [
       "const signersName = _resDoc.Signers?.map(x => x.Name + ' <' + x.Email + '>');",

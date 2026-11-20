@@ -96,6 +96,8 @@ export function createSignatureRouter(service: OpenSignService): Router {
         dateFormat: typeof b.dateFormat === 'string' ? b.dateFormat : '',
         scenticDelivers: b.scenticDelivers === true,
         ceremony: b.ceremony === 'scentic' ? 'scentic' : 'hosted',
+        originatorIp: b.originatorIp,
+        firmName: b.firmName,
       }, ctx?.correlationId ?? '');
       if (!result.success) return next(result.error);
       res.json({ ok: true, data: result.data });
@@ -295,6 +297,8 @@ export function createSignatureRouter(service: OpenSignService): Router {
         ipAddress: b.ipAddress,
         baseSha256: b.baseSha256,
         auditEvents: b.auditEvents,
+        relatedDocuments: b.relatedDocuments,
+        position: b.position,
       });
       if (!result.success) return next(result.error);
       res.json({ ok: true, data: result.data });

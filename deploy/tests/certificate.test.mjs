@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// The completion certificate with Scentic's event history: OpenSign's real GenerateCertificate.js
+// The completion certificate as Scentic has it made — the event history, the documents of a
+// request, the sending firm's name, the originator's address: OpenSign's real GenerateCertificate.js
 // (vendor/opensign), patched by deploy/opensign-server-patches.mjs, run in Node on fixture
 // documents; the PDFs it makes are read back with pdf.js and their text asserted.
 //
@@ -14,13 +15,25 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, PDFPage } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { applyServerPatches } from '../opensign-server-patches.mjs';
-import { drawScenticEventHistory, eventRows, fitted, printable, utcStamp, visualOrder } from '../opensign-server-files/scenticEventHistory.js';
+import {
+  clean,
+  drawScenticEventHistory,
+  drawScenticRelatedDocuments,
+  eventRows,
+  fitted,
+  printable,
+  relatedDocumentRows,
+  scenticOrganization,
+  utcStamp,
+  visualOrder,
+  wrapped,
+} from '../opensign-server-files/scenticEventHistory.js';
 import { DEPLOY, NO_VENDOR, SERVER_FILES, VENDOR_SERVER, copyOfVendoredServer, hasVendor } from './helpers.mjs';
 
 const UTILS_STAND_IN = `
@@ -38,6 +51,43 @@ export function formatDateTime(date, dateFormat, timeZone, is12Hour) {
 
 const HEBREW_NAME = 'יעקב כהן'; // "Yaakov Cohen", in the order it is typed
 const HEBREW_AS_DRAWN = 'ןהכ בקעי'; // the same letters in reading order, left to right
+
+const HEBREW_TITLE = 'הסכם שכר טרחה'; // "Fee agreement"
+const HEBREW_TITLE_AS_DRAWN = Array.from(HEBREW_TITLE).reverse().join(''); // letters and spaces only
+// Chrome inside an in-app browser on a Samsung phone, as such a string really arrives: 180 characters.
+const ANDROID = 'Mozilla/5.0 (Linux; Android 15; SM-S918BB Build/UP1A.231005.007; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/126.0.6478.122 Mobile Safari/537.36 Instagram 337.0.0';
+// The platform's one account owns every firm's documents; its company is not any firm's name.
+const PLATFORM = 'Scentic Platform Ltd';
+const FIRM = 'Cohen & Levi Law Offices';
+const squeezed = text => text.replace(/\s+/g, '');
+const outside = out => out.placed.filter(i => i.x < 15 || i.right > i.w - 15 || i.y < 15 || i.y > i.h - 15);
+// The event history's last column starts four fifths of the way across the space between the margins.
+const inBrowserColumn = item => Math.abs(item.x - (30 + (item.w - 60) * 0.8)) < 0.5;
+const relatedList = (n, { hash = true, hebrewEvery = 0 } = {}) =>
+  Array.from({ length: n }, (_, i) => ({
+    position: i + 1,
+    total: n,
+    title: hebrewEvery && (i + 1) % hebrewEvery === 0 ? HEBREW_TITLE : `Schedule ${String.fromCharCode(65 + (i % 26))}, part ${i + 1}`,
+    ...(hash ? { sha256: (i + 16).toString(16).padStart(2, '0').repeat(32) } : {}),
+  }));
+
+/**
+ * A certificate, and every string that was handed to the page to draw, in the order drawn.
+ *
+ * Reading a PDF back says what a reader's viewer makes of it, and pdf.js, like other viewers,
+ * turns a right-to-left run inside a left-to-right line back into the order it was typed. What
+ * was drawn, glyph after glyph from the left, is what the generator passed to drawText: that is
+ * what the reading-order assertions look at.
+ */
+async function drawnBy(generate, doc) {
+  const spy = vi.spyOn(PDFPage.prototype, 'drawText');
+  try {
+    const out = await textOf(await generate(doc));
+    return { ...out, drawn: spy.mock.calls.map(call => call[0]) };
+  } finally {
+    spy.mockRestore();
+  }
+}
 
 async function textOf(bytes) {
   const pdf = await getDocument({ data: new Uint8Array(bytes), useSystemFonts: false, disableFontFace: true, verbosity: 0 }).promise;
@@ -72,7 +122,7 @@ function events(n) {
   }));
 }
 
-function fixtureDoc(scenticAudit) {
+function fixtureDoc(scenticAudit, extra = {}) {
   const contact = (id, name, email) => ({ objectId: id, Name: name, Email: email, className: 'contracts_Contactbook', __type: 'Object' });
   const alice = contact('c1', 'Alice Example', 'alice@example.com');
   const yaakov = contact('c2', HEBREW_NAME, 'yaakov@example.co.il');
@@ -94,6 +144,7 @@ function fixtureDoc(scenticAudit) {
       { UserPtr: yaakov, Activity: 'Signed', ipAddress: '198.51.100.9', ViewedOn: '2026-11-19T09:10:00.000Z', SignedOn: '2026-11-19T09:30:00.000Z' },
     ],
     ...(scenticAudit === undefined ? {} : { ScenticAudit: scenticAudit }),
+    ...extra,
   };
 }
 
@@ -172,8 +223,10 @@ describe.skipIf(!hasVendor)(`the certificate, from the patched upstream generato
     expect(count).toBeGreaterThan(made.three.count);
     expect(count).toBeGreaterThanOrEqual(3);
     for (let i = 1; i <= 120; i++) expect(all, `event ${i}`).toMatch(new RegExp(`#${i}(?!\\d)`));
-    expect(all.match(/Event history \(continued\)/g).length).toBe(count - made.three.count);
-    for (const page of pages.slice(made.three.count)) expect(page).toContain('Time (UTC)');
+    // The section starts on the page the signers ended on; every page after that one is headed.
+    const first = pages.findIndex(page => page.includes('Event history'));
+    expect(all.match(/Event history \(continued\)/g).length).toBe(count - 1 - first);
+    for (const page of pages.slice(first)) expect(page).toContain('Time (UTC)');
     expect(all.indexOf('#119')).toBeLessThan(all.indexOf('#120'));
   });
 
@@ -188,11 +241,229 @@ describe.skipIf(!hasVendor)(`the certificate, from the patched upstream generato
     }
   });
 
-  it('a Hebrew name is drawn, in reading order, in the event history; a long browser string is cut to its column', () => {
+  it('a Hebrew name is drawn, in reading order, in the event history', () => {
     expect(made.three.all).toContain(HEBREW_AS_DRAWN);
     expect(made.many.all).toContain(HEBREW_AS_DRAWN);
-    expect(made.three.all).toContain('...');
-    expect(made.three.all).not.toContain('Safari/537.36');
+  });
+
+  it('the browser string is printed whole, wrapped within its column; the row grows and the next row starts below it', async () => {
+    expect(ANDROID.length).toBe(180);
+    const out = await textOf(await generate(fixtureDoc([
+      { at: '2026-11-19T08:00:00Z', event: 'Link opened', actor: 'Alice Example', email: 'alice@example.com', ipAddress: '203.0.113.7', userAgent: ANDROID },
+      { at: '2026-11-19T08:01:00Z', event: 'Code verified', actor: 'Alice Example', userAgent: 'X'.repeat(600) },
+      { at: '2026-11-19T08:02:00Z', event: 'Signed', actor: 'Alice Example', userAgent: 'short/1.0' },
+    ])));
+    // Every character of it, in order; before, the column showed its first 25 and "...".
+    expect(squeezed(out.all)).toContain(squeezed(ANDROID));
+    expect(squeezed(out.all)).toContain('Instagram337.0.0');
+    // The fixture of the other tests too: the string that used to end "Chrome/126.0.0.0 Sa...".
+    expect(squeezed(made.three.all)).toContain('Chrome/126.0.0.0Safari/537.36');
+    // An unbroken string is broken where it stops fitting: 512 characters of it, the most kept.
+    expect(out.all.match(/X/g)).toHaveLength(512);
+
+    const column = out.placed.filter(inBrowserColumn);
+    expect(column[0].str).toBe('Browser');
+    // The column's name again at the head of each continued page; the rest are the strings' lines.
+    const lines = column.filter(i => i.str !== 'Browser');
+    expect(lines.some(i => i.str.endsWith('...'))).toBe(false);
+    for (const item of lines) expect(item.right, item.str).toBeLessThanOrEqual(item.w - 30);
+    const firstX = lines.findIndex(i => /^X+$/.test(i.str));
+    const android = lines.slice(0, firstX);
+    expect(android.length).toBeGreaterThanOrEqual(5);
+    expect(squeezed(android.map(i => i.str).join(''))).toBe(squeezed(ANDROID));
+    // One under another, never on top of each other, within a page.
+    for (let i = 1; i < lines.length; i++) {
+      if (lines[i].page === lines[i - 1].page) expect(lines[i - 1].y - lines[i].y, lines[i].str).toBeGreaterThanOrEqual(7.9);
+    }
+    // The second row's own first line is below the first row's last browser line, and so on.
+    const rowY = label => out.placed.find(i => i.str === label);
+    const lowest = Math.min(...android.map(i => i.y));
+    if (rowY('Code verified').page === android[0].page) expect(rowY('Code verified').y).toBeLessThan(lowest - 7.9);
+    const lastX = lines.filter(i => /^X+$/.test(i.str)).pop();
+    if (rowY('Signed').page === lastX.page) expect(rowY('Signed').y).toBeLessThan(lastX.y - 7.9);
+    expect(outside(out)).toEqual([]);
+  });
+
+  it('five hundred events with long browser strings: every one whole, paginated, nothing outside the border', async () => {
+    const audit = events(500).map((e, i) => ({ ...e, userAgent: `${ANDROID} #ua${i + 1}.` }));
+    const out = await textOf(await generate(fixtureDoc(audit)));
+    const text = squeezed(out.all);
+    for (const i of [1, 2, 250, 499, 500]) expect(text, `ua ${i}`).toContain(squeezed(`${ANDROID} #ua${i}.`));
+    expect(text.split(squeezed(ANDROID)).length - 1).toBe(500);
+    expect(out.count).toBeGreaterThan(20);
+    expect(outside(out)).toEqual([]);
+    // Each continued page is headed, and no page is left with a heading and no row.
+    for (const page of out.pages.slice(made.none.count)) expect(page).toMatch(/Event history \(continued\).*Mozilla/s);
+  });
+
+  it("the originator's address is printed where the certificate has always had a place for it", async () => {
+    expect(squeezed(made.none.all)).toContain('IPaddress:1.Signer'); // as it was: blank
+    for (const ip of ['198.51.100.24', '2001:db8::8a2e:370:7334']) {
+      const out = await textOf(await generate(fixtureDoc(undefined, { OriginIp: ip, SenderName: 'Dana Levi', SenderMail: 'dana@cohenlevi.example' })));
+      expect(squeezed(out.all)).toContain(squeezed(`Document originator Name : Dana Levi Email : dana@cohenlevi.example IP address : ${ip} 1. Signer`));
+      expect(outside(out)).toEqual([]);
+    }
+  });
+
+  it("Organization is the sending firm's name, never the platform's; the platform account's company only when the document names no firm", async () => {
+    const platform = { Name: 'Scentic Admin', Email: 'admin@platform.example', Company: PLATFORM, Timezone: 'UTC', DateFormat: 'YYYY-MM-DD', Is12HourTime: false };
+    const from = { SenderName: 'Dana Levi', SenderMail: 'dana@cohenlevi.example' };
+    const organization = out => /Organization : (.*?) Created on :/.exec(out.all.replace(/\s+/g, ' '))[1];
+
+    const firm = await textOf(await generate(fixtureDoc(events(3), { ExtUserPtr: platform, ...from, ScenticFirmName: FIRM, FirmName: 'An older name' })));
+    expect(organization(firm)).toBe(FIRM);
+    // Nowhere in the text of a firm's certificate: not the platform's company, not its name.
+    expect(firm.all).not.toContain(PLATFORM);
+    expect(firm.all).not.toMatch(/scentic/i);
+    expect(outside(firm)).toEqual([]);
+
+    // A document made before ScenticFirmName existed carries the firm as FirmName.
+    const older = await textOf(await generate(fixtureDoc(undefined, { ExtUserPtr: platform, ...from, FirmName: FIRM })));
+    expect(organization(older)).toBe(FIRM);
+    expect(older.all).not.toContain(PLATFORM);
+
+    // No firm on the document (one made on OpenSign's own page): what OpenSign printed before.
+    for (const none of [{}, { ScenticFirmName: '', FirmName: '   ' }, { ScenticFirmName: 7, FirmName: { name: 'x' } }]) {
+      const fallback = await textOf(await generate(fixtureDoc(undefined, { ExtUserPtr: platform, ...none })));
+      expect(organization(fallback)).toBe(PLATFORM);
+    }
+
+    // A Hebrew firm is drawn in reading order; a name too long for the line is cut inside the border.
+    const hebrew = await textOf(await generate(fixtureDoc(undefined, { ExtUserPtr: platform, ScenticFirmName: HEBREW_NAME })));
+    expect(organization(hebrew)).toBe(HEBREW_AS_DRAWN);
+    const long = await textOf(await generate(fixtureDoc(undefined, { ExtUserPtr: platform, ScenticFirmName: 'Cohen, Levi, Mizrahi & Partners '.repeat(9) })));
+    expect(organization(long)).toMatch(/^Cohen, Levi, Mizrahi & Partners Cohen.*\.\.\.$/);
+    expect(outside(long)).toEqual([]);
+  });
+
+  it('documents in this request: absent, empty or not a list, the certificate is exactly the one it was', async () => {
+    for (const value of [[], null, 'three', 7, { length: 2 }, [null, 'x', 3, [], {}, { title: '' }, { position: 0 }]]) {
+      const out = await textOf(await generate(fixtureDoc(undefined, { ScenticRelatedDocuments: value })));
+      expect(out.all, JSON.stringify(value)).not.toContain('Documents in this request');
+      // Every item, at the place it was drawn before.
+      expect(out.placed, JSON.stringify(value)).toEqual(made.none.placed);
+    }
+  });
+
+  it('one document: listed after the summary and before the originator, marked as this document, with its hash', async () => {
+    const hash = 'ab'.repeat(32);
+    const out = await textOf(await generate(fixtureDoc(events(3), { ScenticRelatedDocuments: [{ position: 1, total: 1, title: 'Engagement letter', sha256: hash.toUpperCase(), current: true }] })));
+    const flat = out.all.replace(/\s+/g, ' ');
+    expect(flat).toContain(`Documents in this request 1 of 1 \u2014 Engagement letter (this document) SHA-256 : ${hash} Document originator`);
+    expect(flat.indexOf('Signers : 2')).toBeLessThan(flat.indexOf('Documents in this request'));
+    expect(flat.indexOf('Documents in this request')).toBeLessThan(flat.indexOf('Document originator'));
+    expect(flat.indexOf('Document originator')).toBeLessThan(flat.indexOf('1. Signer'));
+    expect(flat.indexOf('2. Signer')).toBeLessThan(flat.indexOf('Event history'));
+    // Everything the certificate printed before is still there.
+    for (const kept of ['Certificate of Completion', 'Engagement letter', 'alice@example.com', 'yaakov@example.co.il', '198.51.100.9', 'Code verified #3']) expect(out.all).toContain(kept);
+    expect(outside(out)).toEqual([]);
+  });
+
+  it('three documents, one with a Hebrew title: in the order given, the Hebrew in reading order, only the current one marked', async () => {
+    const list = [
+      { position: 1, total: 3, title: 'Engagement letter', sha256: '11'.repeat(32) },
+      { position: 2, total: 3, title: HEBREW_TITLE, current: true },
+      { position: 3, total: 3, title: 'Power of attorney', sha256: '33'.repeat(32) },
+    ];
+    const out = await drawnBy(generate, fixtureDoc(undefined, { ScenticRelatedDocuments: list, OriginIp: '198.51.100.24' }));
+    // What was drawn, in order: the Hebrew letters from the left in reading order.
+    const from = out.drawn.indexOf('Documents in this request');
+    expect(out.drawn.slice(from, out.drawn.indexOf('Document originator') + 1)).toEqual([
+      'Documents in this request',
+      '1 of 3 \u2014 Engagement letter',
+      `SHA-256 : ${'11'.repeat(32)}`,
+      `2 of 3 \u2014 ${HEBREW_TITLE_AS_DRAWN} (this document)`,
+      '3 of 3 \u2014 Power of attorney',
+      `SHA-256 : ${'33'.repeat(32)}`,
+      'Document originator',
+    ]);
+    expect(out.drawn.some(text => text.includes(HEBREW_TITLE))).toBe(false); // never in the order it was typed
+    // What a reader's viewer gives back for the same lines: the title as it was typed.
+    const flat = out.all.replace(/\s+/g, ' ');
+    expect(flat).toContain(
+      `Documents in this request 1 of 3 \u2014 Engagement letter SHA-256 : ${'11'.repeat(32)} ` +
+        `2 of 3 \u2014 ${HEBREW_TITLE} (this document) ` +
+        `3 of 3 \u2014 Power of attorney SHA-256 : ${'33'.repeat(32)} Document originator`,
+    );
+    expect(flat.match(/\(this document\)/g)).toHaveLength(1);
+    expect(squeezed(out.all)).toContain('IPaddress:198.51.100.241.Signer');
+    // Both signers still follow, whole.
+    for (const kept of ['1. Signer', '2. Signer', 'alice@example.com', 'yaakov@example.co.il', '198.51.100.9']) expect(out.all).toContain(kept);
+    expect(outside(out)).toEqual([]);
+  });
+
+  it('forty documents with hashes, every fifth title Hebrew: all listed over continued pages, the originator and signers whole after them', async () => {
+    const list = relatedList(40, { hebrewEvery: 5 }).map(d => (d.position === 17 ? { ...d, current: true } : d));
+    const out = await drawnBy(generate, fixtureDoc(events(3), { ScenticRelatedDocuments: list, OriginIp: '198.51.100.24', SenderName: 'Dana Levi', SenderMail: 'dana@cohenlevi.example' }));
+    // Drawn: every entry and then its hash, in the order given, a continued page's heading between some.
+    const section = out.drawn.slice(out.drawn.indexOf('Documents in this request') + 1, out.drawn.indexOf('Document originator')).filter(text => text !== 'Documents in this request (continued)');
+    expect(section).toEqual(list.flatMap(d => [
+      `${d.position} of 40 \u2014 ${d.title === HEBREW_TITLE ? HEBREW_TITLE_AS_DRAWN : d.title}${d.current ? ' (this document)' : ''}`,
+      `SHA-256 : ${d.sha256}`,
+    ]));
+    expect(list.filter(d => d.title === HEBREW_TITLE)).toHaveLength(8);
+    // Read back from the PDF: each entry and each hash, in order. (A line that is mostly Hebrew is
+    // read back by the viewer as a right-to-left line, digits and all: for those only the hash
+    // beneath is looked for here; the line itself is among the drawn ones above.)
+    const flat = out.all.replace(/\s+/g, ' ');
+    let at = flat.indexOf('Documents in this request');
+    for (const d of list) {
+      for (const part of [...(d.title === HEBREW_TITLE ? [] : [`${d.position} of 40 \u2014 ${d.title}`]), `SHA-256 : ${d.sha256}`]) {
+        const found = flat.indexOf(part, at);
+        expect(found, `${d.position}: ${part}`).toBeGreaterThan(-1);
+        at = found;
+      }
+    }
+    expect(flat.match(/\(this document\)/g)).toHaveLength(1);
+    // Forty lines drawn (above); thirty-two of them read back left to right, the eight Hebrew ones not.
+    expect(flat.match(/ of 40 \u2014 /g)).toHaveLength(32);
+    expect(out.count).toBeGreaterThan(made.three.count);
+    expect(flat.match(/Documents in this request \(continued\)/g).length).toBeGreaterThanOrEqual(1);
+    // The originator block is on one page, whole, after the last entry.
+    const originatorPage = out.pages.find(page => page.includes('Document originator')).replace(/\s+/g, ' ');
+    expect(originatorPage).toContain('Document originator Name : Dana Levi Email : dana@cohenlevi.example IP address : 198.51.100.24');
+    expect(flat.indexOf('40 of 40')).toBeLessThan(flat.indexOf('Document originator'));
+    expect(flat.indexOf('Document originator')).toBeLessThan(flat.indexOf('1. Signer'));
+    expect(flat.indexOf('1. Signer')).toBeLessThan(flat.indexOf('2. Signer'));
+    expect(flat.indexOf('2. Signer')).toBeLessThan(flat.indexOf('Event history'));
+    expect(flat).toContain('Code verified #3');
+    expect(outside(out)).toEqual([]);
+    // No two lines of the list on top of each other.
+    const start = out.placed.findIndex(i => i.str.startsWith('Documents in this request'));
+    const end = out.placed.findIndex(i => i.str === 'Document originator');
+    const rows = out.placed.slice(start, end);
+    for (let i = 1; i < rows.length; i++) {
+      if (rows[i].page === rows[i - 1].page) expect(rows[i - 1].y - rows[i].y, rows[i].str).toBeGreaterThanOrEqual(11.9);
+    }
+  });
+
+  it('every length of list from 1 to 50, with and without hashes: nothing outside the border, the originator never split across pages', async () => {
+    for (let n = 1; n <= 50; n++) {
+      const out = await textOf(await generate(fixtureDoc(undefined, { ScenticRelatedDocuments: relatedList(n, { hash: n % 2 === 0 }), OriginIp: '198.51.100.24' })));
+      expect(outside(out), `${n} documents`).toEqual([]);
+      expect(out.all.match(/ of \d+ \u2014 /g), `${n} documents`).toHaveLength(n);
+      const page = out.pages.find(p => p.includes('Document originator')).replace(/\s+/g, '');
+      expect(page, `${n} documents`).toMatch(/Documentoriginator.*IPaddress:198\.51\.100\.24/);
+      for (const signer of ['1. Signer', '2. Signer']) expect(out.all, `${n} documents`).toContain(signer);
+    }
+  });
+
+  it('a title as long as is allowed is wrapped, not cut; more than fifty entries, or odd ones, never stop the certificate', async () => {
+    const words = Array.from({ length: 50 }, (_, i) => `word${String(i).padStart(2, '0')}`).join(' ').slice(0, 300);
+    const out = await textOf(await generate(fixtureDoc(undefined, { ScenticRelatedDocuments: [{ position: 2, total: 2, title: words, current: true }] })));
+    expect(squeezed(out.all)).toContain(squeezed(`2 of 2 \u2014 ${words} (this document)`));
+    expect(outside(out)).toEqual([]);
+
+    const odd = [null, 'x', { position: 1, total: 2, title: 'Emoji \u{1F600} and 中文', sha256: 'not a hash' }, { title: 'No place' }, { position: 2, total: 0, title: 'Tab\tand\nnewline' }, ...relatedList(60)];
+    const many = await textOf(await generate(fixtureDoc(undefined, { ScenticRelatedDocuments: odd })));
+    const flat = many.all.replace(/\s+/g, ' ');
+    expect(flat).toContain('1 of 2 \u2014 Emoji ? and ?? No place 2 \u2014 Tab and newline 1 of 60 \u2014');
+    expect(flat).not.toContain('not a hash');
+    // Fifty entries of the list as stored are read, whatever they are.
+    expect(flat).toContain('45 of 60');
+    expect(flat).not.toContain('46 of 60');
+    expect(many.all).toContain('Certificate of Completion');
+    expect(outside(many)).toEqual([]);
   });
 
   it('each signer is named as they confirmed for this document, not as the shared contact has them; Hebrew in reading order', async () => {
@@ -295,6 +566,62 @@ describe.skipIf(!hasVendor)('the event history helpers, with the certificate fon
     const pdf = await PDFDocument.create();
     const page = pdf.addPage();
     expect(drawScenticEventHistory({ pdfDoc: pdf, font, events: [], page, y: 400 })).toBe(0);
+    expect(drawScenticRelatedDocuments({ pdfDoc: pdf, font, documents: [], page, y: 400 })).toBeNull();
+    expect(drawScenticRelatedDocuments({ pdfDoc: pdf, font, documents: undefined, page, y: 400 })).toBeNull();
     expect(pdf.getPageCount()).toBe(1);
+  });
+
+  it('text is wrapped to a width with nothing left out: at spaces, and inside a word only when the word alone is too wide', () => {
+    const lines = wrapped(font, ANDROID, 7, 101);
+    expect(lines.length).toBeGreaterThan(4);
+    for (const line of lines) expect(font.widthOfTextAtSize(line, 7), line).toBeLessThanOrEqual(101);
+    expect(lines.join(' ')).toBe(ANDROID); // these words all fit: broken only at spaces
+    const unbroken = 'A'.repeat(200);
+    const pieces = wrapped(font, unbroken, 7, 101);
+    expect(pieces.length).toBeGreaterThan(1);
+    for (const piece of pieces) expect(font.widthOfTextAtSize(piece, 7)).toBeLessThanOrEqual(101);
+    expect(pieces.join('')).toBe(unbroken);
+    expect(wrapped(font, 'short', 7, 101)).toEqual(['short']);
+    expect(wrapped(font, '', 7, 101)).toEqual([]);
+    expect(wrapped(font, 'wide', 7, 0.1)).toEqual(['w', 'i', 'd', 'e']);
+  });
+
+  it('a right-to-left title wraps from its first words down, each line in reading order', () => {
+    const title = Array.from({ length: 12 }, () => HEBREW_TITLE).join(' ');
+    const lines = wrapped(font, title, 12, 200);
+    expect(lines.length).toBeGreaterThan(1);
+    // Read each line right to left and the lines top to bottom: the title as it was typed.
+    expect(lines.map(line => Array.from(line).reverse().join('')).join(' ')).toBe(title);
+  });
+
+  it('a browser string keeps 512 characters, other text 300, in the order typed until it is drawn', () => {
+    expect(clean(font, 'x'.repeat(900))).toHaveLength(300);
+    expect(eventRows(font, [{ at: '2026-11-19T08:00:00Z', event: 'e', actor: 'a', userAgent: 'u'.repeat(900) }])[0].browser).toHaveLength(512);
+    expect(clean(font, HEBREW_NAME)).toBe(HEBREW_NAME);
+    expect(printable(font, HEBREW_NAME)).toBe(HEBREW_AS_DRAWN);
+  });
+
+  it('the documents of a request: at most fifty, in the order given, the current one marked, a hash only when it is one', () => {
+    const rows = relatedDocumentRows(font, [
+      { position: 2, total: 3, title: 'B', current: true, sha256: 'AB'.repeat(32) },
+      { position: 1, total: 3, title: 'A', current: 'yes', sha256: 'zz' },
+    ]);
+    expect(rows).toEqual([
+      { text: '2 of 3 \u2014 B (this document)', sha: 'ab'.repeat(32) },
+      { text: '1 of 3 \u2014 A', sha: '' },
+    ]);
+    expect(relatedDocumentRows(font, relatedList(80))).toHaveLength(50);
+    expect(relatedDocumentRows(font, 'nope')).toEqual([]);
+  });
+
+  it("the organization is the document's firm, then its older field, then what it was", () => {
+    expect(scenticOrganization({ ScenticFirmName: FIRM, FirmName: 'Older' }, PLATFORM, font, 400)).toBe(FIRM);
+    expect(scenticOrganization({ FirmName: FIRM }, PLATFORM, font, 400)).toBe(FIRM);
+    expect(scenticOrganization({ ScenticFirmName: ' ' }, PLATFORM, font, 400)).toBe(PLATFORM);
+    expect(scenticOrganization(undefined, PLATFORM, font, 400)).toBe(PLATFORM);
+    expect(scenticOrganization({ ScenticFirmName: HEBREW_NAME }, PLATFORM, font, 400)).toBe(HEBREW_AS_DRAWN);
+    const cut = scenticOrganization({ ScenticFirmName: 'Long name '.repeat(30) }, PLATFORM, font, 400);
+    expect(cut.endsWith('...')).toBe(true);
+    expect(font.widthOfTextAtSize(cut, 13)).toBeLessThanOrEqual(400);
   });
 });

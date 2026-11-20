@@ -18,11 +18,13 @@ describe.skipIf(!hasVendor)(`server patches over the vendored upstream source${h
   let root;
   let applied;
   let before;
+  let certificateEdits;
 
   beforeAll(() => {
     root = copyOfVendoredServer();
     before = new Map(jsFiles(root).map(rel => [rel, readFileSync(join(root, rel), 'utf8')]));
     applied = applyServerPatches({ root, filesDir: SERVER_FILES }).applied;
+    certificateEdits = applied.filter(a => a.file.endsWith('GenerateCertificate.js')).map(a => a.why);
   });
   afterAll(() => { if (root) rmSync(root, { recursive: true, force: true }); });
 
@@ -86,6 +88,30 @@ describe.skipIf(!hasVendor)(`server patches over the vendored upstream source${h
     for (const rel of ['linkContactToDoc.js', 'savecontact.js', 'editContact.js', 'ContactBookAftersave.js']) {
       expect(read(`cloud/parsefunction/${rel}`), rel).not.toMatch(/_user\.set\('password', (email|Email)/);
     }
+  });
+
+  it("the certificate: the firm's name as Organization, and the documents of a request between the summary and the originator", () => {
+    const certificate = readFileSync(join(root, 'cloud/parsefunction/pdf/GenerateCertificate.js'), 'utf8');
+    // Organization is no longer read straight from the platform account's company.
+    expect(certificate).not.toContain("const company = docDetails?.ExtUserPtr?.Company || '';");
+    expect(certificate).toContain("const company = scenticOrganization(docDetails, docDetails?.ExtUserPtr?.Company || '', timesRomanFont, width - 30 - 110);");
+    // The list is drawn once, after the summary's last line and before the originator's heading.
+    const summaryEnd = certificate.indexOf("page.drawText('Signers :'");
+    const related = certificate.indexOf('drawScenticRelatedDocuments({');
+    const originator = certificate.indexOf("page.drawText('Document originator'");
+    expect(summaryEnd).toBeGreaterThan(-1);
+    expect(related).toBeGreaterThan(summaryEnd);
+    expect(originator).toBeGreaterThan(related);
+    expect(certificate.split('drawScenticRelatedDocuments({').length - 1).toBe(1);
+    // What follows the list can move: nothing below it is fixed to the first page any more.
+    expect(certificate).not.toMatch(/\bconst (page|originatorHeaderY|nameY|emailY|ipY) =/);
+    expect(certificate).toContain('page = related.page;');
+    // The originator's address is still read from the document's own field, which the gateway sets.
+    expect(certificate).toContain("const OriginIp = docDetails?.OriginIp || '';");
+    // The event history is still the last thing drawn.
+    expect(certificate.indexOf('drawScenticEventHistory({')).toBeGreaterThan(originator);
+    const applied = names => names.every(why => certificateEdits.includes(why));
+    expect(applied(['certificate organization', 'certificate page can move on', 'certificate originator can move down', 'certificate related documents'])).toBe(true);
   });
 });
 

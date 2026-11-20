@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
+// What Scentic adds to the completion certificate: the "Event history" section, the "Documents in
+// this request" section, the signer's confirmed name and the sending firm's name.
+//
 // The "Event history" section of the completion certificate. Added to OpenSign's
 // cloud/parsefunction/pdf/ at image build and called from its GenerateCertificate.js
 // (deploy/opensign-server-patches.mjs).
@@ -12,12 +15,22 @@
 // takes. Nothing the certificate printed before is moved or removed; a document with no
 // `ScenticAudit` gets exactly the certificate it got before.
 //
+// The same holds for the other two things drawn from here. "Documents in this request" (the
+// document's `ScenticRelatedDocuments`: the documents sent together in one request, this one
+// marked) is printed between the summary and the originator only when the document has that list.
+// "Organization" prints the firm that sent the document (`ScenticFirmName`, or `FirmName` on a
+// document made before that field existed), not the company of the one platform account that
+// owns every firm's documents.
+//
 // It must never be the reason a certificate is not made: whatever is in the record, it is reduced
 // to text the certificate's font can draw, and anything that is not an event is passed over.
 import { rgb } from 'pdf-lib';
 
 const MAX_EVENTS = 500;
 const MAX_TEXT = 300;
+// A browser's own description of itself (User-Agent): the gateway keeps up to 512 characters.
+const MAX_BROWSER = 512;
+const MAX_DOCUMENTS = 50;
 
 const pad = n => String(n).padStart(2, '0');
 
@@ -76,21 +89,60 @@ function glyphs(font) {
 }
 
 /**
- * Text the font can draw, on one line: control characters and line breaks become spaces, marks
- * that reorder text are dropped, a character the font has no glyph for becomes "?", and
- * right-to-left runs are put in reading order.
+ * Text the font can draw, on one line, in the order it was typed: control characters and line
+ * breaks become spaces, marks that reorder text are dropped, and a character the font has no glyph
+ * for becomes "?". At most `max` characters.
  */
-export function printable(font, value) {
+export function clean(font, value, max = MAX_TEXT) {
   if (value === null || value === undefined) return '';
   const have = glyphs(font);
   let out = '';
-  for (const ch of Array.from(String(value)).slice(0, MAX_TEXT)) {
+  for (const ch of Array.from(String(value)).slice(0, max)) {
     const code = ch.codePointAt(0);
     if (code <= 0x1f || (code >= 0x7f && code <= 0x9f) || code === 0x2028 || code === 0x2029) out += ' ';
     else if ((code >= 0x200b && code <= 0x200f) || (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069) || code === 0xfeff) continue;
     else out += have.has(code) ? ch : '?';
   }
-  return visualOrder(out.replace(/ +/g, ' ').trim());
+  return out.replace(/ +/g, ' ').trim();
+}
+
+/** `clean` text with its right-to-left runs put in reading order: ready to draw on one line. */
+export function printable(font, value, max = MAX_TEXT) {
+  return visualOrder(clean(font, value, max));
+}
+
+/**
+ * `clean` text as lines no wider than `width` at `size`, nothing left out. A line breaks at a
+ * space; a single word wider than the column (a browser string has some) is broken where it stops
+ * fitting. The text is wrapped in the order it was typed and each line is then put in reading
+ * order, so a right-to-left title still reads from its first line down.
+ */
+export function wrapped(font, text, size, width) {
+  const fits = value => font.widthOfTextAtSize(value, size) <= width;
+  const lines = [];
+  let line = '';
+  for (const word of String(text || '').split(' ')) {
+    if (!word) continue;
+    const joined = line ? `${line} ${word}` : word;
+    if (fits(joined)) {
+      line = joined;
+      continue;
+    }
+    if (line) lines.push(line);
+    line = '';
+    if (fits(word)) {
+      line = word;
+      continue;
+    }
+    for (const ch of Array.from(word)) {
+      if (line && !fits(line + ch)) {
+        lines.push(line);
+        line = ch;
+      } else line += ch;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.map(visualOrder);
 }
 
 /**
@@ -132,6 +184,21 @@ export function fitted(font, text, size, width) {
   return low > 0 ? `${chars.slice(0, low).join('').trimEnd()}...` : '';
 }
 
+/**
+ * The firm a document was sent for, for the certificate's "Organization" line: the name the
+ * gateway wrote on the document when it was created, drawable, in reading order and no wider than
+ * `width`. `fallback` (what OpenSign printed: the company of the account that owns the document,
+ * which is the platform's one account for every firm) only when the document names no firm.
+ */
+export function scenticOrganization(docDetails, fallback, font, width) {
+  for (const value of [docDetails?.ScenticFirmName, docDetails?.FirmName]) {
+    if (typeof value !== 'string') continue;
+    const name = printable(font, value);
+    if (name) return width > 0 ? fitted(font, name, 13, width) : name;
+  }
+  return fallback;
+}
+
 /** The events worth printing, cleaned and in the order they happened. */
 export function eventRows(font, events, names) {
   if (!Array.isArray(events)) return [];
@@ -148,7 +215,8 @@ export function eventRows(font, events, names) {
       actor: printable(font, e.actor) || printable(font, confirmedName(names, e.email)),
       email: printable(font, e.email),
       ip: printable(font, e.ipAddress),
-      browser: printable(font, e.userAgent),
+      // Whole, in the order it was sent; cut into lines when it is drawn.
+      browser: clean(font, e.userAgent, MAX_BROWSER),
       detail: printable(font, e.detail),
     };
     if (row.when || row.event || row.actor || row.email) rows.push(row);
@@ -173,6 +241,9 @@ export function drawScenticEventHistory({ pdfDoc, font, events, names, page, y, 
   const valueColor = rgb(0.3, 0.3, 0.3);
   const size = 8;
   const line = 10;
+  // The browser string is printed whole, over as many lines as its column needs.
+  const browserSize = 7;
+  const browserLine = 8;
   // Time, event, who, address, browser: fractions of the width between the margins.
   const gap = 6;
   // The address column holds a full IPv6 address, uncut.
@@ -213,7 +284,10 @@ export function drawScenticEventHistory({ pdfDoc, font, events, names, page, y, 
 
   for (const row of rows) {
     const second = Boolean(row.email || row.detail);
-    const needed = second ? 2 * line + 2 : line + 2;
+    const browser = wrapped(font, row.browser, browserSize, columns[4].w);
+    // As tall as its tallest column: the one or two lines on the left, or the browser's lines.
+    const tall = Math.max((second ? 2 : 1) * line, browser.length * browserLine + (line - browserLine));
+    const needed = tall + 2;
     if (cursor - needed < bottom) {
       newPage();
       heading(true);
@@ -225,13 +299,99 @@ export function drawScenticEventHistory({ pdfDoc, font, events, names, page, y, 
     let ipSize = size;
     while (ipSize > 5.5 && font.widthOfTextAtSize(row.ip, ipSize) > columns[3].w) ipSize -= 0.5;
     text(fitted(font, row.ip, ipSize, columns[3].w), 3, cursor, valueColor, ipSize);
-    text(fitted(font, row.browser, size, columns[4].w), 4, cursor, valueColor);
+    for (const [i, part] of browser.entries()) text(part, 4, cursor - i * browserLine, valueColor, browserSize);
     if (second) {
-      cursor -= line;
-      text(fitted(font, row.detail, size - 1, columns[1].w), 1, cursor, valueColor, size - 1);
-      text(fitted(font, row.email, size - 1, columns[2].w), 2, cursor, valueColor, size - 1);
+      text(fitted(font, row.detail, size - 1, columns[1].w), 1, cursor - line, valueColor, size - 1);
+      text(fitted(font, row.email, size - 1, columns[2].w), 2, cursor - line, valueColor, size - 1);
     }
-    cursor -= line + 2;
+    cursor -= needed;
   }
   return added;
+}
+
+/**
+ * The documents sent together in one request, as the gateway stored them, ready to print: each
+ * "<n> of <N> — <title>", the one this certificate is for marked "(this document)", with its
+ * SHA-256 where one was given. In the order given; what is not an entry is passed over.
+ */
+export function relatedDocumentRows(font, documents) {
+  if (!Array.isArray(documents)) return [];
+  const dash = glyphs(font).has(0x2014) ? '\u2014' : '-';
+  const whole = value => (Number.isInteger(value) && value > 0 && value < 100000 ? value : 0);
+  const rows = [];
+  for (const d of documents.slice(0, MAX_DOCUMENTS)) {
+    if (!d || typeof d !== 'object' || Array.isArray(d)) continue;
+    const title = clean(font, d.title);
+    const position = whole(d.position);
+    const total = whole(d.total);
+    if (!title && !position) continue;
+    const place = position && total ? `${position} of ${total}` : position ? `${position}` : '';
+    const sha = typeof d.sha256 === 'string' && /^[0-9a-f]{64}$/i.test(d.sha256.trim()) ? d.sha256.trim().toLowerCase() : '';
+    rows.push({
+      text: [place, title].filter(Boolean).join(` ${dash} `) + (d.current === true ? ' (this document)' : ''),
+      sha,
+    });
+  }
+  return rows;
+}
+
+/**
+ * Draw "Documents in this request" where the summary ended (`page`, `y`), over as many pages as it
+ * takes. Returns null, having drawn nothing, when the document has no such list; otherwise
+ * { page, y, added }: the page and height at which the "Document originator" block, whole, goes on.
+ */
+export function drawScenticRelatedDocuments({ pdfDoc, font, documents, page, y, startX = 15, startY = 15, borderColor = rgb(0.12, 0.12, 0.12), titleColor = rgb(0, 0.2, 0.4) }) {
+  const rows = relatedDocumentRows(font, documents);
+  if (rows.length === 0) return null;
+
+  const { width, height } = page.getSize();
+  const left = 30;
+  const indent = 60;
+  const right = width - 30;
+  const bottom = startY + 20;
+  const keyColor = rgb(0.12, 0.12, 0.12);
+  const valueColor = rgb(0.3, 0.3, 0.3);
+  const size = 12;
+  const line = 15;
+  const shaSize = 9;
+  const shaLine = 12;
+  // Everything is measured before anything is drawn.
+  const blocks = rows.map(row => ({ lines: wrapped(font, row.text, size, right - indent), sha: row.sha }));
+
+  let current = page;
+  let cursor = y;
+  let added = 0;
+  const newPage = () => {
+    current = pdfDoc.addPage([width, height]);
+    current.drawRectangle({ x: startX, y: startY, width: width - 2 * startX, height: height - 2 * startY, borderColor, borderWidth: 1 });
+    added++;
+    cursor = height - 45;
+  };
+  const heading = continued => {
+    current.drawText(continued ? 'Documents in this request (continued)' : 'Documents in this request', { x: left, y: cursor, size: 17, font, color: titleColor });
+    cursor -= 20;
+  };
+
+  heading(false);
+  for (const block of blocks) {
+    // From this entry's first line to its last, and the gap before the next.
+    const needed = block.lines.length * line + (block.sha ? shaLine : 0) + 3;
+    if (cursor - needed < bottom) {
+      newPage();
+      heading(true);
+    }
+    for (const part of block.lines) {
+      current.drawText(part, { x: indent, y: cursor, size, font, color: keyColor });
+      cursor -= line;
+    }
+    if (block.sha) {
+      current.drawText(`SHA-256 : ${block.sha}`, { x: indent, y: cursor + line - shaLine, size: shaSize, font, color: valueColor });
+      cursor -= shaLine;
+    }
+    cursor -= 3;
+  }
+  // The originator block is a heading and three lines, 63 points down to its rule: kept together.
+  cursor -= 5;
+  if (cursor - 63 < bottom) newPage();
+  return { page: current, y: cursor, added };
 }

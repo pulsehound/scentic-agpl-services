@@ -294,4 +294,15 @@ export interface CreateOpenSignWorkflowParams {
   scenticDelivers?: boolean;
   /** Where the signers sign. 'hosted' unless said otherwise. */
   ceremony?: SignatureCeremony;
+  /**
+   * The IP address of the person sending the request, as Scentic saw it: printed on the
+   * certificate as the originator's. Unchecked here (it is whatever the request body held); the
+   * service refuses anything that is not one IPv4 or IPv6 address.
+   */
+  originatorIp?: unknown;
+  /**
+   * The firm's name as it is today, for the certificate's "Organization". Optional: without it the
+   * name the firm was set up with is printed. Unchecked here, like originatorIp.
+   */
+  firmName?: unknown;
 }

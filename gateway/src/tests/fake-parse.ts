@@ -53,6 +53,8 @@ export interface FakeParse {
   signDelayMs: number;
   /** A cloud function — or 'file' (a stored file) or 'rest' (a record read or write) — that never answers, until the caller gives up on it. */
   hang: string | null;
+  /** A cloud function whose next call loses its connection: the fetch fails, with no answer at all. */
+  drop: string | null;
 }
 
 const BASE = 'http://localhost:8080/app';
@@ -86,6 +88,7 @@ export function makeFakeParse(): FakeParse {
     failNext: (fn, status, body) => { failures.set(fn, { status, body }); },
     signDelayMs: 0,
     hang: null,
+    drop: null,
     fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = (init?.method ?? 'GET').toUpperCase();
@@ -149,6 +152,11 @@ export function makeFakeParse(): FakeParse {
         if (params.docId !== undefined) use(params.docId);
         else if ((params.body as { objectId?: unknown } | undefined)?.objectId !== undefined) use((params.body as { objectId: unknown }).objectId);
         if (self.hang === fn) return never();
+        if (self.drop === fn) {
+          self.drop = null;
+          // What fetch throws when the socket closes under it.
+          throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }) });
+        }
         const failure = failures.get(fn);
         if (failure) {
           failures.delete(fn);

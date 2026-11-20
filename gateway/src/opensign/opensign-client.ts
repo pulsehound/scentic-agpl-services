@@ -329,6 +329,17 @@ export class OpenSignClient {
     senderName?: string;
     /** The firm the request comes from, named in the code email (deploy/opensign-server-files). */
     firmName?: string;
+    /**
+     * The firm's name for the certificate's "Organization" line (ScenticFirmName;
+     * deploy/opensign-server-patches.mjs): as the create call gave it, or `firmName` when it gave none.
+     */
+    certificateFirmName?: string;
+    /**
+     * The address the person who sent the request was at, for the certificate's "Document
+     * originator … IP address". OpenSign fills its OriginIp from the header of whoever calls it,
+     * which is this gateway and carries nobody's address; the field is written here instead.
+     */
+    originatorIp?: string;
     /** OpenSign's own reminder mail every few days. Off where Scentic chases signers itself. */
     automaticReminders?: boolean;
     /**
@@ -389,6 +400,8 @@ export class OpenSignClient {
       ...(params.requestBody ? { RequestBody: params.requestBody } : {}),
       ...(params.senderName ? { SenderName: params.senderName } : {}),
       ...(params.firmName ? { FirmName: params.firmName } : {}),
+      ...(params.certificateFirmName || params.firmName ? { ScenticFirmName: params.certificateFirmName || params.firmName } : {}),
+      ...(params.originatorIp ? { OriginIp: params.originatorIp } : {}),
       ...(params.scenticCeremony ? { ScenticCeremony: true } : {}),
     });
     return created;
@@ -644,7 +657,7 @@ export class OpenSignClient {
           const body = await resp.json() as { code?: unknown };
           if (typeof body?.code === 'number') upstreamCode = body.code;
         } catch { /* no body */ }
-        return { success: false, error: { code: 'OPENSIGN_API_ERROR', message: `OpenSign function ${name} returned ${resp.status}`, upstreamCode } };
+        return { success: false, error: { code: 'OPENSIGN_API_ERROR', message: `OpenSign function ${name} returned ${resp.status}`, upstreamCode, httpStatus: resp.status } };
       }
       const json = await resp.json() as { result?: T; error?: string };
       if (json.error) {

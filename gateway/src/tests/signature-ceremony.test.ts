@@ -27,7 +27,11 @@ import { InMemoryMappingStore, type MappingStore } from '../mappings/mapping-sto
 import {
   KeyedMutex,
   MAX_AUDIT_EVENTS,
+  MAX_RELATED_DOCUMENTS,
+  MAX_USER_AGENT,
   checkAuditEvents,
+  checkDocumentPosition,
+  checkRelatedDocuments,
   checkDeclineReason,
   checkIpAddress,
   checkPdfBase64,
@@ -501,6 +505,106 @@ describe('ceremony endpoints', () => {
     expect(h.parse.calls[put]!.headers['x-parse-master-key']).toBe('test-master-key');
   });
 
+  it('sign: a browser string is kept whole up to 512 characters; every other string is still cut at 300', async () => {
+    await createWorkflow(h);
+    // Chrome on a Samsung phone, as it really arrives through an in-app browser: 180 characters.
+    const android = 'Mozilla/5.0 (Linux; Android 15; SM-S918BB Build/UP1A.231005.007; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/126.0.6478.122 Mobile Safari/537.36 Instagram 337.0.0';
+    expect(android.length).toBe(180);
+    const res = await ceremony(h, 'sign', signBody(ALICE, pdf('a'), ORIGINAL, {
+      auditEvents: [
+        { at: '2026-11-19T08:00:00Z', event: 'Link opened', actor: 'Alice', userAgent: android },
+        { at: '2026-11-19T08:01:00Z', event: 'e'.repeat(400), actor: 'a'.repeat(400), userAgent: 'u'.repeat(600), detail: 'd'.repeat(400) },
+      ],
+    }));
+    expect(res.status).toBe(200);
+    const audit = h.parse.doc().ScenticAudit;
+    expect(audit[0].userAgent).toBe(android);
+    expect(MAX_USER_AGENT).toBe(512);
+    expect(audit[1].userAgent).toBe('u'.repeat(512));
+    expect(audit[1].event).toBe('e'.repeat(300));
+    expect(audit[1].actor).toBe('a'.repeat(300));
+    expect(audit[1].detail).toBe('d'.repeat(300));
+  });
+
+  it('sign: the documents of the request are stored on the document, this one marked, replaced by each call and left alone by a call without them', async () => {
+    await createWorkflow(h);
+    const hebrew = 'הסכם שכר טרחה';
+    const three = [
+      { position: 1, total: 3, title: 'Engagement letter', sha256: 'AB'.repeat(32) },
+      { position: 2, total: 3, title: `<b>${hebrew}</b>\n` },
+      { position: 3, total: 3, title: 'Power of attorney', sha256: 'cd'.repeat(32), extra: 'dropped' },
+    ];
+    const first = await ceremony(h, 'sign', signBody(ALICE, pdf('a'), ORIGINAL, { relatedDocuments: three, position: 2 }));
+    expect(first.status).toBe(200);
+    expect(h.parse.doc().ScenticRelatedDocuments).toEqual([
+      { position: 1, total: 3, title: 'Engagement letter', sha256: 'ab'.repeat(32) },
+      { position: 2, total: 3, title: hebrew, current: true },
+      { position: 3, total: 3, title: 'Power of attorney', sha256: 'cd'.repeat(32) },
+    ]);
+    // Written with the master key, before the signature: the last signature makes the certificate.
+    const put = h.parse.calls.findIndex((c) => c.method === 'PUT' && c.body && 'ScenticRelatedDocuments' in c.body);
+    expect(put).toBeGreaterThan(-1);
+    expect(put).toBeLessThan(h.parse.calls.findIndex((c) => c.path === '/functions/signPdf'));
+    expect(h.parse.calls[put]!.headers['x-parse-master-key']).toBe('test-master-key');
+
+    // The next signer's call says nothing of them: the list stands.
+    // (Bob signs second and completes the document, so the replacement is shown on a fresh one.)
+    const second = await ceremony(h, 'sign', signBody(BOB, pdf('a+b'), pdf('a')));
+    expect(second.status).toBe(200);
+    expect(h.parse.doc().ScenticRelatedDocuments).toHaveLength(3);
+
+    const WF2 = 'wf-related-2';
+    await createWorkflow(h, { ceremony: 'scentic' }, FIRM1, WF2);
+    const one = [{ position: 1, total: 1, title: 'Only document' }];
+    expect((await ceremony(h, 'sign', signBody(ALICE, pdf('a'), ORIGINAL, { relatedDocuments: three, position: 1 }), FIRM1, WF2)).status).toBe(200);
+    expect(h.parse.doc('os-doc-2').ScenticRelatedDocuments.map((d: { current?: boolean }) => d.current === true)).toEqual([true, false, false]);
+    // No `position`: nothing is marked. A new list replaces the old one whole.
+    expect((await ceremony(h, 'sign', signBody(BOB, pdf('a+b'), pdf('a'), { relatedDocuments: one }), FIRM1, WF2)).status).toBe(200);
+    expect(h.parse.doc('os-doc-2').ScenticRelatedDocuments).toEqual(one);
+  });
+
+  it('sign: forty documents are taken, fifty-one are not; one bad entry, or a bad position, refuses the submission and writes nothing', async () => {
+    await createWorkflow(h);
+    const list = (n: number) => Array.from({ length: n }, (_, i) => ({ position: i + 1, total: n, title: `Document ${i + 1}` }));
+    const ok = { position: 1, total: 2, title: 'A' };
+    const bad: Array<[unknown, unknown, string]> = [
+      [list(MAX_RELATED_DOCUMENTS + 1), undefined, 'relatedDocuments'],
+      ['nope', undefined, 'relatedDocuments'],
+      [{ 0: ok }, undefined, 'relatedDocuments'],
+      [[ok, null], undefined, 'relatedDocuments[1]'],
+      [[{ ...ok, title: 'x'.repeat(301) }], undefined, 'relatedDocuments[0].title'],
+      [[{ ...ok, title: '<br>' }], undefined, 'relatedDocuments[0].title'],
+      [[{ ...ok, title: 7 }], undefined, 'relatedDocuments[0].title'],
+      [[{ ...ok, position: 3 }], undefined, 'relatedDocuments[0].position'],
+      [[{ ...ok, position: 0 }], undefined, 'relatedDocuments[0].position'],
+      [[{ ...ok, position: 1.5 }], undefined, 'relatedDocuments[0].position'],
+      [[{ ...ok, position: '1' }], undefined, 'relatedDocuments[0].position'],
+      [[{ ...ok, total: 1001 }], undefined, 'relatedDocuments[0].total'],
+      [[{ position: 1, title: 'A' }], undefined, 'relatedDocuments[0].total'],
+      [[{ ...ok, sha256: 'abc' }], undefined, 'relatedDocuments[0].sha256'],
+      [[{ ...ok, sha256: 12 }], undefined, 'relatedDocuments[0].sha256'],
+      [[ok], 0, 'position'],
+      [[ok], '1', 'position'],
+      [[ok], 2.5, 'position'],
+      [undefined, -1, 'position'],
+    ];
+    for (const [relatedDocuments, position, field] of bad) {
+      const res = await ceremony(h, 'sign', signBody(ALICE, pdf('a'), ORIGINAL, { relatedDocuments, position }));
+      expect(res.status, field).toBe(400);
+      expect(res.body.error.code, field).toBe('INVALID_INPUT');
+      expect(res.body.error.details[0].field, JSON.stringify(relatedDocuments)?.slice(0, 80)).toBe(field);
+    }
+    expect(callsTo(h, 'signPdf')).toHaveLength(0);
+    expect(h.parse.doc().ScenticRelatedDocuments).toBeUndefined();
+
+    const forty = await ceremony(h, 'sign', signBody(ALICE, pdf('a'), ORIGINAL, { relatedDocuments: list(40), position: 40 }));
+    expect(forty.status).toBe(200);
+    const stored = h.parse.doc().ScenticRelatedDocuments;
+    expect(stored).toHaveLength(40);
+    expect(stored[39]).toEqual({ position: 40, total: 40, title: 'Document 40', current: true });
+    expect(stored.filter((d: { current?: boolean }) => d.current)).toHaveLength(1);
+  });
+
   it('sign: bad audit events refuse the submission', async () => {
     await createWorkflow(h);
     const tooMany = Array.from({ length: MAX_AUDIT_EVENTS + 1 }, () => ({ at: '2026-11-19T08:00:00Z', event: 'e', actor: 'a' }));
@@ -615,7 +719,10 @@ describe('ceremony endpoints', () => {
     const responses: string[] = [];
     const keep = async (p: Promise<{ text?: string; body: unknown }>) => { const r = await p; responses.push(JSON.stringify(r.body) + (r.text ?? '')); };
     await keep(ceremony(h, 'viewed', { email: ALICE, ipAddress: '198.51.100.4' }));
-    h.parse.failNext('signPdf', 500, { error: 'boom r:session-leaked-in-upstream-body' });
+    // A failure OpenSign answers for (a 4xx): the signer may try again at once. A 5xx would leave
+    // the signature in doubt and hold the next attempts back (see "a signature OpenSign never
+    // answered for").
+    h.parse.failNext('signPdf', 400, { code: 141, error: 'boom r:session-leaked-in-upstream-body' });
     await keep(ceremony(h, 'sign', signBody(ALICE, pdf('a'), ORIGINAL)));
     h.parse.failNext('signPdf', 400, { code: 119, error: 'refused' });
     await keep(ceremony(h, 'sign', signBody(ALICE, pdf('a'), ORIGINAL)));
@@ -803,6 +910,91 @@ describe("the signer's own name, and OpenSign's page kept out of a ceremony Scen
     expect(responses.length).toBe(11);
     // Nor does any response carry a name at all for a signer: only addresses and states.
     expect(responses.join('\n')).not.toContain('Bob B');
+  });
+});
+
+describe("create: the originator's address and the firm's name, for the certificate", () => {
+  let h: Harness;
+  beforeEach(() => { h = harness(); });
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+  const documentPuts = () => h.parse.calls.filter((c) => c.method === 'PUT' && c.path.startsWith('/classes/contracts_Document/'));
+
+  it('originatorIp is written on the document as OriginIp, with the master key; the firm named at init is its ScenticFirmName', async () => {
+    for (const [workflowId, sent, stored] of [['wf-o4', ' 198.51.100.24 ', '198.51.100.24'], ['wf-o6', '2001:db8::8a2e:370:7334', '2001:db8::8a2e:370:7334']] as const) {
+      await createWorkflow(h, { ceremony: 'scentic', originatorIp: sent, senderName: 'Dana Levi' }, FIRM1, workflowId);
+      const doc = h.parse.doc(`os-doc-${workflowId === 'wf-o4' ? 1 : 2}`);
+      expect(doc.OriginIp).toBe(stored);
+      // The firm's name as given when the firm was set up, never the platform's.
+      expect(doc.ScenticFirmName).toBe('Acme Law');
+      expect(doc.FirmName).toBe('Acme Law');
+      expect(doc.SenderName).toBe('Dana Levi');
+    }
+    const put = documentPuts().find((c) => c.body && 'OriginIp' in c.body)!;
+    expect(put.headers['x-parse-master-key']).toBe('test-master-key');
+    // Not in what createdocumentfromapp is sent: OpenSign would not read it there.
+    expect(JSON.stringify(callsTo(h, 'createdocumentfromapp')[0]!.body)).not.toContain('OriginIp');
+  });
+
+  it("firmName on create is the certificate's organization; the code email's firm stays the one the firm was set up with; a bad one is refused", async () => {
+    await createWorkflow(h, { ceremony: 'scentic', firmName: '  Cohen & Levi <b>Law Offices</b>\n' }, FIRM1, 'wf-renamed');
+    expect(h.parse.doc('os-doc-1').ScenticFirmName).toBe('Cohen & Levi Law Offices');
+    expect(h.parse.doc('os-doc-1').FirmName).toBe('Acme Law');
+    // Nothing usable given: the name from init.
+    for (const [i, firmName] of ['', '   ', null, '<br>'].entries()) {
+      await createWorkflow(h, { ceremony: 'scentic', firmName }, FIRM1, `wf-unnamed-${i}`);
+      expect(h.parse.doc(`os-doc-${i + 2}`).ScenticFirmName, JSON.stringify(firmName)).toBe('Acme Law');
+    }
+    const uploads = callsTo(h, 'savefile').length;
+    for (const [firmName, issue] of [[7, 'not a string'], [['Acme'], 'not a string'], ['x'.repeat(201), 'at most 200 characters']] as const) {
+      const res = await signedRequest(h.app, {
+        method: 'POST',
+        path: `/api/v1/firms/${FIRM1}/signature/workflows`,
+        bodyObj: {
+          scenticSignatureWorkflowId: 'wf-bad-firm', scenticDocumentId: 'doc-1', documentName: 'contract.pdf', documentBase64: ORIGINAL.toString('base64'),
+          signers: [{ scenticSignerId: 's1', email: ALICE, name: 'Alice', role: 'signer', order: 1 }],
+          ceremony: 'scentic', firmName,
+        },
+        firmId: FIRM1,
+        idempotencyKey: `bad-firm-${Math.random()}`,
+      });
+      expect(res.status).toBe(400);
+      expect(res.body.error.details[0]).toMatchObject({ field: 'firmName', issue });
+    }
+    expect(callsTo(h, 'savefile')).toHaveLength(uploads);
+  });
+
+  it('without originatorIp, or with an empty one, nothing is written for it; a hosted request takes it too', async () => {
+    await createWorkflow(h, { ceremony: 'scentic' }, FIRM1, 'wf-none');
+    await createWorkflow(h, { ceremony: 'scentic', originatorIp: '' }, FIRM1, 'wf-empty');
+    await createWorkflow(h, { originatorIp: null }, FIRM1, 'wf-null');
+    for (const put of documentPuts()) expect(put.body && 'OriginIp' in put.body).toBe(false);
+    expect(h.parse.doc('os-doc-1').ScenticFirmName).toBe('Acme Law');
+    await createWorkflow(h, { originatorIp: '203.0.113.9' }, FIRM1, 'wf-hosted');
+    expect(h.parse.doc('os-doc-4').OriginIp).toBe('203.0.113.9');
+    expect(h.parse.doc('os-doc-4').ScenticCeremony).toBeUndefined();
+  });
+
+  it('anything that is not one IP address is refused before anything is uploaded or created', async () => {
+    await h.opensignService!.initFirm({ scenticFirmId: FIRM1, firmName: 'Acme Law' }, 'corr');
+    for (const originatorIp of ['203.0.113.7, 10.0.0.1', '203.0.113.7:443', 'example.com', '[::1]', 'unknown', 7, { ip: '1.2.3.4' }, ['1.2.3.4']]) {
+      const res = await signedRequest(h.app, {
+        method: 'POST',
+        path: `/api/v1/firms/${FIRM1}/signature/workflows`,
+        bodyObj: {
+          scenticSignatureWorkflowId: 'wf-bad-ip', scenticDocumentId: 'doc-1', documentName: 'contract.pdf', documentBase64: ORIGINAL.toString('base64'),
+          signers: [{ scenticSignerId: 's1', email: ALICE, name: 'Alice', role: 'signer', order: 1 }],
+          ceremony: 'scentic', originatorIp,
+        },
+        firmId: FIRM1,
+        idempotencyKey: `bad-ip-${Math.random()}`,
+      });
+      expect(res.status, JSON.stringify(originatorIp)).toBe(400);
+      expect(res.body.error.code).toBe('INVALID_INPUT');
+      expect(res.body.error.details[0]).toMatchObject({ field: 'originatorIp', issue: 'not an IP address' });
+    }
+    expect(callsTo(h, 'savefile')).toHaveLength(0);
+    expect(callsTo(h, 'createdocumentfromapp')).toHaveLength(0);
   });
 });
 
@@ -1477,11 +1669,50 @@ describe.each(DOUBT_STORES)('a signature OpenSign never answered for (%s store)'
     expect((await sign(BOB, pdf('alice+bob'), pdf('alice'))).status).toBe(200);
   });
 
-  it('an OpenSign that refuses, or is down, leaves no mark: only an unanswered signature does', async () => {
+  // NEW-1. Whether a signature was taken is unknown after any failure that is not OpenSign saying
+  // no: the mark is set for each of them, not only for a call that timed out.
+  it.each([
+    ['a dropped connection', (p: FakeParse) => { p.drop = 'signPdf'; }],
+    ['a 500', (p: FakeParse) => p.failNext('signPdf', 500, { error: 'boom' })],
+    ['a 502', (p: FakeParse) => p.failNext('signPdf', 502, { error: 'bad gateway' })],
+    ['a 503', (p: FakeParse) => p.failNext('signPdf', 503, { error: 'unavailable' })],
+    ['a 504', (p: FakeParse) => p.failNext('signPdf', 504, { error: 'gateway timeout' })],
+    ['a 200 that does not say it signed', (p: FakeParse) => p.failNext('signPdf', 200, { result: { status: 'error' } })],
+  ] as Array<[string, (p: FakeParse) => void]>)('%s leaves the signature in doubt: marked, and nobody signs on top of it', async (_what, arrange) => {
     await opened.store.setOpenSignWorkflowSignInDoubt(firm, WF, null);
-    h.parse.failNext('signPdf', 500, { error: 'boom' });
-    expect((await sign(ALICE, pdf('alice'), ORIGINAL)).status).toBe(502);
+    const before = callsTo(h, 'signPdf').length;
+    arrange(h.parse);
+    const failed = await sign(ALICE, pdf('alice'), ORIGINAL);
+    expect(failed.status).toBe(502);
+    expect(failed.body.error).toMatchObject({ code: 'UPSTREAM_ERROR', retryable: true });
+    const m = await mark();
+    expect(m.signInDoubtSha).toBe(sha(ORIGINAL));
+    expect(new Date(m.signInDoubtUntil!).getTime() - Date.now()).toBeGreaterThan(SIGN_IN_DOUBT_MS - 5000);
+    for (const email of [ALICE, BOB]) {
+      const res = await sign(email, pdf(email), ORIGINAL);
+      expect(res.status, email).toBe(409);
+      expect(res.body.error, email).toMatchObject({ code: 'BUSY', retryable: true });
+    }
+    expect(callsTo(h, 'signPdf')).toHaveLength(before + 1);
+  });
+
+  it.each([
+    ['refused for this signer (403, Parse 119)', 403, { code: 119, error: 'forbidden' }, 403, 'FORBIDDEN'],
+    ['refused for this signer (400, Parse 119)', 400, { code: 119, error: 'forbidden' }, 403, 'FORBIDDEN'],
+    ['document not found (404, Parse 101)', 404, { code: 101, error: 'Document not found.' }, 409, 'INVALID_STATE'],
+    ['document not found (400, Parse 101)', 400, { code: 101, error: 'Document not found.' }, 409, 'INVALID_STATE'],
+    ['any other 4xx (400, Parse 141)', 400, { code: 141, error: 'no' }, 502, 'UPSTREAM_ERROR'],
+    ['a 401', 401, { error: 'unauthorized' }, 502, 'UPSTREAM_ERROR'],
+    ['a 499', 499, {}, 502, 'UPSTREAM_ERROR'],
+  ] as Array<[string, number, Record<string, unknown>, number, string]>)('a definite refusal leaves no mark: %s', async (_what, upstream, body, status, code) => {
+    await opened.store.setOpenSignWorkflowSignInDoubt(firm, WF, null);
+    h.parse.failNext('signPdf', upstream, body);
+    const refused = await sign(ALICE, pdf('alice'), ORIGINAL);
+    expect(refused.status).toBe(status);
+    expect(refused.body.error.code).toBe(code);
     expect((await mark()).signInDoubtUntil ?? null).toBeNull();
+    expect((await mark()).signInDoubtSha ?? null).toBeNull();
+    // Nothing is held back afterwards.
     expect((await sign(ALICE, pdf('alice'), ORIGINAL)).status).toBe(200);
   });
 });
@@ -1521,6 +1752,20 @@ describe('ceremony checks (pure)', () => {
     expect(plainText('x'.repeat(10), 4)).toBe('xxxx');
     expect(plainText('line one\nline two', 300, true)).toBe('line one\nline two');
     expect(checkDeclineReason('  ok  ')).toEqual({ ok: true, value: 'ok' });
+  });
+
+  it('related documents: nothing given is nothing written; an empty list is an empty list', () => {
+    expect(checkRelatedDocuments(undefined)).toEqual({ ok: true, value: null });
+    expect(checkRelatedDocuments(null, 2)).toEqual({ ok: true, value: null });
+    expect(checkRelatedDocuments([], 1)).toEqual({ ok: true, value: [] });
+    expect(checkDocumentPosition(undefined)).toEqual({ ok: true, value: null });
+    expect(checkDocumentPosition(3)).toEqual({ ok: true, value: 3 });
+    // A title of exactly 300 characters is taken, counted in characters and not in UTF-16 units.
+    const title = '\u{1F4C4}'.repeat(300);
+    expect(checkRelatedDocuments([{ position: 1, total: 1, title }])).toEqual({ ok: true, value: [{ position: 1, total: 1, title }] });
+    // Direction overrides cannot be smuggled into a title.
+    const rlo = String.fromCodePoint(0x202e);
+    expect(checkRelatedDocuments([{ position: 1, total: 1, title: `${rlo}fdp.exe` }])).toEqual({ ok: true, value: [{ position: 1, total: 1, title: 'fdp.exe' }] });
   });
 
   it('audit events: nothing given is nothing written', () => {

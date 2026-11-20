@@ -39,6 +39,12 @@ export interface OpenSignDocument {
    * stored key cannot.
    */
   ScenticSignerNames?: Array<{ email: string; name: string }>;
+  /** The documents sent together in one request, this one marked (ceremony/sign). */
+  ScenticRelatedDocuments?: unknown[];
+  /** The firm the document was sent for: the certificate's "Organization". */
+  ScenticFirmName?: string;
+  /** The address the request was made from: the certificate's "Document originator". */
+  OriginIp?: string;
   /**
    * Who sent it. Present on the document OpenSign returns, and the correct
    * source for a later reminder — a reminder should come from whoever sent the
@@ -147,7 +153,11 @@ export interface OpenSignExtendedUser {
 export interface OpenSignResult<T> {
   success: boolean;
   data?: T;
-  error?: { code: string; message: string; upstreamCode?: number; timedOut?: boolean };
+  /**
+   * `httpStatus`: the status OpenSign answered with, when it answered and refused or failed.
+   * `upstreamCode`: Parse's own error number from that answer. `timedOut`: no answer in time.
+   */
+  error?: { code: string; message: string; upstreamCode?: number; httpStatus?: number; timedOut?: boolean };
 }
 
 export interface OpenSignHealthStatus {

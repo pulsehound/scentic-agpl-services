@@ -18,6 +18,12 @@ import { inflateSync } from 'node:zlib';
 export const MAX_SIGNATURE_PNG_BYTES = 1024 * 1024;
 export const MAX_AUDIT_EVENTS = 500;
 export const MAX_AUDIT_STRING = 300;
+/** A browser's User-Agent is kept whole: real ones run past 300 characters, and it is evidence. */
+export const MAX_USER_AGENT = 512;
+export const MAX_RELATED_DOCUMENTS = 50;
+export const MAX_DOCUMENT_TITLE = 300;
+/** Where a document stands among those sent together: "3 of 12". Far above any real request. */
+export const MAX_DOCUMENT_POSITION = 1000;
 export const MAX_DECLINE_REASON = 1000;
 
 /** The decoded PDF a submission may carry when nothing else is configured: 45 MiB. */
@@ -248,6 +254,21 @@ export function withSignerName(existing: unknown, email: string, name: string): 
   return [...kept, { email, name }];
 }
 
+export const MAX_FIRM_NAME = 200;
+
+/**
+ * The sending firm's name as it should stand on the certificate, when create names one: plain text
+ * on one line, at most 200 characters. Nothing given (absent, null, or nothing left once cleaned)
+ * is null, and the name the firm was set up with is used.
+ */
+export function checkFirmName(value: unknown): Checked<string | null> {
+  if (value === undefined || value === null) return { ok: true, value: null };
+  if (typeof value !== 'string') return bad('firmName', 'not a string');
+  const name = plainText(value, MAX_FIRM_NAME + 1);
+  if (Array.from(name).length > MAX_FIRM_NAME) return bad('firmName', `at most ${MAX_FIRM_NAME} characters`);
+  return { ok: true, value: name || null };
+}
+
 /** Why a signer will not sign, in their words: required, trimmed, at most a thousand characters. */
 export function checkDeclineReason(value: unknown): Checked<string> {
   if (typeof value !== 'string') return bad('reason', 'required');
@@ -325,7 +346,7 @@ export function checkAuditEvents(value: unknown): Checked<CeremonyAuditEvent[] |
     for (const key of ['email', 'userAgent', 'detail'] as const) {
       if (e[key] === undefined || e[key] === null) continue;
       if (typeof e[key] !== 'string') return bad(`${field}.${key}`, 'not a string');
-      const text = plainText(e[key] as string, MAX_AUDIT_STRING);
+      const text = plainText(e[key] as string, key === 'userAgent' ? MAX_USER_AGENT : MAX_AUDIT_STRING);
       if (text) optional[key] = key === 'email' ? text.toLowerCase() : text;
     }
     const ip = checkIpAddress(e.ipAddress, `${field}.ipAddress`);
@@ -340,6 +361,66 @@ export function checkAuditEvents(value: unknown): Checked<CeremonyAuditEvent[] |
     .sort((a, b) => a.event.at.localeCompare(b.event.at) || a.index - b.index)
     .map((x) => x.event);
   return { ok: true, value: ordered };
+}
+
+/** One of the documents sent to be signed together in one request, as the certificate lists it. */
+export interface RelatedDocument {
+  position: number;
+  total: number;
+  title: string;
+  sha256?: string;
+  /** The document the list is stored on: printed "(this document)". */
+  current?: true;
+}
+
+const wholeNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= MAX_DOCUMENT_POSITION;
+
+/** Which of the request's documents this one is (`position` on ceremony/sign), or nothing. */
+export function checkDocumentPosition(value: unknown): Checked<number | null> {
+  if (value === undefined || value === null) return { ok: true, value: null };
+  if (!wholeNumber(value)) return bad('position', `a whole number from 1 to ${MAX_DOCUMENT_POSITION}`);
+  return { ok: true, value };
+}
+
+/**
+ * The documents sent together in one request: at most fifty, each with where it stands
+ * (`position` of `total`, whole numbers, position no greater than total), a title reduced to plain
+ * text of 1 to 300 characters, and optionally the SHA-256 of its PDF. Kept in the order given. The
+ * entry whose position is `current` is marked as the document the list is stored on. As with the
+ * events, one bad entry refuses the whole submission.
+ */
+export function checkRelatedDocuments(value: unknown, current: number | null = null): Checked<RelatedDocument[] | null> {
+  if (value === undefined || value === null) return { ok: true, value: null };
+  if (!Array.isArray(value)) return bad('relatedDocuments', 'not an array');
+  if (value.length > MAX_RELATED_DOCUMENTS) return bad('relatedDocuments', `at most ${MAX_RELATED_DOCUMENTS} documents`);
+
+  const documents: RelatedDocument[] = [];
+  for (const [index, entry] of value.entries()) {
+    const field = `relatedDocuments[${index}]`;
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return bad(field, 'not an object');
+    const e = entry as Record<string, unknown>;
+    for (const key of ['position', 'total'] as const) {
+      if (!wholeNumber(e[key])) return bad(`${field}.${key}`, `a whole number from 1 to ${MAX_DOCUMENT_POSITION}`);
+    }
+    const position = e.position as number;
+    const total = e.total as number;
+    if (position > total) return bad(`${field}.position`, 'greater than total');
+
+    if (typeof e.title !== 'string') return bad(`${field}.title`, 'required');
+    const title = plainText(e.title, MAX_DOCUMENT_TITLE + 1);
+    if (title === '') return bad(`${field}.title`, 'required');
+    if (Array.from(title).length > MAX_DOCUMENT_TITLE) return bad(`${field}.title`, `at most ${MAX_DOCUMENT_TITLE} characters`);
+
+    let sha256: string | undefined;
+    if (e.sha256 !== undefined && e.sha256 !== null) {
+      const sha = checkSha256(e.sha256, `${field}.sha256`);
+      if (!sha.ok) return sha;
+      sha256 = sha.value;
+    }
+    documents.push({ position, total, title, ...(sha256 ? { sha256 } : {}), ...(current !== null && position === current ? { current: true as const } : {}) });
+  }
+  return { ok: true, value: documents };
 }
 
 /**
