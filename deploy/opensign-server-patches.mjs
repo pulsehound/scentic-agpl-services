@@ -505,6 +505,21 @@ export function applyServerPatches({ root = '/usr/src/app', filesDir = '/tmp/ope
       'certificate signer name',
     ],
   ]);
+  // Only the people who sign it now. When a signer is replaced or passes the request on, OpenSign
+  // keeps the view the earlier person left in AuditTrail, and drops them from Signers: upstream then
+  // printed them as a signer with no name and no address, "signed" at the moment the certificate was
+  // made (SignedOn falls back to the generation time). Seen on staging, round 76. An entry of
+  // someone no longer among the document's signers is left out of the signers' blocks; Scentic's
+  // own event history still says who passed it on, when and why.
+  edit(`${FN}/pdf/GenerateCertificate.js`, [
+    [
+      '  const filteredaudit = docDetails?.AuditTrail?.filter(x => {\n    if (!x?.UserPtr?.objectId) return false;\n    return true;\n  });\n',
+      '  const filteredaudit = docDetails?.AuditTrail?.filter(x => {\n    if (!x?.UserPtr?.objectId) return false;\n' +
+        '    if (Array.isArray(docDetails?.Signers) && docDetails.Signers.length > 0 && !docDetails.Signers.some(y => y?.objectId === x.UserPtr.objectId)) return false;\n' +
+        '    return true;\n  });\n',
+      'certificate signers: only those who sign it now',
+    ],
+  ]);
   // "Organization". OpenSign prints the company of the account that owns the document, and one
   // platform account owns every firm's documents: every firm's certificate said "Scentic". The
   // gateway writes the sending firm's name on the document when it creates it (ScenticFirmName;

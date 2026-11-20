@@ -522,6 +522,25 @@ describe.skipIf(!hasVendor)(`the certificate, from the patched upstream generato
     expect(others.all).not.toContain('Mallory');
   });
 
+  it('a signer replaced or who passed it on is not printed as a signer: no nameless block "signed" when the certificate was made (round 76)', async () => {
+    const doc = fixtureDoc([{ at: '2026-11-19T08:05:00Z', event: 'Passed to another signer', actor: 'Tess Earlier', email: 'tess@example.com', detail: 'Our CFO signs' }]);
+    // OpenSign after a replacement: the earlier person's view stays in AuditTrail, and they are no longer among Signers.
+    const tess = { objectId: 'c0', Name: 'Tess Earlier', Email: 'tess@example.com', className: 'contracts_Contactbook', __type: 'Object' };
+    doc.AuditTrail = [{ UserPtr: tess, Activity: 'Viewed', ipAddress: '192.0.2.44', ViewedOn: '2026-11-19T08:01:00.000Z' }, ...doc.AuditTrail];
+    const made = await textOf(await generate(doc));
+    // Two signer blocks, the two who signed; the earlier person's view and address are not among them.
+    expect(made.all.match(/\d\. Signer/g)).toEqual(['1. Signer', '2. Signer']);
+    expect(made.all).not.toContain('192.0.2.44');
+    expect(made.all).toContain('alice@example.com');
+    expect(made.all).toContain('yaakov@example.co.il');
+    // Scentic's own history still says who passed it on.
+    expect(made.all).toContain('Passed to another signer');
+    expect(made.all).toContain('Tess Earlier');
+    // Without the filter the earlier person would have been printed: the same document with them among Signers shows them.
+    doc.Signers = [tess, ...doc.Signers];
+    expect((await textOf(await generate(doc))).all).toContain('192.0.2.44');
+  });
+
   it('a record that is not what it should be never stops the certificate', async () => {
     const odd = [
       null,
