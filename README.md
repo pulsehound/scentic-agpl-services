@@ -66,6 +66,15 @@ This repository is licensed under the GNU Affero General Public License v3.0 (AG
 
 See `docs/SOURCE_OFFER.md` for full details.
 
+**Which source is running.** Every deployment is tagged, by whoever deploys it, with `scripts/tag-deploy.sh`:
+
+```
+bash scripts/tag-deploy.sh staging <commit>          # makes the tag locally, prints the push command and the address
+bash scripts/tag-deploy.sh staging <commit> --push   # the same, and pushes that one tag
+```
+
+It makes the annotated tag `deployed/<environment>/<YYYY-MM-DD>-<shortsha>` on the commit that was deployed and prints `https://github.com/pulsehound/scentic-agpl-services/tree/<tag>`, the address the consumer (Scentic) puts in its source-offer constant. Nothing runs the script automatically. Deploy tags are never moved and never deleted (the script refuses a name that already points elsewhere and has no `--force`), and nothing is merged to `main` by a deployment: deployments are cut from release branches, and the tag, not a branch, is what names their source. `docs/SOURCE_OFFER.md` §5.1.
+
 ## How OpenSign is modified
 
 There is no `patches/` directory. OpenSign's two images are built from upstream's images by `deploy/Dockerfile.opensign-server` and `deploy/Dockerfile.opensign`, which run `deploy/opensign-server-patches.mjs` and `deploy/opensign-frontend-patches.mjs` over the program inside the image and copy in the files under `deploy/opensign-server-files/`, `deploy/opensign-ceremony/` and `deploy/opensign-assets/`. Every edit names the upstream text it replaces, says why in a comment beside it, and fails the build if that text is no longer there. `vendor/opensign/` is a checkout of upstream to read and to test those edits against; it is not edited and not deployed. `docs/SOURCE_OFFER.md` §8 lists what is modified.
@@ -86,7 +95,7 @@ pnpm test:patches    # what this repository changes in OpenSign at image build (
 | `server-patches.test.mjs` | Every edit in `deploy/opensign-server-patches.mjs` over a copy of the **real upstream server source** in `vendor/opensign` (fetched by `scripts/update-vendor.sh`, not committed): each applies to exactly one place, a second run is refused edit by edit, and every patched file still parses. Skipped, saying why, when `vendor/opensign` is not on disk. |
 | `frontend-patches.test.mjs` | Every transform in `deploy/opensign-frontend-patches.mjs` over text cut from the built signing page, the whole script over a small build folder laid out like it, and the hashes of the third-party files in `deploy/opensign-assets/vendor`. The page exists only built, inside the upstream image, so the proof that the real page takes the patch is the image build below. |
 | `ceremony.test.mjs` | `deploy/opensign-ceremony/scentic-ceremony.js` in jsdom against a page shaped like the signing page: the bar and Start, what Start never clicks, and what the bar says once a document is declined, expired, withdrawn or finished. |
-| `certificate.test.mjs` | The patched certificate generator, run on fixture documents; the text of the PDFs it makes is read back. |
+| `certificate.test.mjs` | The patched certificate generator, run on fixture documents; the text of the PDFs it makes is read back, with where each piece was drawn: the event history (a browser string printed whole, wrapped in its column), the documents of a request (1, 3, 40 and every length to 50, Hebrew titles), the sending firm as Organization, the originator's address, and nothing outside the page border. The server's `Utils.js` is stood in for there; `make-certificate.mjs` makes a certificate inside a built server image with the image's own, and `read-certificate.mjs --expect` reads it back and checks it (both files say how). |
 | `scentic-ceremony-guard.test.mjs` | OpenSign's patched `signPdf`, `declinedoc`, `triggerevent`, `getDocument` and this repository's code mail, run against fixtures: a document Scentic hosts the signing of answers the server's own calls only; a hosted one behaves as before. |
 
 Building the images runs the same scripts for real and fails if any edit does not apply. The signing page's build also fails if the page still names a host it used to load from:

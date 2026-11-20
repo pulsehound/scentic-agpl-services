@@ -130,6 +130,19 @@ The endpoint is unauthenticated (it returns only metadata, no secrets or user da
 - **Modifications published alongside the gateway code:** OpenSign's are applied at image build from files under `deploy/` in this repository (§8). There are no patch files, no `scripts/apply-patches.sh`, and no fork branches.
 - **Version pinning:** The upstream commits the vendored checkouts are taken at are recorded in `docs/UPSTREAM_SOURCES.md`. The signing page's upstream image is pinned by digest in `deploy/Dockerfile.opensign`; the server's base image is named by the `OPENSIGN_BASE` argument of `deploy/Dockerfile.opensign-server`.
 
+### 5.1 Every deployment is tagged
+
+A person using a deployed service must be pointed at the source of what is running, not at a branch that has since moved. So every deployment, to every environment, is tagged in this repository:
+
+```
+deployed/<environment>/<YYYY-MM-DD>-<shortsha>        e.g. deployed/staging/2026-11-20-d0bc6a2
+```
+
+- **How.** `bash scripts/tag-deploy.sh <environment> <commit> [--push]`, run by hand by whoever deployed, with the commit the images were built from. It makes an annotated tag (who, when, the environment, the full commit) and prints, on standard output, `https://github.com/pulsehound/scentic-agpl-services/tree/<tag>`. Without `--push` the tag is local and the script prints the one `git push` that publishes it; the address resolves once the tag is pushed. Nothing runs the script automatically.
+- **Where the address goes.** Into the consumer's source-offer constant: the address Scentic shows its users for this service is the tag's, for the deployment that is live in that environment. The gateway's own `GET /source-offer` (§4) names the repository.
+- **Tags are never moved or deleted.** The script refuses a tag name that already exists on another commit, has no `--force`, and pushes one ref by its full name, which the remote refuses if a different tag of that name is there. A deployment that is replaced keeps its tag: the history of what ran, and when, stays readable. A mistaken tag is left and a correct one added.
+- **Nothing is merged to `main`.** Deployments are cut from release branches (`signature-experience-round-NN` and the like). A deployment does not move `main`, and the script touches no branch; the tag alone names the deployed source, and it keeps that commit reachable whatever later happens to the branch.
+
 ---
 
 ## 6. Docker image labels
@@ -195,7 +208,7 @@ Each edit carries its reason in a comment beside it in the files above, which ar
 | OpenSign server | The master key is no longer written into the migration command line or printed on failure; request body limits come from the environment |
 | OpenSign server | Mail: the completion mail goes to signers only and is off unless enabled; messages for documents Scentic delivers itself are not sent (the next signer's invitation, the decline notice) |
 | OpenSign server | Documents whose signing Scentic hosts (`ScenticCeremony`): the page's functions and the code mail refuse them; only the server's own calls act on them |
-| OpenSign server | The completion certificate prints the name each signer confirmed for the document, and Scentic's record of the ceremony as an "Event history" section (`scenticEventHistory.js`) |
+| OpenSign server | The completion certificate prints the name each signer confirmed for the document, the sending firm's name as "Organization" in place of the platform account's company, the documents sent together in one request ("Documents in this request"), and Scentic's record of the ceremony as an "Event history" section (`scenticEventHistory.js`) |
 | OpenSign signing page | Product name and tab titles; a six-digit code field; plain wording; Scentic's logo; messages shown in the page instead of browser dialogs; a bar and Start button (`deploy/opensign-ceremony/`) |
 | OpenSign signing page | Nothing is loaded from other hosts: Bootstrap's stylesheet, the handwriting fonts, the PDF worker, the animation player and the text font are served from the page itself; upstream's paid icon font is replaced by Font Awesome Free |
 | Kimai | None |

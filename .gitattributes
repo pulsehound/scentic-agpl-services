@@ -1,3 +1,6 @@
 # Third-party files kept byte for byte: each has its SHA-256 in MANIFEST.json, and a checkout that
 # rewrote line endings would fail the check.
 deploy/opensign-assets/vendor/** -text
+
+# Shell scripts are run by bash wherever the repository is checked out.
+scripts/*.sh text eol=lf
