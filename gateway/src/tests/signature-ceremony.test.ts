@@ -22,7 +22,7 @@ import { makeApp, signedRequest, type MockOpenSignClient, type TestApp } from '.
 import { makeFakeParse, type FakeParse } from './fake-parse.js';
 import { OpenSignClient, forwardedFor } from '../opensign/opensign-client.js';
 import { SIGNATURE_CAPABILITIES } from '../routes/signature.js';
-import { SIGN_IN_DOUBT_MS } from '../opensign/opensign-service.js';
+import { SIGN_IN_DOUBT_MS, SIGN_IN_DOUBT_SHORT_MS } from '../opensign/opensign-service.js';
 import { InMemoryMappingStore, type MappingStore } from '../mappings/mapping-store.js';
 import {
   KeyedMutex,
@@ -964,6 +964,46 @@ describe("create: the originator's address and the firm's name, for the certific
     expect(callsTo(h, 'savefile')).toHaveLength(uploads);
   });
 
+  it("senderEmail is written on the document as SenderMail, lowercased, with the master key; without it nothing is written for it; a bad one is refused", async () => {
+    await createWorkflow(h, { ceremony: 'scentic', senderEmail: ' Dana.Levi@CohenLevi.example ', senderName: 'Dana Levi' }, FIRM1, 'wf-sender');
+    expect(h.parse.doc('os-doc-1').SenderMail).toBe('dana.levi@cohenlevi.example');
+    const put = documentPuts().find((c) => c.body && 'SenderMail' in c.body)!;
+    expect(put.headers['x-parse-master-key']).toBe('test-master-key');
+    expect(JSON.stringify(callsTo(h, 'createdocumentfromapp')[0]!.body)).not.toContain('SenderMail');
+    // The gateway itself mails nobody at that address: it is on the document and nowhere else.
+    expect(JSON.stringify(h.parse.calls.filter((c) => c.path.startsWith('/functions/sendmail')))).not.toContain('dana.levi@');
+
+    for (const [i, senderEmail] of ['', '  ', null].entries()) {
+      await createWorkflow(h, { ceremony: 'scentic', senderEmail }, FIRM1, `wf-nosender-${i}`);
+      expect('SenderMail' in h.parse.doc(`os-doc-${i + 2}`)).toBe(false);
+    }
+    const uploads = callsTo(h, 'savefile').length;
+    const long = `${'a'.repeat(64)}@${'b'.repeat(60)}.${'c'.repeat(60)}.${'d'.repeat(60)}.example`;
+    expect(long.length).toBeGreaterThan(254);
+    for (const senderEmail of ['dana', 'dana@', '@firm.example', 'dana@firm', 'Dana Levi <dana@firm.example>', 'dana@firm.example, eve@x.example', 'dana @firm.example', 'dana@firm.example\nBcc: eve@x.example', 'dana@fïrm.example', long, 7, ['dana@firm.example'], { email: 'dana@firm.example' }]) {
+      const res = await signedRequest(h.app, {
+        method: 'POST',
+        path: `/api/v1/firms/${FIRM1}/signature/workflows`,
+        bodyObj: {
+          scenticSignatureWorkflowId: 'wf-bad-sender', scenticDocumentId: 'doc-1', documentName: 'contract.pdf', documentBase64: ORIGINAL.toString('base64'),
+          signers: [{ scenticSignerId: 's1', email: ALICE, name: 'Alice', role: 'signer', order: 1 }],
+          ceremony: 'scentic', senderEmail,
+        },
+        firmId: FIRM1,
+        idempotencyKey: `bad-sender-${Math.random()}`,
+      });
+      expect(res.status, JSON.stringify(senderEmail)).toBe(400);
+      expect(res.body.error.code).toBe('INVALID_INPUT');
+      expect(res.body.error.details[0]).toMatchObject({ field: 'senderEmail', issue: 'not an email address' });
+    }
+    expect(callsTo(h, 'savefile')).toHaveLength(uploads);
+    // Exactly 254 characters is taken.
+    const longest = `${'a'.repeat(64)}@${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(53)}.example`;
+    expect(longest.length).toBe(254);
+    await createWorkflow(h, { ceremony: 'scentic', senderEmail: longest }, FIRM1, 'wf-longest');
+    expect(h.parse.doc('os-doc-5').SenderMail).toBe(longest);
+  });
+
   it('without originatorIp, or with an empty one, nothing is written for it; a hosted request takes it too', async () => {
     await createWorkflow(h, { ceremony: 'scentic' }, FIRM1, 'wf-none');
     await createWorkflow(h, { ceremony: 'scentic', originatorIp: '' }, FIRM1, 'wf-empty');
@@ -1678,7 +1718,7 @@ describe.each(DOUBT_STORES)('a signature OpenSign never answered for (%s store)'
     ['a 503', (p: FakeParse) => p.failNext('signPdf', 503, { error: 'unavailable' })],
     ['a 504', (p: FakeParse) => p.failNext('signPdf', 504, { error: 'gateway timeout' })],
     ['a 200 that does not say it signed', (p: FakeParse) => p.failNext('signPdf', 200, { result: { status: 'error' } })],
-  ] as Array<[string, (p: FakeParse) => void]>)('%s leaves the signature in doubt: marked, and nobody signs on top of it', async (_what, arrange) => {
+  ] as Array<[string, (p: FakeParse) => void]>)('%s leaves the signature in doubt for thirty seconds, not four minutes: marked, and nobody signs on top of it meanwhile', async (_what, arrange) => {
     await opened.store.setOpenSignWorkflowSignInDoubt(firm, WF, null);
     const before = callsTo(h, 'signPdf').length;
     arrange(h.parse);
@@ -1687,13 +1727,70 @@ describe.each(DOUBT_STORES)('a signature OpenSign never answered for (%s store)'
     expect(failed.body.error).toMatchObject({ code: 'UPSTREAM_ERROR', retryable: true });
     const m = await mark();
     expect(m.signInDoubtSha).toBe(sha(ORIGINAL));
-    expect(new Date(m.signInDoubtUntil!).getTime() - Date.now()).toBeGreaterThan(SIGN_IN_DOUBT_MS - 5000);
+    // The short window: most of these never reached OpenSign (a service waking from zero answers 503).
+    expect(SIGN_IN_DOUBT_SHORT_MS).toBe(30_000);
+    const left = new Date(m.signInDoubtUntil!).getTime() - Date.now();
+    expect(left).toBeGreaterThan(SIGN_IN_DOUBT_SHORT_MS - 5000);
+    expect(left).toBeLessThanOrEqual(SIGN_IN_DOUBT_SHORT_MS);
     for (const email of [ALICE, BOB]) {
       const res = await sign(email, pdf(email), ORIGINAL);
       expect(res.status, email).toBe(409);
       expect(res.body.error, email).toMatchObject({ code: 'BUSY', retryable: true });
     }
     expect(callsTo(h, 'signPdf')).toHaveLength(before + 1);
+  });
+
+  it('the short window too ends as soon as the document shows what happened, or when its thirty seconds are up', async () => {
+    await opened.store.setOpenSignWorkflowSignInDoubt(firm, WF, null);
+    h.parse.failNext('signPdf', 503, { error: 'unavailable' });
+    expect((await sign(ALICE, pdf('alice'), ORIGINAL)).status).toBe(502);
+    expect((await sign(BOB, pdf('bob'), ORIGINAL)).body.error.code).toBe('BUSY');
+
+    // It had arrived after all: the signature lands while the mark still stands.
+    const late = pdf('alice, late');
+    const landed = await h.parse.fetch('http://localhost:8080/app/functions/signPdf', {
+      method: 'POST',
+      headers: { 'X-Parse-Application-Id': 'opensign', 'X-Parse-Master-Key': 'test-master-key' },
+      body: JSON.stringify({ docId: 'os-doc-1', userId: 'contact-1', pdfFile: late.toString('base64'), signature: PNG_B64 }),
+    });
+    expect(landed.status).toBe(200);
+    expect(new Date((await mark()).signInDoubtUntil!).getTime()).toBeGreaterThan(Date.now());
+    // Read back first: the signer it was for hears they have signed; nobody is told to wait.
+    const again = await sign(ALICE, pdf('alice'), ORIGINAL);
+    expect(again.status).toBe(409);
+    expect(again.body.error.code).toBe('ALREADY_SIGNED');
+    // The PDF has changed: the mark is cleared and the next signer goes ahead on the new one.
+    const done = await sign(BOB, pdf('alice+bob'), late);
+    expect(done.status).toBe(200);
+    expect(done.body.data.completed).toBe(true);
+    expect((await mark()).signInDoubtUntil ?? null).toBeNull();
+  });
+
+  it('thirty seconds after a 503 that never arrived, with nothing changed, the same signer signs', async () => {
+    await opened.store.setOpenSignWorkflowSignInDoubt(firm, WF, null);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      h.parse.failNext('signPdf', 503, { error: 'unavailable' });
+      expect((await sign(ALICE, pdf('alice'), ORIGINAL)).status).toBe(502);
+      vi.setSystemTime(Date.now() + SIGN_IN_DOUBT_SHORT_MS - 2000);
+      expect((await sign(ALICE, pdf('alice'), ORIGINAL)).body.error.code).toBe('BUSY');
+      vi.setSystemTime(Date.now() + 3000);
+      expect((await sign(ALICE, pdf('alice'), ORIGINAL)).status).toBe(200);
+      expect((await mark()).signInDoubtUntil ?? null).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('a timeout still holds for four minutes: thirty seconds later nobody signs on top of it', async () => {
+    // beforeEach left a timed-out signature in doubt.
+    const until = new Date((await mark()).signInDoubtUntil!).getTime();
+    expect(until - Date.now()).toBeGreaterThan(SIGN_IN_DOUBT_MS - 5000);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + SIGN_IN_DOUBT_SHORT_MS + 5000);
+      expect((await sign(ALICE, pdf('alice'), ORIGINAL)).body.error.code).toBe('BUSY');
+      vi.setSystemTime(until + 1000);
+      expect((await sign(ALICE, pdf('alice'), ORIGINAL)).status).toBe(200);
+    } finally { vi.useRealTimers(); }
   });
 
   it.each([

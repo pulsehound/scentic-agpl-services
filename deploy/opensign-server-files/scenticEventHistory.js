@@ -199,6 +199,14 @@ export function scenticOrganization(docDetails, fallback, font, width) {
   return fallback;
 }
 
+/**
+ * One line of the certificate's own (the originator's name, the originator's address): drawable,
+ * in reading order, and cut with "..." if it would run past `width` at `size`.
+ */
+export function scenticLine(font, value, size, width) {
+  return fitted(font, printable(font, value), size, width);
+}
+
 /** The events worth printing, cleaned and in the order they happened. */
 export function eventRows(font, events, names) {
   if (!Array.isArray(events)) return [];

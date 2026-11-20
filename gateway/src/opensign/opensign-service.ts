@@ -40,6 +40,7 @@ import {
   checkFirmName,
   checkIpAddress,
   checkPdfBase64,
+  checkSenderEmail,
   checkSha256,
   checkSignaturePng,
   checkSignerName,
@@ -73,6 +74,13 @@ import {
 
 /** How long after an unanswered signPdf a workflow's signatures are held back: four minutes. */
 export const SIGN_IN_DOUBT_MS = 4 * 60_000;
+/**
+ * The same, where the call did not time out but failed without a refusal: a dropped connection, a
+ * 5xx, a 200 that did not say it had signed. Most of these never reached OpenSign at all (a
+ * service scaled to zero answers its first request 503), so the wait is short: long enough for a
+ * write that did start to show in the document, not long enough to keep a signer waiting.
+ */
+export const SIGN_IN_DOUBT_SHORT_MS = 30_000;
 
 export interface OpenSignServiceConfig {
   enabled: boolean;
@@ -277,6 +285,9 @@ export class OpenSignService {
     // The firm's name as it is today, if the caller says; otherwise the one it was set up with.
     const firmName = checkFirmName(params.firmName);
     if (!firmName.ok) return { success: false, error: invalidInput('Invalid request', [firmName]) };
+    // The sender's own address, printed as the originator's. Never written to by anything here.
+    const senderEmail = checkSenderEmail(params.senderEmail);
+    if (!senderEmail.ok) return { success: false, error: invalidInput('Invalid request', [senderEmail]) };
 
     // Check existing (idempotent)
     const existing = await this.store.getOpenSignWorkflowMapping(params.scenticFirmId, params.scenticSignatureWorkflowId);
@@ -367,6 +378,7 @@ export class OpenSignService {
       firmName: firmMapping.opensignTenantName || undefined,
       certificateFirmName: firmName.value || undefined,
       originatorIp: originatorIp.value || undefined,
+      senderEmail: senderEmail.value || undefined,
       // Scentic tells the firm; OpenSign would mail its own admin account for every signature.
       notifyOnSignatures: false,
       redirectUrl: params.redirectUrl || undefined,
@@ -1228,13 +1240,20 @@ export class OpenSignService {
         // Anything else that is not OpenSign saying no — no answer in time, a connection that
         // dropped, a 502, 503 or 504 from whatever stands in front of it, a 500 from OpenSign
         // itself — leaves it unknown whether the signature was taken. The lock is about to be let
-        // go while OpenSign may still be writing: say so where every instance will see it, for as
-        // long as OpenSign could plausibly take. Only a refusal is certain: a 4xx answer.
+        // go while OpenSign may still be writing: say so where every instance will see it. Only a
+        // refusal is certain: a 4xx answer.
+        //
+        // For how long depends on what is known. A call that timed out was received and was still
+        // being worked on: four minutes, as long as OpenSign could plausibly take. The others most
+        // likely never arrived: thirty seconds. Either way the wait ends as soon as the document
+        // shows what happened — the signer signed (answered above, before this is looked at) or
+        // the PDF changed (the mark is cleared).
         const status = submitted.error?.httpStatus;
         const refused = typeof status === 'number' && status >= 400 && status < 500;
+        const doubtMs = submitted.error?.timedOut ? SIGN_IN_DOUBT_MS : SIGN_IN_DOUBT_SHORT_MS;
         if (!refused) {
           await this.store.setOpenSignWorkflowSignInDoubt(scenticFirmId, scenticSignatureWorkflowId, {
-            until: new Date(Date.now() + SIGN_IN_DOUBT_MS).toISOString(),
+            until: new Date(Date.now() + doubtMs).toISOString(),
             sha256: current.data.sha256,
           });
         }

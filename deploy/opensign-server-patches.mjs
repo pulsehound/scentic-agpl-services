@@ -98,11 +98,26 @@ export function applyServerPatches({ root = '/usr/src/app', filesDir = '/tmp/ope
       // The completed document reaches signers from Scentic, which attaches it when it can and sends
       // a link when it cannot. OpenSign could only attach, and its mail server refuses anything over
       // 10 MB, so a signer of a long agreement received nothing. Off unless SEND_COMPLETION_MAIL=true.
+      //
+      // And never for a document Scentic delivers every message of (its template is the marker, as
+      // for sendmailv3 and the decline notice below), whatever that setting says. This is the one
+      // mail OpenSign addresses to the document's SenderMail (a blind copy of the completed
+      // document), and the gateway now writes the sender's own address there for the certificate
+      // to print: an address put on a document to be printed must not start receiving mail.
       '  if (doc.IsSendMail === false) {\n    console.log("don\'t send mail");',
-      '  if (doc.IsSendMail === false || process.env.SEND_COMPLETION_MAIL !== \'true\') {\n    console.log("don\'t send mail");',
+      '  if (doc.IsSendMail === false || process.env.SEND_COMPLETION_MAIL !== \'true\' || String(doc?.RequestBody || \'\').includes(\'data-scentic-delivers\')) {\n    console.log("don\'t send mail");',
       'completion mail off',
     ],
   ]);
+  {
+    // The completion mail is sent from one place, and that place is behind the check above.
+    const pdf = readFileSync(PDF, 'utf8');
+    const guard = pdf.indexOf("|| String(doc?.RequestBody || '').includes('data-scentic-delivers')) {");
+    const call = pdf.indexOf('sendCompletedMail({');
+    if (guard === -1 || call === -1 || guard > call || count(pdf, 'sendCompletedMail({') !== 1) {
+      throw new Error(`${PDF}: the completion mail is not held back where Scentic delivers`);
+    }
+  }
 
   // The master key off the command line, and out of the log.
   //
@@ -447,7 +462,7 @@ export function applyServerPatches({ root = '/usr/src/app', filesDir = '/tmp/ope
     [
       "import { formatDateTime } from '../../../Utils.js';\n",
       "import { formatDateTime } from '../../../Utils.js';\n" +
-        "import { drawScenticEventHistory, drawScenticRelatedDocuments, scenticOrganization, scenticSignerName } from './scenticEventHistory.js';\n",
+        "import { drawScenticEventHistory, drawScenticRelatedDocuments, scenticLine, scenticOrganization, scenticSignerName } from './scenticEventHistory.js';\n",
       'certificate event history import',
     ],
     [
@@ -500,6 +515,20 @@ export function applyServerPatches({ root = '/usr/src/app', filesDir = '/tmp/ope
       "  const company = docDetails?.ExtUserPtr?.Company || '';\n",
       "  const company = scenticOrganization(docDetails, docDetails?.ExtUserPtr?.Company || '', timesRomanFont, width - 30 - 110);\n",
       'certificate organization',
+    ],
+  ]);
+
+  // The originator's name and address. Upstream draws both as they are stored, whatever their
+  // length; the address is now the sender's own (the document's SenderMail, written by the
+  // gateway) and the name the firm's own wording. Each is made drawable, put in reading order and
+  // kept inside the border.
+  edit(`${FN}/pdf/GenerateCertificate.js`, [
+    [
+      "  const ownerName = docDetails?.SenderName || docDetails.ExtUserPtr?.Name || 'n/a';\n" +
+        "  const ownerEmail = docDetails?.SenderMail || docDetails.ExtUserPtr?.Email || 'n/a';\n",
+      "  const ownerName = scenticLine(timesRomanFont, docDetails?.SenderName || docDetails.ExtUserPtr?.Name || 'n/a', 13, width - 30 - 105);\n" +
+        "  const ownerEmail = scenticLine(timesRomanFont, docDetails?.SenderMail || docDetails.ExtUserPtr?.Email || 'n/a', 13, width - 30 - 105);\n",
+      'certificate originator name and address',
     ],
   ]);
 

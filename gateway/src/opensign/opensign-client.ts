@@ -340,6 +340,12 @@ export class OpenSignClient {
      * which is this gateway and carries nobody's address; the field is written here instead.
      */
     originatorIp?: string;
+    /**
+     * The sender's own address, for the certificate's "Document originator … Email" (the
+     * document's SenderMail). Without it the generator prints the address of the account that owns
+     * the document, which is the platform's one account for every firm.
+     */
+    senderEmail?: string;
     /** OpenSign's own reminder mail every few days. Off where Scentic chases signers itself. */
     automaticReminders?: boolean;
     /**
@@ -402,6 +408,7 @@ export class OpenSignClient {
       ...(params.firmName ? { FirmName: params.firmName } : {}),
       ...(params.certificateFirmName || params.firmName ? { ScenticFirmName: params.certificateFirmName || params.firmName } : {}),
       ...(params.originatorIp ? { OriginIp: params.originatorIp } : {}),
+      ...(params.senderEmail ? { SenderMail: params.senderEmail } : {}),
       ...(params.scenticCeremony ? { ScenticCeremony: true } : {}),
     });
     return created;

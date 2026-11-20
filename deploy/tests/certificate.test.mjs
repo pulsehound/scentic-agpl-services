@@ -312,9 +312,13 @@ describe.skipIf(!hasVendor)(`the certificate, from the patched upstream generato
 
     const firm = await textOf(await generate(fixtureDoc(events(3), { ExtUserPtr: platform, ...from, ScenticFirmName: FIRM, FirmName: 'An older name' })));
     expect(organization(firm)).toBe(FIRM);
-    // Nowhere in the text of a firm's certificate: not the platform's company, not its name.
+    // Nowhere in the text of a firm's certificate: not the platform's company, not its name, not
+    // the address of the platform's account. The originator is the sender, by name and address.
     expect(firm.all).not.toContain(PLATFORM);
     expect(firm.all).not.toMatch(/scentic/i);
+    expect(firm.all).not.toContain('admin@platform.example');
+    expect(firm.all).not.toMatch(/platform/i);
+    expect(firm.all.replace(/\s+/g, ' ')).toContain('Document originator Name : Dana Levi Email : dana@cohenlevi.example IP address :');
     expect(outside(firm)).toEqual([]);
 
     // A document made before ScenticFirmName existed carries the firm as FirmName.
@@ -334,6 +338,31 @@ describe.skipIf(!hasVendor)(`the certificate, from the patched upstream generato
     const long = await textOf(await generate(fixtureDoc(undefined, { ExtUserPtr: platform, ScenticFirmName: 'Cohen, Levi, Mizrahi & Partners '.repeat(9) })));
     expect(organization(long)).toMatch(/^Cohen, Levi, Mizrahi & Partners Cohen.*\.\.\.$/);
     expect(outside(long)).toEqual([]);
+  });
+
+  it("the originator's address is the sender's own when the document has one; the owning account's only when it has none; neither line leaves the border", async () => {
+    const platform = { Name: 'Platform Admin', Email: 'admin@platform.example', Company: PLATFORM, Timezone: 'UTC', DateFormat: 'YYYY-MM-DD', Is12HourTime: false };
+    const originator = out => /Document originator Name : (.*?) Email : (.*?) IP address :/.exec(out.all.replace(/\s+/g, ' ')).slice(1);
+
+    const sent = await textOf(await generate(fixtureDoc(undefined, { ExtUserPtr: platform, SenderName: 'Dana Levi', SenderMail: 'dana.levi@cohenlevi.example' })));
+    expect(originator(sent)).toEqual(['Dana Levi', 'dana.levi@cohenlevi.example']);
+    expect(sent.all).not.toContain('admin@platform.example');
+    expect(sent.all).not.toContain('Platform Admin');
+
+    // A document made before the gateway wrote SenderMail: as OpenSign printed it.
+    const before = await textOf(await generate(fixtureDoc(undefined, { ExtUserPtr: platform, SenderName: 'Dana Levi' })));
+    expect(originator(before)).toEqual(['Dana Levi', 'admin@platform.example']);
+
+    // The longest address the gateway takes, and a long name: cut inside the border, not drawn across it.
+    const longest = `${'a'.repeat(64)}@${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(53)}.example`;
+    const long = await textOf(await generate(fixtureDoc(undefined, { ExtUserPtr: platform, SenderName: 'Dana Levi of Cohen and Levi '.repeat(8), SenderMail: longest })));
+    const [name, email] = originator(long);
+    expect(name).toMatch(/^Dana Levi of Cohen and Levi Dana.*\.\.\.$/);
+    expect(email).toMatch(/^a{64}@b+\.\.\.$/);
+    expect(outside(long)).toEqual([]);
+    // A Hebrew sender is drawn in reading order, like the signers.
+    const hebrew = await textOf(await generate(fixtureDoc(undefined, { ExtUserPtr: platform, SenderName: HEBREW_NAME, SenderMail: 'yaakov@cohenlevi.example' })));
+    expect(originator(hebrew)).toEqual([HEBREW_AS_DRAWN, 'yaakov@cohenlevi.example']);
   });
 
   it('documents in this request: absent, empty or not a list, the certificate is exactly the one it was', async () => {

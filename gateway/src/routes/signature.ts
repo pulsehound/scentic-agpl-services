@@ -98,6 +98,7 @@ export function createSignatureRouter(service: OpenSignService): Router {
         ceremony: b.ceremony === 'scentic' ? 'scentic' : 'hosted',
         originatorIp: b.originatorIp,
         firmName: b.firmName,
+        senderEmail: b.senderEmail,
       }, ctx?.correlationId ?? '');
       if (!result.success) return next(result.error);
       res.json({ ok: true, data: result.data });

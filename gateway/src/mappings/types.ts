@@ -305,4 +305,6 @@ export interface CreateOpenSignWorkflowParams {
    * name the firm was set up with is printed. Unchecked here, like originatorIp.
    */
   firmName?: unknown;
+  /** The sender's own email address, for the certificate's originator block. Unchecked here. */
+  senderEmail?: unknown;
 }

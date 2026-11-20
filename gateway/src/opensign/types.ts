@@ -45,6 +45,8 @@ export interface OpenSignDocument {
   ScenticFirmName?: string;
   /** The address the request was made from: the certificate's "Document originator". */
   OriginIp?: string;
+  /** The sender's own address: the certificate's "Document originator … Email". */
+  SenderMail?: string;
   /**
    * Who sent it. Present on the document OpenSign returns, and the correct
    * source for a later reminder — a reminder should come from whoever sent the

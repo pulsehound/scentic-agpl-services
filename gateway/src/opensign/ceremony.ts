@@ -255,6 +255,24 @@ export function withSignerName(existing: unknown, email: string, name: string): 
 }
 
 export const MAX_FIRM_NAME = 200;
+export const MAX_SENDER_EMAIL = 254;
+
+/**
+ * The address of the person who sent the request, for the certificate's originator block: one
+ * address in the plain form mail systems accept (letters, digits and the usual punctuation before
+ * the @, a dotted host name after it), at most 254 characters, lowercased. Nothing given is ''.
+ * It is printed, never written to: no name part, no brackets, no list.
+ */
+export function checkSenderEmail(value: unknown): Checked<string> {
+  if (value === undefined || value === null || value === '') return { ok: true, value: '' };
+  if (typeof value !== 'string') return bad('senderEmail', 'not an email address');
+  const email = value.trim().toLowerCase();
+  if (email === '') return { ok: true, value: '' };
+  if (email.length > MAX_SENDER_EMAIL || !/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(email)) {
+    return bad('senderEmail', 'not an email address');
+  }
+  return { ok: true, value: email };
+}
 
 /**
  * The sending firm's name as it should stand on the certificate, when create names one: plain text
