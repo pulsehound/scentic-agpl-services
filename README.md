@@ -96,7 +96,11 @@ docker build -f deploy/Dockerfile.opensign -t local/opensign:test .
 docker build -f deploy/Dockerfile.opensign-server -t local/opensign-server:test .
 ```
 
-Both default to base images in the project's registry; `--build-arg OPENSIGN_FONT_SOURCE=…` (page) and `--build-arg OPENSIGN_BASE=…` (server) name others.
+The signing page builds from public images only: upstream's page image and, for one file (the text font, `font/times.ttf`, checked by SHA-256), upstream's server image, both pinned by digest in `deploy/Dockerfile.opensign`. `--build-arg OPENSIGN_FONT_SOURCE=<any OpenSign server image>` names another source for that file; the checksum is checked whichever is used.
+
+The server's Dockerfile defaults to `…/scentic-agpl/opensign-server:patched-1` in the project's own registry, which others cannot pull. That image is upstream's `opensign/opensignserver:main` as published on 2026-06-30 with the first step of this same Dockerfile (the `saveFile.js` fix) already applied — the Dockerfile's steps before the patch script are written to be safe to run again — and nothing was done to it by hand: every modification is made by this Dockerfile and `deploy/opensign-server-patches.mjs` on top of whatever base is named. To build from public sources, build upstream's server image at the commit pinned in `docs/UPSTREAM_SOURCES.md` with upstream's own `apps/OpenSignServer/Dockerhubfile` (from the root of an upstream checkout with LF line endings: `docker build -f apps/OpenSignServer/Dockerhubfile -t local/opensign-server-upstream .`), then `docker build -f deploy/Dockerfile.opensign-server --build-arg OPENSIGN_BASE=local/opensign-server-upstream -t local/opensign-server:test .` here. That two-step route has not been run from this repository's test setup; what has been run is every server edit against the pinned source (`pnpm test:patches`).
+
+Naming upstream's *current* published image (`--build-arg OPENSIGN_BASE=opensign/opensignserver:main`) does not build today: upstream has since changed the completion mail, and the build stops at that edit (`PDF.js: not found (completion mail body)`), as it is meant to. Moving to a newer upstream means bringing that edit up to date first.
 
 One gateway suite talks to a real PostgreSQL when told where one is, and is skipped otherwise: `CONTRACT_POSTGRES_URL=postgres://user:pass@host:port/db pnpm test:gateway` (an empty, throwaway database).
 

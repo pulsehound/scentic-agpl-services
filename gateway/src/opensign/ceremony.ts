@@ -12,6 +12,7 @@
 
 import { createHash } from 'node:crypto';
 import { isIP } from 'node:net';
+import { crc32, inflateSync } from 'node:zlib';
 
 /** One megabyte: a drawn or typed signature is a few kilobytes; a photograph of one is not this. */
 export const MAX_SIGNATURE_PNG_BYTES = 1024 * 1024;
@@ -23,6 +24,68 @@ export const MAX_DECLINE_REASON = 1000;
 export const DEFAULT_MAX_PDF_BYTES = 45 * 1024 * 1024;
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+/** A signature is a few hundred pixels across. Twice a wide phone's width is already generous. */
+export const MAX_SIGNATURE_WIDTH = 2400;
+export const MAX_SIGNATURE_HEIGHT = 1200;
+// Colour type → the bit depths the PNG specification allows it, and its samples per pixel.
+const PNG_COLOUR: Record<number, { depths: number[]; samples: number }> = {
+  0: { depths: [1, 2, 4, 8, 16], samples: 1 },
+  2: { depths: [8, 16], samples: 3 },
+  3: { depths: [1, 2, 4, 8], samples: 1 },
+  4: { depths: [8, 16], samples: 2 },
+  6: { depths: [8, 16], samples: 4 },
+};
+
+/**
+ * Why a PNG must not be handed to OpenSign, or null when it may.
+ *
+ * OpenSign draws the signature on the certificate with a decoder that inflates whatever the file
+ * holds. A megabyte of PNG can declare — or simply contain — gigabytes of pixels. So before it
+ * goes anywhere: the header must be a well-formed IHDR (13 bytes, its checksum right, dimensions
+ * above zero, a bit depth and colour type the specification pairs, no interlacing), the picture no
+ * larger than 2400 × 1200, and the image data must inflate to exactly the size that header
+ * implies, inflated here under that cap so a file that lies about its size is caught by the cap
+ * and not by running out of memory.
+ */
+export function pngProblem(bytes: Buffer): 'not a PNG' | 'not a valid PNG' | 'image too large' | null {
+  if (bytes.length < 8 || !bytes.subarray(0, 8).equals(PNG_MAGIC)) return 'not a PNG';
+  if (bytes.length < 33) return 'not a valid PNG';
+  if (bytes.readUInt32BE(8) !== 13 || bytes.subarray(12, 16).toString('latin1') !== 'IHDR') return 'not a valid PNG';
+  if (bytes.readUInt32BE(29) !== crc32(bytes.subarray(12, 29))) return 'not a valid PNG';
+  const width = bytes.readUInt32BE(16);
+  const height = bytes.readUInt32BE(20);
+  const depth = bytes[24]!;
+  const colour = PNG_COLOUR[bytes[25]!];
+  if (width === 0 || height === 0) return 'not a valid PNG';
+  if (!colour || !colour.depths.includes(depth)) return 'not a valid PNG';
+  // Compression and filter methods have one value each; interlaced pictures are not taken (a
+  // drawn or typed signature never is one, and their size is not the simple product below).
+  if (bytes[26] !== 0 || bytes[27] !== 0 || bytes[28] !== 0) return 'not a valid PNG';
+  if (width > MAX_SIGNATURE_WIDTH || height > MAX_SIGNATURE_HEIGHT) return 'image too large';
+
+  // The chunks after the header: every IDAT, in order, up to IEND.
+  const data: Buffer[] = [];
+  let offset = 33;
+  let ended = false;
+  while (offset + 12 <= bytes.length) {
+    const length = bytes.readUInt32BE(offset);
+    const type = bytes.subarray(offset + 4, offset + 8).toString('latin1');
+    if (offset + 12 + length > bytes.length) return 'not a valid PNG';
+    if (type === 'IDAT') data.push(bytes.subarray(offset + 8, offset + 8 + length));
+    if (type === 'IEND') { ended = true; break; }
+    offset += 12 + length;
+  }
+  if (!ended || data.length === 0) return 'not a valid PNG';
+  // One filter byte, then the row's samples, for every row.
+  const expected = (Math.ceil((width * colour.samples * depth) / 8) + 1) * height;
+  try {
+    // maxOutputLength: inflating stops, and throws, one byte past what the header promised.
+    if (inflateSync(Buffer.concat(data), { maxOutputLength: expected }).length !== expected) return 'not a valid PNG';
+  } catch (err) {
+    return (err as { code?: string }).code === 'ERR_BUFFER_TOO_LARGE' ? 'image too large' : 'not a valid PNG';
+  }
+  return null;
+}
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 
 export type Checked<T> = { ok: true; value: T } | { ok: false; field: string; issue: string };
@@ -67,7 +130,8 @@ export function checkPdfBase64(value: unknown, maxBytes: number): Checked<Buffer
 }
 
 /**
- * The signature image: base64 of a PNG under a megabyte. A `data:image/png;base64,` prefix is
+ * The signature image: base64 of a well-formed PNG under a megabyte and no larger than 2400 × 1200
+ * pixels (pngProblem). A `data:image/png;base64,` prefix is
  * accepted and dropped; what is returned is the bare base64 OpenSign stores and later draws on the
  * certificate.
  */
@@ -75,7 +139,8 @@ export function checkSignaturePng(value: unknown): Checked<string> {
   const raw = typeof value === 'string' ? value.replace(/^data:image\/png;base64,/, '') : value;
   const decoded = decodeBase64(raw, 'signaturePngBase64', MAX_SIGNATURE_PNG_BYTES);
   if (!decoded.ok) return decoded;
-  if (!decoded.value.subarray(0, 8).equals(PNG_MAGIC)) return bad('signaturePngBase64', 'not a PNG');
+  const problem = pngProblem(decoded.value);
+  if (problem) return bad('signaturePngBase64', problem);
   return { ok: true, value: raw as string };
 }
 

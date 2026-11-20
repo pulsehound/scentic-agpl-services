@@ -9,6 +9,8 @@
  */
 
 import { createHash } from 'node:crypto';
+import { crc32, deflateSync } from 'node:zlib';
+import { WorkflowLockBusy } from '../mappings/mapping-store.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -28,6 +30,7 @@ import {
   checkIpAddress,
   checkPdfBase64,
   checkSignaturePng,
+  pngProblem,
   maxPdfBytesFromJsonLimit,
   plainText,
 } from '../opensign/ceremony.js';
@@ -42,7 +45,32 @@ const BOB = 'bob@example.com';
 const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const pdf = (label: string) => Buffer.from(`%PDF-1.7\n% ${label}\n%%EOF\n`, 'latin1');
 const ORIGINAL = pdf('original');
-const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64, 7)]);
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const chunk = (type: string, data: Buffer) => {
+  const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+  const out = Buffer.alloc(8 + data.length + 4);
+  out.writeUInt32BE(data.length, 0);
+  body.copy(out, 4);
+  out.writeUInt32BE(crc32(body), 8 + data.length);
+  return out;
+};
+/** A real PNG of that size (blank), or one made wrong in a named way. */
+function makePng(width: number, height: number, o: { depth?: number; colour?: number; interlace?: number; ihdrLength?: number; badCrc?: boolean; pixels?: Buffer; noData?: boolean; noEnd?: boolean } = {}) {
+  const depth = o.depth ?? 8;
+  const colour = o.colour ?? 6;
+  const ihdr = Buffer.alloc(o.ihdrLength ?? 13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = depth;
+  ihdr[9] = colour;
+  ihdr[12] = o.interlace ?? 0;
+  const samples = ({ 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 } as Record<number, number>)[colour] ?? 4;
+  const pixels = o.pixels ?? Buffer.alloc((Math.ceil((width * samples * depth) / 8) + 1) * height);
+  const header = chunk('IHDR', ihdr);
+  if (o.badCrc) header[header.length - 1] ^= 0xff;
+  return Buffer.concat([PNG_MAGIC, header, ...(o.noData ? [] : [chunk('IDAT', deflateSync(pixels))]), ...(o.noEnd ? [] : [chunk('IEND', Buffer.alloc(0))])]);
+}
+const PNG = makePng(300, 100);
 const PNG_B64 = PNG.toString('base64');
 
 interface Harness extends TestApp {
@@ -50,7 +78,7 @@ interface Harness extends TestApp {
   logs: string[];
 }
 
-function harness(): Harness {
+function harness(timeouts?: { signMs?: number; otherMs?: number }): Harness {
   const parse = makeFakeParse();
   vi.stubGlobal('fetch', parse.fetch);
   const logs: string[] = [];
@@ -65,6 +93,7 @@ function harness(): Harness {
     masterKey: 'test-master-key',
     adminEmail: 'admin@opensign.test',
     adminPassword: 'test-password',
+    timeouts,
   });
   const t = makeApp({ opensignClient: client as unknown as MockOpenSignClient });
   return { ...t, parse, logs };
@@ -653,14 +682,26 @@ describe("the signer's own name, and OpenSign's page kept out of a ceremony Scen
     expect(h.parse.doc().ScenticSignerNames).toEqual([{ email: ALICE, name: 'Alice Example' }]);
   });
 
-  it('on a hosted workflow signerName may be left out, and is stored when given', async () => {
+  it('the ceremony routes are for requests Scentic hosts: on a hosted workflow all four are refused, and nothing reaches the document', async () => {
     await createWorkflow(h, { ceremony: 'hosted', sendInOrder: false });
-    const one = pdf('alice');
-    const without = await ceremony(h, 'sign', signBody(ALICE, one, ORIGINAL, { signerName: undefined }));
-    expect(without.status).toBe(200);
-    expect(h.parse.doc().ScenticSignerNames).toBeUndefined();
-    expect((await ceremony(h, 'sign', signBody(BOB, pdf('both'), one, { signerName: 'Bob Example' }))).status).toBe(200);
-    expect(h.parse.doc().ScenticSignerNames).toEqual([{ email: BOB, name: 'Bob Example' }]);
+    const before = h.parse.calls.length;
+    const file = await signedRequest(h.app, { method: 'GET', path: `/api/v1/firms/${FIRM1}/signature/workflows/${WF}/ceremony/file`, firmId: FIRM1 });
+    const answers = [
+      file,
+      await ceremony(h, 'viewed', { email: ALICE, ipAddress: '' }),
+      await ceremony(h, 'sign', signBody(ALICE, pdf('a'), ORIGINAL)),
+      await ceremony(h, 'decline', { email: ALICE, reason: 'No.', ipAddress: '' }),
+    ];
+    for (const res of answers) {
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatchObject({ code: 'INVALID_STATE', retryable: false });
+      expect(res.body.error.message).toContain('not a Scentic-hosted request');
+    }
+    expect(h.parse.calls.length).toBe(before);
+    expect(h.parse.doc().AuditTrail).toEqual([]);
+    // The routes that are for every request still answer.
+    const status = await signedRequest(h.app, { method: 'GET', path: `/api/v1/firms/${FIRM1}/signature/workflows/${WF}`, firmId: FIRM1 });
+    expect(status.body.data).toMatchObject({ ceremony: 'hosted', status: 'DRAFT' });
   });
 
   it("a scentic-ceremony document is marked, and no signer's account can open it; a hosted one is as it was", async () => {
@@ -929,6 +970,335 @@ describe.skipIf(!POSTGRES_URL)('the stored mapping remembers the ceremony (Postg
       await store.close();
       await raw.end();
     }
+  });
+});
+
+describe('review round: retries, the lock across instances, time limits, the picture, the date', () => {
+  let h: Harness;
+  beforeEach(() => { h = harness(); });
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+  // ── R1 ──
+  it("the last signer's retry after a lost answer hears ALREADY_SIGNED, not that the document is closed", async () => {
+    await createWorkflow(h);
+    const one = pdf('alice');
+    const two = pdf('alice+bob');
+    expect((await ceremony(h, 'sign', signBody(ALICE, one, ORIGINAL))).status).toBe(200);
+    const last = await ceremony(h, 'sign', signBody(BOB, two, one));
+    expect(last.body.data.completed).toBe(true);
+    // The same submission again, as a caller that never saw the answer would send it.
+    for (const email of [BOB, ALICE]) {
+      const again = await ceremony(h, 'sign', signBody(email, two, one));
+      expect(again.status, email).toBe(409);
+      expect(again.body.error, email).toMatchObject({ code: 'ALREADY_SIGNED', retryable: false });
+    }
+    expect(callsTo(h, 'signPdf')).toHaveLength(2);
+    // Somebody who never signed is still told the document is closed.
+    const stranger = await ceremony(h, 'sign', signBody('mallory@example.com', two, one));
+    expect(stranger.body.error.code).toBe('INVALID_STATE');
+  });
+
+  it('a signer who signed, on a document then declined by another: ALREADY_SIGNED for them, to sign or to decline; the decliner asking again is still answered yes', async () => {
+    await createWorkflow(h);
+    expect((await ceremony(h, 'sign', signBody(ALICE, pdf('alice'), ORIGINAL))).status).toBe(200);
+    expect((await ceremony(h, 'decline', { email: BOB, reason: 'No.', ipAddress: '' })).status).toBe(200);
+    expect((await ceremony(h, 'sign', signBody(ALICE, pdf('x'), ORIGINAL))).body.error.code).toBe('ALREADY_SIGNED');
+    expect((await ceremony(h, 'decline', { email: ALICE, reason: 'Late.', ipAddress: '' })).body.error.code).toBe('ALREADY_SIGNED');
+    expect((await ceremony(h, 'decline', { email: BOB, reason: 'No.', ipAddress: '' })).status).toBe(200);
+    expect(callsTo(h, 'declinedoc')).toHaveLength(1);
+  });
+
+  // ── R2 ──
+  it("every submission runs inside the store's lock for its workflow, and only one at a time", async () => {
+    await createWorkflow(h);
+    const keys: string[] = [];
+    let inside = 0;
+    let most = 0;
+    const real = h.store.withWorkflowLock.bind(h.store);
+    h.store.withWorkflowLock = async (key, fn, options) => {
+      keys.push(key);
+      inside++;
+      most = Math.max(most, inside);
+      try { return await real(key, fn, options); } finally { inside--; }
+    };
+    h.parse.signDelayMs = 30;
+    await Promise.all([
+      ceremony(h, 'sign', signBody(ALICE, pdf('a'), ORIGINAL)),
+      ceremony(h, 'viewed', { email: BOB, ipAddress: '' }),
+      ceremony(h, 'decline', { email: 'mallory@example.com', reason: 'No.', ipAddress: '' }),
+    ]);
+    expect(keys).toEqual([`${FIRM1}:${WF}`, `${FIRM1}:${WF}`, `${FIRM1}:${WF}`]);
+    expect(most).toBe(1);
+  });
+
+  it('when another instance holds the lock too long the answer is a retryable 409 BUSY, and nothing was read or written', async () => {
+    await createWorkflow(h);
+    const before = h.parse.calls.length;
+    h.store.withWorkflowLock = async () => { throw new WorkflowLockBusy(); };
+    for (const res of [
+      await ceremony(h, 'sign', signBody(ALICE, pdf('a'), ORIGINAL)),
+      await ceremony(h, 'viewed', { email: ALICE, ipAddress: '' }),
+      await ceremony(h, 'decline', { email: ALICE, reason: 'No.', ipAddress: '' }),
+    ]) {
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatchObject({ code: 'BUSY', retryable: true });
+    }
+    expect(h.parse.calls.length).toBe(before);
+    // Any other failure of the store is not dressed up as busy.
+    h.store.withWorkflowLock = async () => { throw new Error('database gone'); };
+    expect((await ceremony(h, 'sign', signBody(ALICE, pdf('a'), ORIGINAL))).status).toBe(500);
+  });
+
+  it('an OpenSign that never answers is given up on: a retryable upstream error, and the lock is free for the next call', async () => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    h = harness({ signMs: 60, otherMs: 40 });
+    await createWorkflow(h);
+    for (const [fn, action, body] of [
+      ['signPdf', 'sign', signBody(ALICE, pdf('a'), ORIGINAL)],
+      ['triggerevent', 'viewed', { email: ALICE, ipAddress: '' }],
+      ['declinedoc', 'decline', { email: BOB, reason: 'No.', ipAddress: '' }],
+    ] as const) {
+      h.parse.hang = fn;
+      const started = Date.now();
+      const res = await ceremony(h, action, body);
+      expect(res.status, fn).toBe(502);
+      expect(res.body.error, fn).toMatchObject({ code: 'UPSTREAM_ERROR', retryable: true });
+      expect(Date.now() - started, fn).toBeLessThan(2000);
+    }
+    h.parse.hang = null;
+    expect((await ceremony(h, 'sign', signBody(ALICE, pdf('a'), ORIGINAL))).status).toBe(200);
+  });
+
+  // ── R3 ──
+  it('a signature picture is refused unless it is a sound PNG no larger than 2400 × 1200, before anything reaches OpenSign', async () => {
+    await createWorkflow(h);
+    const cases: Array<[string, Buffer, string]> = [
+      ['too wide', makePng(2401, 10), 'image too large'],
+      ['too tall', makePng(10, 1201), 'image too large'],
+      ['enormous', makePng(60000, 60000, { pixels: Buffer.alloc(16) }), 'image too large'],
+      ['header of the wrong length', makePng(10, 10, { ihdrLength: 14 }), 'not a valid PNG'],
+      ['no width', makePng(0, 10, { pixels: Buffer.alloc(10) }), 'not a valid PNG'],
+      ['no height', makePng(10, 0, { pixels: Buffer.alloc(10) }), 'not a valid PNG'],
+      ['a bit depth PNG does not have', makePng(10, 10, { depth: 3 }), 'not a valid PNG'],
+      ['a depth its colour type does not allow', makePng(10, 10, { colour: 2, depth: 4 }), 'not a valid PNG'],
+      ['a colour type PNG does not have', makePng(10, 10, { colour: 5 }), 'not a valid PNG'],
+      ['a header whose checksum is wrong', makePng(10, 10, { badCrc: true }), 'not a valid PNG'],
+      ['interlaced', makePng(10, 10, { interlace: 1 }), 'not a valid PNG'],
+      ['no picture data', makePng(10, 10, { noData: true }), 'not a valid PNG'],
+      ['no end', makePng(10, 10, { noEnd: true }), 'not a valid PNG'],
+      ['cut short', makePng(10, 10).subarray(0, 40), 'not a valid PNG'],
+      ['only the first bytes of one', PNG_MAGIC, 'not a valid PNG'],
+      // Says ten by ten; holds five megabytes. The cap on inflating catches it, not memory.
+      ['more picture than it says', makePng(10, 10, { pixels: Buffer.alloc(5 * 1024 * 1024) }), 'image too large'],
+      ['less picture than it says', makePng(10, 10, { pixels: Buffer.alloc(7) }), 'not a valid PNG'],
+    ];
+    for (const [what, bytes, issue] of cases) {
+      expect(bytes.length, what).toBeLessThan(1024 * 1024);
+      const res = await ceremony(h, 'sign', signBody(ALICE, pdf('a'), ORIGINAL, { signaturePngBase64: bytes.toString('base64') }));
+      expect(res.status, what).toBe(400);
+      expect(res.body.error.code, what).toBe('INVALID_INPUT');
+      expect(res.body.error.details[0], what).toMatchObject({ field: 'signaturePngBase64', issue });
+    }
+    expect(callsTo(h, 'signPdf')).toHaveLength(0);
+    expect(h.parse.doc().ScenticSignerNames).toBeUndefined();
+  });
+
+  it('sound pictures of every kind PNG has are taken, at the largest size allowed', async () => {
+    for (const [colour, depth] of [[0, 1], [0, 16], [2, 8], [3, 4], [4, 8], [6, 8], [6, 16]] as const) {
+      expect(pngProblem(makePng(64, 32, { colour, depth })), `${colour}/${depth}`).toBeNull();
+    }
+    expect(pngProblem(makePng(2400, 1200, { colour: 0, depth: 1 }))).toBeNull();
+    await createWorkflow(h);
+    const res = await ceremony(h, 'sign', signBody(ALICE, pdf('a'), ORIGINAL, { signaturePngBase64: makePng(2400, 1200, { colour: 0, depth: 1 }).toString('base64') }));
+    expect(res.status).toBe(200);
+  });
+
+  // ── R5 ──
+  const expiry = (hh: Harness, expiresAt: unknown, workflowId = WF, firmId = FIRM1, signedAs = firmId) =>
+    signedRequest(hh.app, { method: 'POST', path: `/api/v1/firms/${firmId}/signature/workflows/${workflowId}/expiry`, bodyObj: { expiresAt }, firmId: signedAs, idempotencyKey: `e-${Math.random()}` });
+  const inDays = (n: number) => new Date(Date.now() + n * 86_400_000).toISOString();
+  const statusOf = (hh: Harness) => signedRequest(hh.app, { method: 'GET', path: `/api/v1/firms/${FIRM1}/signature/workflows/${WF}`, firmId: FIRM1 });
+
+  it("expiry: sets the date OpenSign reads, with the master key, and the status reports it — for either ceremony", async () => {
+    for (const ceremonyKind of ['scentic', 'hosted']) {
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+      h = harness();
+      await createWorkflow(h, { ceremony: ceremonyKind });
+      const when = inDays(40);
+      const res = await expiry(h, when);
+      expect(res.status, ceremonyKind).toBe(200);
+      expect(res.body).toEqual({ ok: true, data: { expiresAt: when } });
+      const put = h.parse.calls.filter((c) => c.method === 'PUT' && c.body && 'ExpiryDate' in c.body);
+      expect(put).toHaveLength(1);
+      expect(put[0]!.body).toEqual({ ExpiryDate: { __type: 'Date', iso: when } });
+      expect(put[0]!.headers['x-parse-master-key']).toBe('test-master-key');
+      expect((await statusOf(h)).body.data.expiresAt).toBe(when);
+    }
+  });
+
+  it('expiry: a time with an offset is stored in UTC', async () => {
+    await createWorkflow(h);
+    const local = new Date(Date.now() + 10 * 86_400_000);
+    local.setUTCMilliseconds(0);
+    const withOffset = new Date(local.getTime() + 2 * 3_600_000).toISOString().replace('.000Z', '+02:00');
+    const res = await expiry(h, withOffset);
+    expect(res.status).toBe(200);
+    expect(res.body.data.expiresAt).toBe(local.toISOString());
+  });
+
+  it('expiry: a request that has lapsed but is otherwise still out is given more time, and can then be signed', async () => {
+    await createWorkflow(h);
+    h.parse.doc().ExpiryDate = { __type: 'Date', iso: new Date(Date.now() - 86_400_000).toISOString() };
+    expect((await statusOf(h)).body.data.status).toBe('EXPIRED');
+    expect((await ceremony(h, 'sign', signBody(ALICE, pdf('a'), ORIGINAL))).body.error.code).toBe('INVALID_STATE');
+    // Lapsed, polling had stopped looking at it.
+    expect((await h.store.getOpenSignWorkflowMapping(FIRM1, WF))!.opensignStatus).toBe('EXPIRED');
+
+    expect((await expiry(h, inDays(7))).status).toBe(200);
+    expect((await h.store.getOpenSignWorkflowMapping(FIRM1, WF))!.opensignStatus).toBe('DRAFT');
+    expect((await statusOf(h)).body.data.status).toBe('DRAFT');
+    expect((await ceremony(h, 'sign', signBody(ALICE, pdf('a'), ORIGINAL))).status).toBe(200);
+    const poll = await signedRequest(h.app, { method: 'POST', path: `/api/v1/firms/${FIRM1}/signature/workflows/${WF}/poll`, firmId: FIRM1, idempotencyKey: 'pe' });
+    expect(poll.body.data).toMatchObject({ status: 'IN_PROGRESS', changed: true });
+  });
+
+  it('expiry: not in the past, not more than 365 days out, not anything but a full date and time', async () => {
+    await createWorkflow(h);
+    for (const [value, issue] of [
+      [undefined, 'not an ISO 8601 date and time with a time zone'],
+      [1893456000000, 'not an ISO 8601 date and time with a time zone'],
+      ['next friday', 'not an ISO 8601 date and time with a time zone'],
+      ['2027-01-01', 'not an ISO 8601 date and time with a time zone'],
+      ['2027-01-01T10:00:00', 'not an ISO 8601 date and time with a time zone'],
+      ['2027-13-45T10:00:00Z', 'not a date'],
+      [new Date(Date.now() - 1000).toISOString(), 'must be in the future'],
+      [inDays(366), 'at most 365 days from now'],
+    ] as const) {
+      const res = await expiry(h, value);
+      expect(res.status, String(value)).toBe(400);
+      expect(res.body.error.code).toBe('INVALID_INPUT');
+      expect(res.body.error.details, String(value)).toEqual([{ field: 'expiresAt', issue }]);
+    }
+    expect((await expiry(h, inDays(364))).status).toBe(200);
+    expect(h.parse.calls.filter((c) => c.method === 'PUT' && c.body && 'ExpiryDate' in c.body)).toHaveLength(1);
+  });
+
+  it('expiry: a request that is completed, declined or withdrawn cannot be given more time', async () => {
+    await createWorkflow(h);
+    expect((await ceremony(h, 'decline', { email: BOB, reason: 'No.', ipAddress: '' })).status).toBe(200);
+    const declined = await expiry(h, inDays(5));
+    expect(declined.status).toBe(409);
+    expect(declined.body.error).toMatchObject({ code: 'INVALID_STATE', retryable: false });
+
+    vi.unstubAllGlobals(); vi.restoreAllMocks(); h = harness();
+    await createWorkflow(h);
+    const one = pdf('a');
+    await ceremony(h, 'sign', signBody(ALICE, one, ORIGINAL));
+    await ceremony(h, 'sign', signBody(BOB, pdf('ab'), one));
+    expect((await expiry(h, inDays(5))).body.error.code).toBe('INVALID_STATE');
+
+    vi.unstubAllGlobals(); vi.restoreAllMocks(); h = harness();
+    await createWorkflow(h);
+    await signedRequest(h.app, { method: 'POST', path: `/api/v1/firms/${FIRM1}/signature/workflows/${WF}/cancel`, bodyObj: { reason: 'x' }, firmId: FIRM1, idempotencyKey: 'cx' });
+    expect((await expiry(h, inDays(5))).body.error.code).toBe('INVALID_STATE');
+    // Withdrawn in OpenSign without the gateway knowing.
+    vi.unstubAllGlobals(); vi.restoreAllMocks(); h = harness();
+    await createWorkflow(h);
+    h.parse.doc().IsArchive = true;
+    expect((await expiry(h, inDays(5))).body.error.code).toBe('INVALID_STATE');
+    expect(h.parse.calls.filter((c) => c.method === 'PUT' && c.body && 'ExpiryDate' in c.body)).toHaveLength(0);
+  });
+
+  it("expiry: another firm's workflow is not found, a mismatched firm is refused, an unknown workflow is not found", async () => {
+    await createWorkflow(h);
+    await h.opensignService!.initFirm({ scenticFirmId: FIRM2, firmName: 'Beta Law' }, 'corr');
+    expect((await expiry(h, inDays(5), WF, FIRM2)).status).toBe(404);
+    const mismatch = await expiry(h, inDays(5), WF, FIRM1, FIRM2);
+    expect(mismatch.status).toBe(403);
+    expect(mismatch.body.error.code).toBe('FIRM_SCOPE_VIOLATION');
+    expect((await expiry(h, inDays(5), 'nope')).status).toBe(404);
+    expect(h.parse.calls.filter((c) => c.method === 'PUT' && c.body && 'ExpiryDate' in c.body)).toHaveLength(0);
+    expect(SIGNATURE_CAPABILITIES.changeExpiry).toBe('supported');
+  });
+});
+
+// Two gateway instances are two stores on one database. Requires CONTRACT_POSTGRES_URL, as above.
+describe.skipIf(!POSTGRES_URL)('the workflow lock across instances (PostgreSQL; requires CONTRACT_POSTGRES_URL)', () => {
+  const stores: Array<{ close: () => Promise<void> }> = [];
+  const open = async () => {
+    const { PostgresMappingStore } = await import('../storage/postgres-store.js');
+    const store = new PostgresMappingStore(POSTGRES_URL!, 'disable');
+    stores.push(store);
+    return store;
+  };
+  afterEach(async () => { while (stores.length) await stores.pop()!.close(); });
+  const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it('two calls for one workflow through two instances run one after the other; another workflow does not wait', async () => {
+    const [a, b] = [await open(), await open()];
+    const order: string[] = [];
+    const task = (name: string, ms: number) => async () => { order.push(`${name}:in`); await pause(ms); order.push(`${name}:out`); return name; };
+    const first = a.withWorkflowLock('firm:wf-lock', task('a', 400));
+    await pause(100);
+    const results = await Promise.all([first, b.withWorkflowLock('firm:wf-lock', task('b', 10)), b.withWorkflowLock('firm:wf-other', task('c', 10))]);
+    expect(results).toEqual(['a', 'b', 'c']);
+    expect(order.indexOf('a:out')).toBeLessThan(order.indexOf('b:in'));
+    expect(order.indexOf('c:out')).toBeLessThan(order.indexOf('a:out'));
+  });
+
+  it('a holder that throws releases the lock, and its error is the one thrown', async () => {
+    const [a, b] = [await open(), await open()];
+    await expect(a.withWorkflowLock('firm:wf-throw', async () => { throw new Error('holder failed'); })).rejects.toThrow('holder failed');
+    const started = Date.now();
+    await expect(b.withWorkflowLock('firm:wf-throw', async () => 'free', { waitMs: 2000 })).resolves.toBe('free');
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it('a lock not free within the wait is WorkflowLockBusy; the task did not run; the holder is undisturbed', async () => {
+    const [a, b] = [await open(), await open()];
+    let ran = false;
+    const holder = a.withWorkflowLock('firm:wf-busy', async () => { await pause(1200); return 'held'; });
+    await pause(100);
+    const started = Date.now();
+    await expect(b.withWorkflowLock('firm:wf-busy', async () => { ran = true; }, { waitMs: 400 })).rejects.toBeInstanceOf(WorkflowLockBusy);
+    expect(ran).toBe(false);
+    expect(Date.now() - started).toBeLessThan(1000);
+    await expect(holder).resolves.toBe('held');
+    await expect(b.withWorkflowLock('firm:wf-busy', async () => 'after', { waitMs: 400 })).resolves.toBe('after');
+  });
+
+  it("a holder whose connection is lost holds nothing: the lock goes with it, at once, and the process carries on", async () => {
+    const [a, b] = [await open(), await open()];
+    const pg = await import('pg');
+    const raw = new pg.default.Pool({ connectionString: POSTGRES_URL });
+    try {
+      let finished = false;
+      const holder = a.withWorkflowLock('firm:wf-crash', async () => { await pause(1500); finished = true; return 'done'; });
+      await pause(150);
+      // What a crashed instance looks like from the database: its session ends.
+      const killed = await raw.query("SELECT pg_terminate_backend(pid) AS ok FROM pg_locks WHERE locktype = 'advisory' AND granted");
+      expect(killed.rows).toHaveLength(1);
+      const started = Date.now();
+      await expect(b.withWorkflowLock('firm:wf-crash', async () => 'taken', { waitMs: 3000 })).resolves.toBe('taken');
+      expect(Date.now() - started).toBeLessThan(800);
+      expect(finished).toBe(false);
+      // The holder's own task is not interrupted, and its broken connection is thrown away, not reused.
+      await expect(holder).resolves.toBe('done');
+      await expect(a.withWorkflowLock('firm:wf-crash', async () => 'again', { waitMs: 3000 })).resolves.toBe('again');
+    } finally { await raw.end(); }
+  });
+
+  it('after many uses no lock is left behind in the database', async () => {
+    const a = await open();
+    await Promise.all(Array.from({ length: 20 }, (_, i) => a.withWorkflowLock(`firm:wf-many-${i % 4}`, async () => i)));
+    const pg = await import('pg');
+    const raw = new pg.default.Pool({ connectionString: POSTGRES_URL });
+    try {
+      const held = await raw.query("SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory'");
+      expect(held.rows[0].n).toBe(0);
+    } finally { await raw.end(); }
   });
 });
 

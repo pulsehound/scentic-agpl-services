@@ -51,6 +51,8 @@ export interface FakeParse {
   failNext: (fn: string, status: number, body: Record<string, unknown>) => void;
   /** How long signPdf takes: long enough for a second request to arrive meanwhile. */
   signDelayMs: number;
+  /** A cloud function that never answers, until the caller gives up on it. */
+  hang: string | null;
 }
 
 const BASE = 'http://localhost:8080/app';
@@ -83,6 +85,7 @@ export function makeFakeParse(): FakeParse {
     maxConcurrentSigns: () => maxSigning,
     failNext: (fn, status, body) => { failures.set(fn, { status, body }); },
     signDelayMs: 0,
+    hang: null,
     fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = (init?.method ?? 'GET').toUpperCase();
@@ -140,6 +143,11 @@ export function makeFakeParse(): FakeParse {
         const params = body ?? {};
         if (params.docId !== undefined) use(params.docId);
         else if ((params.body as { objectId?: unknown } | undefined)?.objectId !== undefined) use((params.body as { objectId: unknown }).objectId);
+        if (self.hang === fn) {
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(new DOMException('The operation timed out.', 'TimeoutError')));
+          });
+        }
         const failure = failures.get(fn);
         if (failure) {
           failures.delete(fn);

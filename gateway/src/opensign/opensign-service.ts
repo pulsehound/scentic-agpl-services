@@ -18,7 +18,7 @@ import { signingMail, signingUrlFor, SCENTIC_DELIVERS_TEMPLATE } from './opensig
 import { createHash as hashOf } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import type { DocumentAcl, OpenSignClient } from './opensign-client.js';
-import type { MappingStore } from '../mappings/mapping-store.js';
+import { WorkflowLockBusy, type MappingStore } from '../mappings/mapping-store.js';
 import type { EventOutbox } from '../events/outbox.js';
 import type {
   OpenSignDocument,
@@ -64,6 +64,7 @@ import {
   staleDocument,
   payloadTooLarge,
   forbidden,
+  busy,
   type GatewayError,
 } from '../http/errors.js';
 
@@ -953,6 +954,35 @@ export class OpenSignService {
   /** One submission at a time per workflow, in this process. See KeyedMutex for what that covers. */
   private ceremonyLocks = new KeyedMutex();
 
+  /**
+   * One at a time per workflow, on every instance. The in-process lock first, so calls landing on
+   * one instance queue here without each taking a database connection; then the store's lock,
+   * which with PostgreSQL excludes the other instances too (MappingStore.withWorkflowLock). Held
+   * across the whole of read, compare, write and submit. If the store's lock is not free in time
+   * nothing has been done, and the caller is told to try again.
+   */
+  private async ceremonyLocked<T>(scenticFirmId: string, scenticSignatureWorkflowId: string, task: () => Promise<ServiceResult<T>>): Promise<ServiceResult<T>> {
+    const key = `${scenticFirmId}:${scenticSignatureWorkflowId}`;
+    return this.ceremonyLocks.run(key, async () => {
+      try {
+        return await this.store.withWorkflowLock(key, task);
+      } catch (err) {
+        if (err instanceof WorkflowLockBusy) {
+          return { success: false as const, error: busy('Another signature on this request is being recorded. Try again in a moment.') };
+        }
+        throw err;
+      }
+    });
+  }
+
+  /** Why nothing more may be done to this document, or null while it is still out. */
+  private ceremonyClosed(doc: OpenSignDocument): GatewayError | null {
+    const closed = closedReason(doc);
+    if (closed) return invalidState(closed.message);
+    if (deriveDocumentStatus(doc) === 'EXPIRED') return invalidState('This request has expired.');
+    return null;
+  }
+
   /** The workflow's document, read fresh, or why the ceremony cannot touch it. */
   private async ceremonyDocument(
     scenticFirmId: string,
@@ -965,6 +995,11 @@ export class OpenSignService {
     const mapping = await this.store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId);
     if (!mapping || mapping.status !== 'ACTIVE') {
       return { success: false, error: notFound('Workflow not found') };
+    }
+    // These routes are Scentic's own signing page talking; a request whose signers sign on
+    // OpenSign's page is not theirs to read or act on, whoever asks.
+    if (mapping.ceremony !== 'scentic') {
+      return { success: false, error: invalidState('This is not a Scentic-hosted request.') };
     }
     if (mapping.opensignStatus === 'VOIDED') {
       return { success: false, error: invalidState('This request was withdrawn.') };
@@ -980,11 +1015,8 @@ export class OpenSignService {
       return { success: false, error: invalidState('This request was withdrawn.') };
     }
     if (purpose === 'act') {
-      const closed = closedReason(doc);
-      if (closed) return { success: false, error: invalidState(closed.message) };
-      if (deriveDocumentStatus(doc) === 'EXPIRED') {
-        return { success: false, error: invalidState('This request has expired.') };
-      }
+      const closed = this.ceremonyClosed(doc);
+      if (closed) return { success: false, error: closed };
     }
     return { success: true, data: doc };
   }
@@ -1049,7 +1081,7 @@ export class OpenSignService {
     const ip = checkIpAddress(input.ipAddress);
     if (!ip.ok) return { success: false, error: invalidInput('Invalid request', [ip]) };
 
-    return this.ceremonyLocks.run(`${scenticFirmId}:${scenticSignatureWorkflowId}`, async () => {
+    return this.ceremonyLocked<{ viewed: true; recorded: boolean }>(scenticFirmId, scenticSignatureWorkflowId, async () => {
       const doc = await this.ceremonyDocument(scenticFirmId, scenticSignatureWorkflowId, 'act');
       if (!doc.success) return doc;
       const signer = await this.ceremonySigner(doc.data, email.value);
@@ -1100,24 +1132,25 @@ export class OpenSignService {
     }
     const events = checkAuditEvents(input.auditEvents);
     if (!events.ok) return { success: false, error: invalidInput('Invalid request', [events]) };
-    // Shape first, so a malformed name is refused whatever the workflow; whether one is required
-    // depends on the workflow and is decided once it has been found.
-    const nameShape = checkSignerName(input.signerName, false);
-    if (!nameShape.ok) return { success: false, error: invalidInput('Invalid request', [nameShape]) };
+    // The signer confirms their own name, and it is required: the only other name there is
+    // belongs to a contact OpenSign shares across every firm.
+    const name = checkSignerName(input.signerName, true);
+    if (!name.ok) return { success: false, error: invalidInput('Invalid request', [name]) };
 
-    return this.ceremonyLocks.run(`${scenticFirmId}:${scenticSignatureWorkflowId}`, async () => {
-      const doc = await this.ceremonyDocument(scenticFirmId, scenticSignatureWorkflowId, 'act');
+    return this.ceremonyLocked(scenticFirmId, scenticSignatureWorkflowId, async () => {
+      const doc = await this.ceremonyDocument(scenticFirmId, scenticSignatureWorkflowId, 'read');
       if (!doc.success) return doc;
-      // Where Scentic hosts the ceremony the signer confirms their own name, and it is required:
-      // the only other name there is belongs to a contact OpenSign shares across every firm.
-      const mapping = await this.store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId);
-      const name = checkSignerName(input.signerName, mapping?.ceremony === 'scentic' || doc.data.ScenticCeremony === true);
-      if (!name.ok) return { success: false, error: invalidInput('Invalid request', [name]) };
-      const signer = await this.ceremonySigner(doc.data, email.value);
-      if (!signer.success) return signer;
-      if (signer.data.state === 'signed') {
+      // Whether this signer has signed is asked before whether the document is still open. The last
+      // signature completes the document: a signer whose answer was lost on the way back, and who
+      // asks again, must hear "you have signed" — not "the document is closed", which reads as
+      // though their signature had been refused.
+      if (signerRows(doc.data).find((row) => row.email === email.value)?.state === 'signed') {
         return { success: false, error: alreadySigned('That signer has already signed this document.') };
       }
+      const closed = this.ceremonyClosed(doc.data);
+      if (closed) return { success: false, error: closed };
+      const signer = await this.ceremonySigner(doc.data, email.value);
+      if (!signer.success) return signer;
 
       const current = await this.currentPdf(doc.data);
       if (!current.success) return current;
@@ -1191,20 +1224,21 @@ export class OpenSignService {
     const ip = checkIpAddress(input.ipAddress);
     if (!ip.ok) return { success: false, error: invalidInput('Invalid request', [ip]) };
 
-    return this.ceremonyLocks.run(`${scenticFirmId}:${scenticSignatureWorkflowId}`, async () => {
-      const read = await this.ceremonyDocument(scenticFirmId, scenticSignatureWorkflowId, 'read');
-      if (!read.success) return read;
+    return this.ceremonyLocked(scenticFirmId, scenticSignatureWorkflowId, async () => {
+      const doc = await this.ceremonyDocument(scenticFirmId, scenticSignatureWorkflowId, 'read');
+      if (!doc.success) return doc;
       // Asked twice by the same signer: it is declined, by them, already.
-      if (read.data.IsDeclined && declinedByEmail(read.data) === email.value) {
+      if (doc.data.IsDeclined && declinedByEmail(doc.data) === email.value) {
         return { success: true, data: { declined: true as const } };
       }
-      const doc = await this.ceremonyDocument(scenticFirmId, scenticSignatureWorkflowId, 'act');
-      if (!doc.success) return doc;
-      const signer = await this.ceremonySigner(doc.data, email.value);
-      if (!signer.success) return signer;
-      if (signer.data.state === 'signed') {
+      // What this signer has done comes before what state the document is in (see ceremonySign).
+      if (signerRows(doc.data).find((row) => row.email === email.value)?.state === 'signed') {
         return { success: false, error: alreadySigned('That signer has already signed this document.') };
       }
+      const closed = this.ceremonyClosed(doc.data);
+      if (closed) return { success: false, error: closed };
+      const signer = await this.ceremonySigner(doc.data, email.value);
+      if (!signer.success) return signer;
       const declined = await this.client.declineAsSigner({
         docId: doc.data.objectId,
         userId: signer.data.userId,
@@ -1368,6 +1402,77 @@ export class OpenSignService {
     });
 
     return { success: true, data: { clearedEmails: next.clearedEmails } };
+  }
+
+  // ── Change when a request lapses ──────────────────────────────────────
+
+  /**
+   * Give the signers until another date.
+   *
+   * OpenSign decides a document has expired from one field, `ExpiryDate`, which it sets once when
+   * the document is made (created + TimeToCompleteDays, in its after-save hook) and which its
+   * signing page and this service's own status compare with now. Nothing recomputes it later, so
+   * setting it is the whole change. TimeToCompleteDays is left alone: after creation it only
+   * paces OpenSign's own reminders, and its before-save hook refuses a value that would mean more
+   * than fifteen of them.
+   *
+   * A request that has already lapsed but is otherwise still out can be given more time; one that
+   * is completed, declined or withdrawn cannot.
+   */
+  async changeExpiry(
+    scenticFirmId: string,
+    scenticSignatureWorkflowId: string,
+    expiresAtInput: unknown,
+    correlationId: string,
+  ): Promise<ServiceResult<{ expiresAt: string }>> {
+    if (!this.config.enabled) {
+      return { success: false, error: notSupported('OpenSign is not enabled') };
+    }
+    const field = (issue: string) => ({ success: false as const, error: invalidInput('Invalid request', [{ field: 'expiresAt', issue }]) });
+    // A full date and time with its offset: "next Friday" in whose time zone is not ours to guess.
+    if (typeof expiresAtInput !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})$/.test(expiresAtInput.trim())) {
+      return field('not an ISO 8601 date and time with a time zone');
+    }
+    const when = new Date(expiresAtInput.trim());
+    if (Number.isNaN(when.getTime())) return field('not a date');
+    if (when.getTime() <= Date.now()) return field('must be in the future');
+    if (when.getTime() > Date.now() + 365 * 86_400_000) return field('at most 365 days from now');
+
+    const mapping = await this.store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId);
+    if (!mapping || mapping.status !== 'ACTIVE') {
+      return { success: false, error: notFound('Workflow not found') };
+    }
+    if (mapping.opensignStatus === 'VOIDED') {
+      return { success: false, error: invalidState('This request was withdrawn.') };
+    }
+    const docResult = await this.client.getDocument(mapping.opensignDocumentId);
+    if (!docResult.success || !docResult.data) {
+      return { success: false, error: wrapUpstreamError('OpenSign', 'getDocument', docResult.error) };
+    }
+    const doc = docResult.data;
+    if (!doc.objectId || doc.IsArchive) {
+      return { success: false, error: invalidState('This request was withdrawn.') };
+    }
+    const closed = closedReason(doc);
+    if (closed) return { success: false, error: invalidState(closed.message) };
+
+    const expiresAt = when.toISOString();
+    const saved = await this.client.updateDocument(doc.objectId, { ExpiryDate: { __type: 'Date', iso: expiresAt } });
+    if (!saved.success) return { success: false, error: wrapUpstreamError('OpenSign', 'updateDocument', saved.error) };
+
+    // A lapsed request was a finished one as far as polling goes; given more time, it is out again.
+    if (mapping.opensignStatus === 'EXPIRED') {
+      const status = deriveDocumentStatus({ ...doc, ExpiryDate: expiresAt });
+      await this.store.updateOpenSignWorkflowStatus(scenticFirmId, scenticSignatureWorkflowId, status);
+      await this.outbox.publish({
+        eventType: 'OPENSIGN_WORKFLOW_STATUS_CHANGED',
+        scenticFirmId,
+        correlationId,
+        payload: { scenticSignatureWorkflowId, opensignDocumentId: mapping.opensignDocumentId, oldStatus: 'EXPIRED', newStatus: status },
+        safeSummary: `Workflow ${scenticSignatureWorkflowId} status changed from EXPIRED to ${status}`,
+      });
+    }
+    return { success: true, data: { expiresAt } };
   }
 
   // ── Disable firm ──────────────────────────────────────────────────────

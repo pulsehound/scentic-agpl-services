@@ -14,7 +14,8 @@
  * - All queries use parameterized placeholders ($1, $2, ...) — no SQL injection
  */
 
-import { Pool, type QueryResult } from 'pg';
+import { Pool, type PoolClient, type QueryResult } from 'pg';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,7 +29,7 @@ import type {
   OpenSignWorkflowMapping, OpenSignSignerMapping,
   SyncOpenSignFirmParams, SyncOpenSignUserParams, CreateOpenSignWorkflowParams,
 } from '../mappings/types.js';
-import type { MappingStore } from '../mappings/mapping-store.js';
+import { WorkflowLockBusy, type MappingStore } from '../mappings/mapping-store.js';
 import type { NonceStore } from '../auth/hmac.js';
 import type { EventOutbox, OutboxEvent } from '../events/outbox.js';
 
@@ -57,6 +58,8 @@ function toJson(v: unknown): Record<string, unknown> {
 
 export class PostgresMappingStore implements MappingStore, NonceStore, EventOutbox {
   private pool: Pool;
+  /** Connections for workflow locks only: see withWorkflowLock. */
+  private lockPool: Pool;
   private maxAgeMs: number;
 
   constructor(connectionString: string, sslMode: string = 'disable', maxAgeMs: number = 300_000) {
@@ -67,6 +70,13 @@ export class PostgresMappingStore implements MappingStore, NonceStore, EventOutb
       connectionString,
       max: 10,
       ssl: ssl as Pool['options']['ssl'],
+    });
+    this.lockPool = new Pool({
+      connectionString,
+      max: 8,
+      ssl: ssl as Pool['options']['ssl'],
+      // A ninth caller waits for a connection no longer than it would have waited for the lock.
+      connectionTimeoutMillis: 25_000,
     });
     this.maxAgeMs = maxAgeMs;
   }
@@ -83,6 +93,7 @@ export class PostgresMappingStore implements MappingStore, NonceStore, EventOutb
 
   async close(): Promise<void> {
     await this.pool.end();
+    await this.lockPool.end();
   }
 
   // ── MappingStore: Firm ─────────────────────────────────────────────────
@@ -311,6 +322,72 @@ export class PostgresMappingStore implements MappingStore, NonceStore, EventOutb
   }
 
   // ── MappingStore: OpenSign Workflow ────────────────────────────────────
+  /**
+   * A session-level advisory lock, on a connection of its own.
+   *
+   * Session-level so that it spans everything the caller does while holding it (reads from
+   * OpenSign, a write, the signature itself) without holding a transaction open; on a connection
+   * from a pool kept for locks alone, so that waiting for or holding one never takes a connection
+   * the mappings need. A session lock dies with its connection: if this process stops, the server
+   * drops the connection and the lock with it. If anything about the connection is in doubt —
+   * a lock query failed, or the unlock did — the connection is destroyed rather than returned,
+   * which releases whatever it held.
+   *
+   * pg_try_advisory_lock, asked again every 150 ms: never a blocking wait, so the time a call is
+   * willing to wait is ours to enforce, and a caller that gives up holds nothing.
+   */
+  async withWorkflowLock<T>(key: string, fn: () => Promise<T>, options: { waitMs?: number } = {}): Promise<T> {
+    const waitMs = options.waitMs ?? 25_000;
+    const deadline = Date.now() + waitMs;
+    const digest = createHash('sha256').update(`scentic-workflow:${key}`).digest();
+    const keys = [digest.readInt32BE(0), digest.readInt32BE(4)];
+
+    let client: PoolClient;
+    try {
+      client = await this.lockPool.connect();
+    } catch {
+      // No connection to lock on within the pool's own wait: as busy as a lock held by another.
+      throw new WorkflowLockBusy();
+    }
+    let held = false;
+    let broken = false;
+    // A connection lost while it is checked out reports it as an event; unheard, that event would
+    // stop the process. Heard, it only marks the connection as one not to be used again — the lock
+    // went with it, which is the server's doing and the point of a session lock.
+    const lost = () => { broken = true; };
+    client.on('error', lost);
+    try {
+      for (;;) {
+        let got = false;
+        try {
+          got = (await client.query('SELECT pg_try_advisory_lock($1, $2) AS got', keys)).rows[0]?.got === true;
+        } catch (err) {
+          broken = true;
+          throw err;
+        }
+        if (got) {
+          held = true;
+          break;
+        }
+        if (Date.now() + 150 > deadline) throw new WorkflowLockBusy();
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+      return await fn();
+    } finally {
+      if (held && !broken) {
+        try {
+          const unlocked = (await client.query('SELECT pg_advisory_unlock($1, $2) AS ok', keys)).rows[0]?.ok === true;
+          if (!unlocked) broken = true;
+        } catch {
+          broken = true;
+        }
+      }
+      client.removeListener('error', lost);
+      // true: destroy the connection instead of returning it, and with it anything it still holds.
+      client.release(broken ? true : undefined);
+    }
+  }
+
   async getOpenSignWorkflowMapping(scenticFirmId: string, scenticSignatureWorkflowId: string): Promise<OpenSignWorkflowMapping | null> {
     const res = await this.pool.query(
       'SELECT * FROM opensign_workflow_mappings WHERE scentic_firm_id = $1 AND scentic_signature_workflow_id = $2',

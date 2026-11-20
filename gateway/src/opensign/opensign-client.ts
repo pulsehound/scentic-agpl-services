@@ -25,7 +25,16 @@ export interface OpenSignClientConfig {
   masterKey: string;
   adminEmail: string;
   adminPassword: string;
+  /**
+   * How long a call made for a signer may take before it is given up, in milliseconds. A
+   * submission is made while holding the request's lock; an OpenSign that never answers must not
+   * hold it for ever. signPdf seals and certifies on the last signature, hence its longer limit.
+   */
+  timeouts?: { signMs?: number; otherMs?: number };
 }
+
+const SIGN_TIMEOUT_MS = 170_000;
+const OTHER_TIMEOUT_MS = 30_000;
 
 export class OpenSignClient {
   private config: OpenSignClientConfig;
@@ -606,11 +615,17 @@ export class OpenSignClient {
 
   /** A cloud function called by the server itself, for a signer at that signer's address. */
   private async callFunctionFor<T>(name: string, params: Record<string, unknown>, ipAddress: string): Promise<OpenSignResult<T>> {
+    const timeoutMs = name === 'signPdf'
+      ? this.config.timeouts?.signMs ?? SIGN_TIMEOUT_MS
+      : this.config.timeouts?.otherMs ?? OTHER_TIMEOUT_MS;
     try {
       const resp = await fetch(`${this.config.baseUrl}/functions/${name}`, {
         method: 'POST',
         headers: { ...this.headers(true), 'X-Forwarded-For': forwardedFor(ipAddress) },
         body: JSON.stringify(params),
+        // Given up after this long, and reported like any other unreachable upstream (retryable).
+        // OpenSign may still finish what it was asked: a retry then finds the signer already signed.
+        signal: AbortSignal.timeout(timeoutMs),
       });
       if (!resp.ok) {
         // Parse answers a refused cloud function with { code, error }. The number is kept — it is

@@ -709,6 +709,7 @@ The routes in `gateway/src/routes/signature.ts`, which are the Scentic-facing si
 | `POST` | `.../workflows/:workflowId/ceremony/viewed` | §6.3.9.2 |
 | `POST` | `.../workflows/:workflowId/ceremony/sign` | §6.3.9.3 |
 | `POST` | `.../workflows/:workflowId/ceremony/decline` | §6.3.9.4 |
+| `POST` | `.../workflows/:workflowId/expiry` | Change when the request lapses. Body `{ expiresAt }`. §6.3.9.9 |
 | `POST` | `/api/v1/firms/:firmId/signature/poll-due` | Poll every workflow of the firm that is not finished. |
 
 A request signed for one firm with another firm's id in the path is `403 FIRM_SCOPE_VIOLATION`. A workflow that belongs to another firm is `404 NOT_FOUND`: the mapping store is firm-scoped, so it is invisible rather than refused.
@@ -983,6 +984,8 @@ Implemented in `gateway/src/routes/signature.ts`, `gateway/src/opensign/opensign
 
 **Common to every route below.**
 
+- The four `ceremony/*` routes are for workflows created with `ceremony: 'scentic'`. On any other workflow each answers `409 INVALID_STATE` (`not a Scentic-hosted request`) and nothing is read from or sent to OpenSign.
+
 - HMAC service auth (§5) and the headers of §2. The `X-Scentic-Firm-Id` header must equal `:firmId`, otherwise `403 FIRM_SCOPE_VIOLATION`.
 - `:workflowId` is the `scenticSignatureWorkflowId` given at create. A workflow that does not exist, or belongs to another firm, is `404 NOT_FOUND` (`"Workflow not found"`) — the two are not distinguishable.
 - Errors use the envelope `{ "ok": false, "error": { "code": string, "message": string, "details"?: [{ "field": string, "issue": string }], "retryable": boolean } }`.
@@ -995,15 +998,16 @@ Implemented in `gateway/src/routes/signature.ts`, `gateway/src/opensign/opensign
 |------|--------|-------------|------|
 | 400 | `INVALID_INPUT` | false | A field is missing or malformed. `details[0].field` names it (`email`, `ipAddress`, `baseSha256`, `pdfBase64`, `signaturePngBase64`, `reason`, `auditEvents`, `auditEvents[3].at`, `ceremony`); `details[0].issue` says why (`required`, `not an email address`, `not an IP address`, `not a SHA-256 in hex`, `not base64`, `not a PDF`, `not a PNG`, `not a date`, `at most 500 events`, `at most 1000 characters`, …). |
 | 403 | `FIRM_SCOPE_VIOLATION` | false | The signed firm is not the firm in the path. |
-| 403 | `FORBIDDEN` | false | OpenSign itself refused the call for this document (Parse `OPERATION_FORBIDDEN`), e.g. an out-of-turn signature on a `hosted` workflow sent in strict order. |
+| 403 | `FORBIDDEN` | false | OpenSign itself refused the call for this document (Parse `OPERATION_FORBIDDEN`). Not expected in normal running. |
 | 404 | `NOT_FOUND` | false | Unknown workflow (or another firm's). |
 | 404 | `NOT_A_SIGNER` | false | `email` is not asked to sign this document (never was, or was replaced). |
-| 409 | `ALREADY_SIGNED` | false | That signer has already signed. Nothing is written. |
+| 409 | `ALREADY_SIGNED` | false | That signer has already signed. Nothing is written. Answered before the document's state is looked at: the last signer retrying after a lost response hears this, not `INVALID_STATE`, though the document is by then completed. |
 | 409 | `STALE_DOCUMENT` | **true** | `baseSha256` is not the hash of the document's current PDF — somebody else signed in between. Nothing is written. Fetch `ceremony/file` again, stamp again, retry with the new hash. |
-| 409 | `INVALID_STATE` | false | The document can no longer be acted on: withdrawn (cancelled/archived), declined, completed, or expired. `message` says which. |
+| 409 | `INVALID_STATE` | false | The document can no longer be acted on: withdrawn (cancelled/archived), declined, completed, or expired; or the workflow is not one Scentic hosts the signing of (`message` contains `not a Scentic-hosted request`). `message` says which. |
+| 409 | `BUSY` | **true** | Another call for the same workflow held its lock for longer than this one would wait (about 25 s). Nothing was read or written; send the same request again. See "Concurrency" under `ceremony/sign`. |
 | 413 | `PAYLOAD_TOO_LARGE` | false | The stamped PDF is over the configured limit, the signature PNG is over 1 MiB, or the whole request body is over `GATEWAY_JSON_LIMIT` (default `64mb`). |
 | 501 | `NOT_SUPPORTED` | false | OpenSign is not enabled on this gateway. |
-| 502 | `UPSTREAM_ERROR` | true | OpenSign failed or was unreachable. The message never carries OpenSign's own text. |
+| 502 | `UPSTREAM_ERROR` | true | OpenSign failed, was unreachable, or did not answer in time (170 s for a signature, 30 s for a view or a refusal). The message never carries OpenSign's own text. After a timeout OpenSign may still complete what it was asked: retry, and treat `ALREADY_SIGNED` as success. |
 | 500 | `INTERNAL_ERROR` | false | Unexpected. |
 
 #### 6.3.9.1 `GET /api/v1/firms/:firmId/signature/workflows/:workflowId/ceremony/file`
@@ -1066,9 +1070,9 @@ Request:
 | Field | Required | Rule |
 |-------|----------|------|
 | `email` | yes | A signer on the document who has not signed. |
-| `signerName` | yes for a `ceremony: 'scentic'` workflow; optional otherwise | The signer's own name, as they confirmed it on Scentic's page. Reduced to plain text on one line (markup, control and direction characters removed) and trimmed; 1–200 characters after that, otherwise `INVALID_INPUT` with `details[0].field = "signerName"` (`required`, `not a string`, `at most 200 characters`). Stored **on the document** as `ScenticSignerNames` — a list of `{ email, name }`, this signer's entry replaced and every other signer's kept — before `signPdf` runs. Never written to OpenSign's contact or account for the address, which OpenSign shares across every firm. It is the name the certificate prints for this signer and the name in the PDF's digital signature (§6.3.9.8). |
+| `signerName` | yes | The signer's own name, as they confirmed it on Scentic's page. Reduced to plain text on one line (markup, control and direction characters removed) and trimmed; 1–200 characters after that, otherwise `INVALID_INPUT` with `details[0].field = "signerName"` (`required`, `not a string`, `at most 200 characters`). Stored **on the document** as `ScenticSignerNames` — a list of `{ email, name }`, this signer's entry replaced and every other signer's kept — before `signPdf` runs. Never written to OpenSign's contact or account for the address, which OpenSign shares across every firm. It is the name the certificate prints for this signer and the name in the PDF's digital signature (§6.3.9.8). |
 | `pdfBase64` | yes | Standard base64 (no data-URL prefix, no whitespace). Decodes to bytes beginning `%PDF`. At most the configured limit: three quarters of (`GATEWAY_JSON_LIMIT` − 3 MiB), 45.75 MiB at the default `64mb`. |
-| `signaturePngBase64` | yes | Standard base64 of a PNG (magic bytes checked), at most 1 MiB decoded. A leading `data:image/png;base64,` is accepted and dropped. Stored by OpenSign and drawn on the certificate. |
+| `signaturePngBase64` | yes | Standard base64 of a PNG, at most 1 MiB decoded and at most 2400 × 1200 pixels. The file is checked, not only its first bytes: a well-formed header (IHDR of 13 bytes with a correct checksum, non-zero dimensions, a bit depth and colour type the PNG specification pairs, not interlaced), image data present and ending in IEND, and that data inflating to exactly the size the header implies (inflated under that cap, so a file holding more than it declares is refused, not decoded). `details[0].issue` is `image too large` (dimensions, or more data than declared), `not a valid PNG`, or `not a PNG`. A leading `data:image/png;base64,` is accepted and dropped. Stored by OpenSign and drawn on the certificate. |
 | `ipAddress` | no | See above. |
 | `baseSha256` | yes | 64 hex characters, either case. |
 | `auditEvents` | no | Array, at most 500 entries. Each: `at` (required; any string `Date` parses, stored as ISO 8601 UTC), `event` (required, non-empty), `actor` (required string, may be empty), and optional `email`, `ipAddress` (an IP or empty), `userAgent`, `detail`. Every string is reduced to plain text (markup, control and direction characters removed, single line) and cut to 300 characters; `email` is lowercased. One bad entry refuses the whole request (`INVALID_INPUT`, `details[0].field` like `auditEvents[3].at`). Stored on the OpenSign document as `ScenticAudit` **before** `signPdf` runs, sorted by `at`, and printed on the certificate as "Event history" (§6.3.9.7). **Each submission replaces the stored list**, so send the complete history of the request every time, not only this signer's events. Omitted or `null` leaves the stored list as it is. |
@@ -1083,7 +1087,7 @@ Response `200`:
 
 - `completed` is `true` when this was the last signature and OpenSign has sealed the document.
 - `sha256`: when `completed` is `false`, the SHA-256 of the submitted PDF — OpenSign stores it untouched, so it is the next `baseSha256`. When `completed` is `true`, the hash OpenSign recorded for the sealed PDF (`DocumentHash`), or `""` if it recorded none. `ceremony/file`'s `X-Content-Sha256` is always authoritative.
-- **Concurrency.** Two submissions for one workflow never interleave inside one gateway instance (in-process lock around check + submit); the second sees the first's result and gets `STALE_DOCUMENT`. Across gateway instances the lock does not reach: Scentic's own database claim on the request is what keeps two submissions for one workflow from running at once.
+- **Concurrency.** Two calls for one workflow (`viewed`, `sign`, `decline`) never run at the same time, on one gateway instance or across several: an in-process lock, and behind it, where the gateway's store is PostgreSQL, a database advisory lock held for the whole call — read, compare, write, `signPdf`. The second of two submissions sees the first's result and gets `STALE_DOCUMENT`. A call that cannot get the lock within about 25 s answers `409 BUSY` (retryable) having done nothing. The lock cannot outlive the instance that took it. (With the SQLite or in-memory store there is only ever one instance, and the in-process lock is all of it.) Scentic's own claim on the request remains a second guard, and `baseSha256` the last.
 - **Not idempotent by key.** A retry after a lost response gets `ALREADY_SIGNED` if the first attempt landed; treat that as success after confirming with the status route.
 - Errors: `INVALID_INPUT`, `PAYLOAD_TOO_LARGE`, `NOT_A_SIGNER`, `ALREADY_SIGNED`, `STALE_DOCUMENT`, `INVALID_STATE`, `FORBIDDEN`, `NOT_FOUND`, `FIRM_SCOPE_VIOLATION`, `UPSTREAM_ERROR`.
 
@@ -1122,7 +1126,7 @@ Response `200`:
 - `"scentic"`: OpenSign's `SendinOrder` and `SendInOrderStrict` are both `false` whatever `sendInOrder` says — Scentic enforces the order and lets the signers of one step sign at the same time. The document is marked `ScenticCeremony: true` and closed to OpenSign's own page (§6.3.9.8); if it cannot be closed, the create fails (`502 UPSTREAM_ERROR`) and the document is withdrawn. It also implies `scenticDelivers: true` (the gateway and OpenSign mail nobody; OpenSign's automatic reminders are off), because an invitation from here would link to OpenSign's page. Everything else is as for `hosted`.
 - Any other value: `400 INVALID_INPUT` (`details[0].field = "ceremony"`).
 - The response (the stored mapping) gains `"ceremony": "hosted" | "scentic"`. Re-creating an existing workflow returns the stored mapping unchanged, including its ceremony.
-- The ceremony routes are not restricted to `scentic` workflows; on a `hosted` workflow sent in strict order, OpenSign itself refuses an out-of-turn signature (`403 FORBIDDEN`).
+- The `ceremony/*` routes answer only for `scentic` workflows (`409 INVALID_STATE` otherwise).
 
 #### 6.3.9.6 Status: who declined
 
@@ -1155,11 +1159,45 @@ Response `200`:
 
 #### 6.3.9.7 Capabilities and the certificate
 
-`GET /api/v1/providers/capabilities` gains: `"scenticCeremony": "emulated"`, `"concurrentSigning": "emulated"`, `"perSignerDecline": "supported"`, `"signerConfirmedName": "supported"`, `"certificateEventHistory": "supported"` (`"parallelSigning": "supported"` was already there).
+`GET /api/v1/providers/capabilities` gains: `"scenticCeremony": "emulated"`, `"concurrentSigning": "emulated"`, `"perSignerDecline": "supported"`, `"signerConfirmedName": "supported"`, `"changeExpiry": "supported"`, `"certificateEventHistory": "supported"` (`"parallelSigning": "supported"` was already there).
 
 The completion certificate prints `ScenticAudit` as an "Event history" section after the signers (`deploy/opensign-server-patches.mjs`, `deploy/opensign-server-files/scenticEventHistory.js`): one row per event in time order — time as `YYYY-MM-DD HH:mm:ss UTC`, event, who (`actor`, with `email` beneath), IP address (whole; an IPv6 address is drawn smaller rather than cut), and browser (`userAgent`, cut to its column with `...`); `detail` is printed beneath the event. It runs over as many pages as it needs, each continued page headed again. A document with no `ScenticAudit`, or an empty one, gets the certificate it got before.
 
 Limits, known: at most 500 events are printed. The certificate's font (Times New Roman) has Latin, Greek, Cyrillic, Hebrew and Arabic letters; any other character (Chinese, emoji) is printed as `?`. Hebrew is put in reading order in the event history, run by run, without full bidirectional layout (a line mixing Hebrew and Latin keeps the order of its runs; Arabic is drawn unjoined). OpenSign's own signer block above it is unchanged and draws a Hebrew name in the order it was typed, left to right.
+
+#### 6.3.9.9 `POST /api/v1/firms/:firmId/signature/workflows/:workflowId/expiry`
+
+Gives the signers until another date. For either ceremony.
+
+Request:
+
+```json
+{ "expiresAt": "2027-01-31T21:59:59.000Z" }
+```
+
+- `expiresAt`: a full ISO 8601 date and time with its time zone (`Z` or `±hh:mm`; seconds and fractions optional). Later than now and at most 365 days from now.
+
+Response `200`:
+
+```json
+{ "ok": true, "data": { "expiresAt": "2027-01-31T21:59:59.000Z" } }
+```
+
+- `expiresAt` in the response is the instant stored, in UTC. The status route (§6.3.9.6) reports the same value from then on.
+- What it changes: the OpenSign document's `ExpiryDate`, which is the one field OpenSign's page and the gateway's status compare with now. OpenSign sets it once, at creation, and nothing recomputes it. `TimeToCompleteDays` is not changed.
+- A request that has already lapsed (`status: "EXPIRED"`) but is not completed, declined or withdrawn **can** be extended; its status then reads as it would have (`DRAFT`/`IN_PROGRESS`), polling takes it up again, and it can be signed.
+- Not idempotent by key, but repeating it with the same value changes nothing further.
+
+Errors:
+
+| HTTP | `code` | `retryable` | When |
+|------|--------|-------------|------|
+| 400 | `INVALID_INPUT` | false | `details[0].field = "expiresAt"`; `issue` is `not an ISO 8601 date and time with a time zone`, `not a date`, `must be in the future`, or `at most 365 days from now`. |
+| 403 | `FIRM_SCOPE_VIOLATION` | false | The signed firm is not the firm in the path. |
+| 404 | `NOT_FOUND` | false | Unknown workflow (or another firm's). |
+| 409 | `INVALID_STATE` | false | The request is completed, declined or withdrawn. |
+| 501 | `NOT_SUPPORTED` | false | OpenSign is not enabled. |
+| 502 | `UPSTREAM_ERROR` | true | OpenSign failed or was unreachable. |
 
 #### 6.3.9.8 Names, and OpenSign's own page
 
@@ -1167,7 +1205,7 @@ Limits, known: at most 500 events are printed. The certificate's font (Times New
 
 - No gateway response carries a signer's name. Status, `signers`, `poll` and the ceremony routes return addresses, states, times and IP addresses only. The `name` given for a signer at create is passed to OpenSign when the signer is linked (OpenSign's one contact for the address may already carry another name) and is never read back.
 - The name on a document is the one its signer confirmed: `signerName` on `ceremony/sign`, stored on that document only.
-- The certificate prints, for each signer, the name confirmed for that document; only where a document has none (a `hosted` workflow signed on OpenSign's page) does it print the contact's name, as before. The same applies to the "signed for" text in the PDF's digital signature, and to the event history where an event gives an address and no `actor`. A confirmed Hebrew name is drawn in reading order.
+- The certificate prints, for each signer, the name confirmed for that document; only where a document has none (a `hosted` workflow, signed on OpenSign's page) does it print the contact's name, as before. The same applies to the "signed for" text in the PDF's digital signature, and to the event history where an event gives an address and no `actor`. A confirmed Hebrew name is drawn in reading order.
 
 **OpenSign's page is not a second way in.** A `ceremony: 'scentic'` document has OpenSign's ordering off, so OpenSign's page — which any signer could otherwise reach with the document's id and a code mailed to their own address — would let them sign out of turn. For a document marked `ScenticCeremony: true` (`deploy/opensign-server-patches.mjs`, `deploy/opensign-server-files/SendMailOTPv1.js`):
 
@@ -1296,6 +1334,7 @@ All errors use the JSON error envelope (§3). `code` is a stable machine-readabl
 | 404 | `NOT_A_SIGNER` | No | Signing ceremony (§6.3.9): the address is not asked to sign the document. |
 | 409 | `ALREADY_SIGNED` | No | Signing ceremony: that signer has already signed. |
 | 409 | `STALE_DOCUMENT` | Yes | Signing ceremony: the PDF the submission was built on is no longer current. Fetch, stamp again, retry. |
+| 409 | `BUSY` | Yes | Signing ceremony: another call for the same workflow is in hand. Nothing was done; send the same request again. |
 | 409 | `INVALID_STATE` | No | Signing ceremony: the document is withdrawn, declined, completed or expired. |
 | 413 | `PAYLOAD_TOO_LARGE` | No | The request body, the stamped PDF or the signature image is over its limit. |
 | 422 | `UPSTREAM_VALIDATION` | No | Upstream (Kimai/OpenSign) rejected the payload. `error.upstream` carries the upstream message. |

@@ -256,6 +256,15 @@ export class SqliteMappingStore implements MappingStore, NonceStore, EventOutbox
   }
 
   // ── MappingStore: OpenSign Workflow ────────────────────────────────────
+  /**
+   * A SQLite file belongs to one gateway process (the store factory refuses it in production
+   * without an explicit override), so there is no other instance to exclude: the caller's
+   * in-process lock is the lock.
+   */
+  async withWorkflowLock<T>(_key: string, fn: () => Promise<T>): Promise<T> {
+    return fn();
+  }
+
   async getOpenSignWorkflowMapping(scenticFirmId: string, scenticSignatureWorkflowId: string): Promise<OpenSignWorkflowMapping | null> {
     const row = this.db.prepare('SELECT * FROM opensign_workflow_mappings WHERE scentic_firm_id = ? AND scentic_signature_workflow_id = ?').get(scenticFirmId, scenticSignatureWorkflowId) as any;
     return row ? this.rowToOpenSignWorkflowMapping(row) : null;

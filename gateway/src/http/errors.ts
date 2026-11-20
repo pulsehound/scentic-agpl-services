@@ -25,6 +25,7 @@ export type ErrorCode =
   | 'NOT_A_SIGNER'
   | 'ALREADY_SIGNED'
   | 'STALE_DOCUMENT'
+  | 'BUSY'
   | 'PAYLOAD_TOO_LARGE';
 
 export interface ApiError {
@@ -101,6 +102,14 @@ export function alreadySigned(message: string): GatewayError {
  */
 export function staleDocument(message: string): GatewayError {
   return new GatewayError('STALE_DOCUMENT', message, 409, undefined, true);
+}
+
+/**
+ * Another submission for the same request is in hand and did not finish in the time this one was
+ * willing to wait. Nothing was read or written. Retryable as it stands.
+ */
+export function busy(message: string): GatewayError {
+  return new GatewayError('BUSY', message, 409, undefined, true);
 }
 
 export function payloadTooLarge(message: string): GatewayError {

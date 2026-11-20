@@ -311,6 +311,16 @@ export function createSignatureRouter(service: OpenSignService): Router {
     } catch (err) { next(err); }
   });
 
+  // Give the signers until another date.
+  router.post('/api/v1/firms/:firmId/signature/workflows/:workflowId/expiry', async (req, res, next) => {
+    try {
+      const ctx = getContext();
+      const result = await service.changeExpiry(req.params.firmId, req.params.workflowId, (req.body ?? {}).expiresAt, ctx?.correlationId ?? '');
+      if (!result.success) return next(result.error);
+      res.json({ ok: true, data: result.data });
+    } catch (err) { next(err); }
+  });
+
   // Poll all due workflows
   router.post('/api/v1/firms/:firmId/signature/poll-due', async (req, res, next) => {
     try {
@@ -339,6 +349,8 @@ export const SIGNATURE_CAPABILITIES = {
   parallelSigning: 'supported',
   reminders: 'emulated',
   expiry: 'supported',
+  // When a request lapses can be changed after it is sent (POST .../expiry).
+  changeExpiry: 'supported',
   decline: 'supported',
   cancel: 'emulated',
   completionCertificate: 'supported',

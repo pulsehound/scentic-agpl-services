@@ -21,7 +21,28 @@ import type {
   SyncOpenSignFirmParams, SyncOpenSignUserParams, CreateOpenSignWorkflowParams,
 } from './types.js';
 
+/** The lock on a workflow was not free within the time allowed. Nothing ran. */
+export class WorkflowLockBusy extends Error {
+  constructor() {
+    super('workflow lock busy');
+    this.name = 'WorkflowLockBusy';
+  }
+}
+
 export interface MappingStore {
+  /**
+   * Run `fn` while holding a lock on `key` that every gateway instance sharing this store
+   * honours: no two calls for one key run at the same time, wherever they land. Waits up to
+   * `waitMs` (25 s unless given) for the lock and then throws WorkflowLockBusy without running
+   * `fn`. The lock is released when `fn` settles, however it settles, and cannot outlive the
+   * process that took it.
+   *
+   * Only PostgreSQL is shared between instances, so only it takes a real lock. The in-memory and
+   * SQLite stores belong to a single process, where the caller's own in-process lock
+   * (opensign/ceremony.ts KeyedMutex) is already the whole of it; they run `fn` at once.
+   */
+  withWorkflowLock<T>(key: string, fn: () => Promise<T>, options?: { waitMs?: number }): Promise<T>;
+
   // Firm
   getFirmMapping(scenticFirmId: string): Promise<FirmMapping | null>;
   upsertFirmMapping(params: SyncFirmParams, kimaiTeamId: number, kimaiTeamName: string): Promise<FirmMapping>;
@@ -359,6 +380,11 @@ export class InMemoryMappingStore implements MappingStore {
         };
     this.osUsers.set(key, mapping);
     return mapping;
+  }
+
+  /** One process, nobody to share with: the caller's in-process lock is the lock. */
+  async withWorkflowLock<T>(_key: string, fn: () => Promise<T>): Promise<T> {
+    return fn();
   }
 
   // ── OpenSign Workflow ─────────────────────────────────────────────────

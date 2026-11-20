@@ -11,12 +11,16 @@
 #
 # Pinned to the digest that was running when this was written, so a rebuild changes only the name.
 ARG OPENSIGN_FRONTEND_BASE=mirror.gcr.io/opensign/opensign@sha256:4c62e38d9b9c5824f4dcc605b08b95a8fb25dce620a5fd122d76dfba2b9b2eb3
-# Where the text font comes from: any OpenSign server image (they all carry font/times.ttf; the
-# patch script refuses any other file by its hash). The page stamps typed text into a PDF in this
-# font and used to fetch it from upstream's CDN on every signature. It is Monotype's Times New
-# Roman, which upstream distributes with its server; it is copied from there at build and is not
-# committed to this repository.
-ARG OPENSIGN_FONT_SOURCE=us-east1-docker.pkg.dev/causal-hour-502018-c8/scentic-agpl/opensign-server:patched-1
+# Where the text font comes from: upstream's own published server image, pinned by digest, from
+# which one file is copied — font/times.ttf. Anybody can pull it, so anybody can rebuild this
+# image from this repository. Any OpenSign server image will do in its place (they all carry the
+# file, this repository's own Dockerfile.opensign-server build included): the patch script takes
+# the font by its SHA-256 and refuses anything else, whatever image it came from.
+#
+# The page stamps typed text into a PDF in this font and used to fetch it from upstream's CDN on
+# every signature. It is Monotype's Times New Roman, which upstream distributes with its server;
+# it is copied from there at build and is not committed to this repository.
+ARG OPENSIGN_FONT_SOURCE=opensign/opensignserver@sha256:674fa8393122cb550d5c2fa4ddae5e13989387f27d63db98e6c23272849a551e
 FROM ${OPENSIGN_FONT_SOURCE} AS fontsource
 
 FROM ${OPENSIGN_FRONTEND_BASE}
