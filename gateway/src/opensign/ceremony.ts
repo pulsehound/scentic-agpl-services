@@ -12,7 +12,7 @@
 
 import { createHash } from 'node:crypto';
 import { isIP } from 'node:net';
-import { crc32, inflateSync } from 'node:zlib';
+import { inflateSync } from 'node:zlib';
 
 /** One megabyte: a drawn or typed signature is a few kilobytes; a photograph of one is not this. */
 export const MAX_SIGNATURE_PNG_BYTES = 1024 * 1024;
@@ -36,48 +36,103 @@ const PNG_COLOUR: Record<number, { depths: number[]; samples: number }> = {
   6: { depths: [8, 16], samples: 4 },
 };
 
+// CRC-32 as PNG uses it (ISO 3309). Written out rather than taken from node:zlib, whose crc32 is
+// only in Node 20.15 and later: the check must not depend on which minor the image happens to run.
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+export function crc32(bytes: Uint8Array): number {
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]!) & 0xff]! ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+// The chunks a still picture is made of, and the ones that only describe it. Nothing else is let
+// through: not animation (acTL, fcTL, fdAT — each frame declares a size of its own, which a
+// decoder allocates), and not a chunk this list has never heard of.
+const PNG_PICTURE_CHUNKS = new Set(['IHDR', 'PLTE', 'tRNS', 'IDAT', 'IEND']);
+const PNG_DESCRIPTION_CHUNKS = new Set(['gAMA', 'cHRM', 'sRGB', 'iCCP', 'sBIT', 'bKGD', 'pHYs', 'tIME', 'tEXt', 'zTXt', 'iTXt']);
+// The ones that can hold compressed or free text: allowed, never inflated here, and kept small.
+const PNG_TEXT_CHUNKS = new Set(['iCCP', 'tEXt', 'zTXt', 'iTXt']);
+export const MAX_PNG_TEXT_BYTES = 64 * 1024;
+
 /**
  * Why a PNG must not be handed to OpenSign, or null when it may.
  *
- * OpenSign draws the signature on the certificate with a decoder that inflates whatever the file
- * holds. A megabyte of PNG can declare — or simply contain — gigabytes of pixels. So before it
- * goes anywhere: the header must be a well-formed IHDR (13 bytes, its checksum right, dimensions
- * above zero, a bit depth and colour type the specification pairs, no interlacing), the picture no
- * larger than 2400 × 1200, and the image data must inflate to exactly the size that header
- * implies, inflated here under that cap so a file that lies about its size is caught by the cap
- * and not by running out of memory.
+ * OpenSign draws the signature on the certificate with a decoder that inflates and allocates
+ * whatever the file tells it to. A megabyte of PNG can declare — or simply contain — gigabytes of
+ * pixels, in its header, in its image data, or in the frames of an animation. So before it goes
+ * anywhere, the whole file is walked, chunk by chunk:
+ *
+ *  - every chunk lies inside the file and its checksum is right; the file ends at IEND, with
+ *    nothing after it;
+ *  - the first chunk is a well-formed IHDR (13 bytes, dimensions above zero, a bit depth and
+ *    colour type the specification pairs, no interlacing), and the picture is no larger than
+ *    2400 x 1200;
+ *  - only the chunks of a still picture and the ones that describe it are present, the
+ *    descriptive text and colour profile together under 64 KB;
+ *  - the image data inflates to exactly the size the header implies, inflated here under that cap,
+ *    so a file that lies about its size is caught by the cap and not by running out of memory.
  */
 export function pngProblem(bytes: Buffer): 'not a PNG' | 'not a valid PNG' | 'image too large' | null {
   if (bytes.length < 8 || !bytes.subarray(0, 8).equals(PNG_MAGIC)) return 'not a PNG';
-  if (bytes.length < 33) return 'not a valid PNG';
-  if (bytes.readUInt32BE(8) !== 13 || bytes.subarray(12, 16).toString('latin1') !== 'IHDR') return 'not a valid PNG';
-  if (bytes.readUInt32BE(29) !== crc32(bytes.subarray(12, 29))) return 'not a valid PNG';
-  const width = bytes.readUInt32BE(16);
-  const height = bytes.readUInt32BE(20);
-  const depth = bytes[24]!;
-  const colour = PNG_COLOUR[bytes[25]!];
-  if (width === 0 || height === 0) return 'not a valid PNG';
-  if (!colour || !colour.depths.includes(depth)) return 'not a valid PNG';
-  // Compression and filter methods have one value each; interlaced pictures are not taken (a
-  // drawn or typed signature never is one, and their size is not the simple product below).
-  if (bytes[26] !== 0 || bytes[27] !== 0 || bytes[28] !== 0) return 'not a valid PNG';
-  if (width > MAX_SIGNATURE_WIDTH || height > MAX_SIGNATURE_HEIGHT) return 'image too large';
 
-  // The chunks after the header: every IDAT, in order, up to IEND.
-  const data: Buffer[] = [];
-  let offset = 33;
+  let width = 0;
+  let height = 0;
+  let rowBytes = 0;
+  let textBytes = 0;
+  let seen = 0;
   let ended = false;
-  while (offset + 12 <= bytes.length) {
+  const data: Buffer[] = [];
+  let offset = 8;
+  while (offset < bytes.length) {
+    if (ended) return 'not a valid PNG'; // something after IEND
+    if (offset + 12 > bytes.length) return 'not a valid PNG';
     const length = bytes.readUInt32BE(offset);
+    if (length > bytes.length - offset - 12) return 'not a valid PNG';
     const type = bytes.subarray(offset + 4, offset + 8).toString('latin1');
-    if (offset + 12 + length > bytes.length) return 'not a valid PNG';
-    if (type === 'IDAT') data.push(bytes.subarray(offset + 8, offset + 8 + length));
-    if (type === 'IEND') { ended = true; break; }
+    const body = bytes.subarray(offset + 8, offset + 8 + length);
+    if (bytes.readUInt32BE(offset + 8 + length) !== crc32(bytes.subarray(offset + 4, offset + 8 + length))) return 'not a valid PNG';
+
+    if (seen === 0) {
+      if (type !== 'IHDR' || length !== 13) return 'not a valid PNG';
+      width = body.readUInt32BE(0);
+      height = body.readUInt32BE(4);
+      const depth = body[8]!;
+      const colour = PNG_COLOUR[body[9]!];
+      if (width === 0 || height === 0) return 'not a valid PNG';
+      if (!colour || !colour.depths.includes(depth)) return 'not a valid PNG';
+      // Compression and filter methods have one value each; interlaced pictures are not taken (a
+      // drawn or typed signature never is one, and their size is not the simple product below).
+      if (body[10] !== 0 || body[11] !== 0 || body[12] !== 0) return 'not a valid PNG';
+      if (width > MAX_SIGNATURE_WIDTH || height > MAX_SIGNATURE_HEIGHT) return 'image too large';
+      // One filter byte, then the row's samples.
+      rowBytes = Math.ceil((width * colour.samples * depth) / 8) + 1;
+    } else if (type === 'IHDR') {
+      return 'not a valid PNG';
+    } else if (!PNG_PICTURE_CHUNKS.has(type) && !PNG_DESCRIPTION_CHUNKS.has(type)) {
+      return 'not a valid PNG';
+    } else if (type === 'IDAT') {
+      data.push(body);
+    } else if (type === 'IEND') {
+      if (length !== 0) return 'not a valid PNG';
+      ended = true;
+    } else if (PNG_TEXT_CHUNKS.has(type)) {
+      textBytes += length;
+      if (textBytes > MAX_PNG_TEXT_BYTES) return 'not a valid PNG';
+    }
+    seen++;
     offset += 12 + length;
   }
   if (!ended || data.length === 0) return 'not a valid PNG';
-  // One filter byte, then the row's samples, for every row.
-  const expected = (Math.ceil((width * colour.samples * depth) / 8) + 1) * height;
+
+  const expected = rowBytes * height;
   try {
     // maxOutputLength: inflating stops, and throws, one byte past what the header promised.
     if (inflateSync(Buffer.concat(data), { maxOutputLength: expected }).length !== expected) return 'not a valid PNG';

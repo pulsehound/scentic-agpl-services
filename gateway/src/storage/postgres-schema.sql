@@ -126,6 +126,14 @@ CREATE TABLE IF NOT EXISTS opensign_workflow_mappings (
 -- to remove it: ALTER TABLE opensign_workflow_mappings DROP COLUMN ceremony;
 ALTER TABLE opensign_workflow_mappings ADD COLUMN IF NOT EXISTS ceremony TEXT NOT NULL DEFAULT 'hosted';
 
+-- A signature handed to OpenSign that had not been answered when the gateway gave up waiting:
+-- until when it may still be being written (ISO 8601 text), and the SHA-256 of the document's PDF
+-- as it stood. Null when nothing is in doubt. Forward: these statements, no-ops once applied.
+-- Rollback: none needed (nullable, unread by an older gateway); to remove:
+-- ALTER TABLE opensign_workflow_mappings DROP COLUMN sign_in_doubt_until, DROP COLUMN sign_in_doubt_sha;
+ALTER TABLE opensign_workflow_mappings ADD COLUMN IF NOT EXISTS sign_in_doubt_until TEXT;
+ALTER TABLE opensign_workflow_mappings ADD COLUMN IF NOT EXISTS sign_in_doubt_sha TEXT;
+
 CREATE TABLE IF NOT EXISTS opensign_signer_mappings (
   id TEXT PRIMARY KEY,
   scentic_firm_id TEXT NOT NULL,

@@ -321,6 +321,7 @@ export interface TestApp {
 export interface MakeAppOpts {
   config?: GatewayConfig;
   client?: MockKimaiClient;
+  /** Any store that also keeps nonces and events the way the in-memory one's companions do. */
   store?: InMemoryMappingStore;
   outbox?: InMemoryEventOutbox;
   opensignClient?: MockOpenSignClient;

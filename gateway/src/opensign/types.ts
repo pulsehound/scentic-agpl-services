@@ -147,7 +147,7 @@ export interface OpenSignExtendedUser {
 export interface OpenSignResult<T> {
   success: boolean;
   data?: T;
-  error?: { code: string; message: string; upstreamCode?: number };
+  error?: { code: string; message: string; upstreamCode?: number; timedOut?: boolean };
 }
 
 export interface OpenSignHealthStatus {

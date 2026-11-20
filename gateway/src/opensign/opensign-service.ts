@@ -68,6 +68,9 @@ import {
   type GatewayError,
 } from '../http/errors.js';
 
+/** How long after an unanswered signPdf a workflow's signatures are held back: four minutes. */
+export const SIGN_IN_DOUBT_MS = 4 * 60_000;
+
 export interface OpenSignServiceConfig {
   enabled: boolean;
   pollIntervalSeconds: number;
@@ -1154,6 +1157,21 @@ export class OpenSignService {
 
       const current = await this.currentPdf(doc.data);
       if (!current.success) return current;
+
+      // A signature handed to OpenSign a moment ago, by any instance, whose answer never came:
+      // OpenSign may still be writing it, and the lock that covered it is gone. Whoever it was for
+      // has been answered above if it has landed (already signed). Otherwise nothing is submitted
+      // on top of it while the PDF is still the one it was sent against and the time allowed for
+      // it has not run out: the caller is told to come back. Once the PDF has changed it has
+      // landed, and once the time is up it will not; either way the mark is cleared.
+      const mapping = await this.store.getOpenSignWorkflowMapping(scenticFirmId, scenticSignatureWorkflowId);
+      if (mapping?.signInDoubtUntil) {
+        const stillInDoubt = new Date(mapping.signInDoubtUntil).getTime() > Date.now() && mapping.signInDoubtSha === current.data.sha256;
+        if (stillInDoubt) {
+          return { success: false, error: busy('An earlier signature on this request may still be being recorded. Try again in a moment.') };
+        }
+        await this.store.setOpenSignWorkflowSignInDoubt(scenticFirmId, scenticSignatureWorkflowId, null);
+      }
       if (current.data.sha256 !== base.value) {
         return { success: false, error: staleDocument('The document has changed since it was opened. Fetch it again, apply the signature again, and retry.') };
       }
@@ -1188,6 +1206,14 @@ export class OpenSignService {
         // OBJECT_NOT_FOUND: declined or withdrawn between the read above and the write.
         if (submitted.error?.upstreamCode === 101) {
           return { success: false, error: invalidState('This document can no longer be signed.') };
+        }
+        // No answer in time. The lock is about to be let go while OpenSign may still be writing:
+        // say so where every instance will see it, for as long as OpenSign could plausibly take.
+        if (submitted.error?.timedOut) {
+          await this.store.setOpenSignWorkflowSignInDoubt(scenticFirmId, scenticSignatureWorkflowId, {
+            until: new Date(Date.now() + SIGN_IN_DOUBT_MS).toISOString(),
+            sha256: current.data.sha256,
+          });
         }
         return { success: false, error: wrapUpstreamError('OpenSign', 'signPdf', submitted.error) };
       }

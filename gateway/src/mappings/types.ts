@@ -200,6 +200,13 @@ export interface OpenSignWorkflowMapping {
   opensignStatus: string;
   /** Where the signers sign: OpenSign's own page ('hosted'), or Scentic's ('scentic'). */
   ceremony: SignatureCeremony;
+  /**
+   * Set when a signature was handed to OpenSign and no answer came back in time: until this
+   * instant (ISO), OpenSign may still be writing it. With it, the hash of the document's PDF as it
+   * stood then, by which a later look can tell whether it landed. Null when nothing is in doubt.
+   */
+  signInDoubtUntil?: string | null;
+  signInDoubtSha?: string | null;
   status: MappingStatus;
   createdAt: string;
   updatedAt: string;

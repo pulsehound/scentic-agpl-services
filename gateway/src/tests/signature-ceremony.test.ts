@@ -9,7 +9,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { crc32, deflateSync } from 'node:zlib';
+import { deflateSync } from 'node:zlib';
 import { WorkflowLockBusy } from '../mappings/mapping-store.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,6 +22,8 @@ import { makeApp, signedRequest, type MockOpenSignClient, type TestApp } from '.
 import { makeFakeParse, type FakeParse } from './fake-parse.js';
 import { OpenSignClient, forwardedFor } from '../opensign/opensign-client.js';
 import { SIGNATURE_CAPABILITIES } from '../routes/signature.js';
+import { SIGN_IN_DOUBT_MS } from '../opensign/opensign-service.js';
+import { InMemoryMappingStore, type MappingStore } from '../mappings/mapping-store.js';
 import {
   KeyedMutex,
   MAX_AUDIT_EVENTS,
@@ -31,6 +33,8 @@ import {
   checkPdfBase64,
   checkSignaturePng,
   pngProblem,
+  crc32,
+  MAX_PNG_TEXT_BYTES,
   maxPdfBytesFromJsonLimit,
   plainText,
 } from '../opensign/ceremony.js';
@@ -55,7 +59,7 @@ const chunk = (type: string, data: Buffer) => {
   return out;
 };
 /** A real PNG of that size (blank), or one made wrong in a named way. */
-function makePng(width: number, height: number, o: { depth?: number; colour?: number; interlace?: number; ihdrLength?: number; badCrc?: boolean; pixels?: Buffer; noData?: boolean; noEnd?: boolean } = {}) {
+function makePng(width: number, height: number, o: { depth?: number; colour?: number; interlace?: number; ihdrLength?: number; badCrc?: boolean; pixels?: Buffer; noData?: boolean; noEnd?: boolean; extra?: Buffer[]; after?: Buffer; endData?: Buffer } = {}) {
   const depth = o.depth ?? 8;
   const colour = o.colour ?? 6;
   const ihdr = Buffer.alloc(o.ihdrLength ?? 13);
@@ -68,7 +72,7 @@ function makePng(width: number, height: number, o: { depth?: number; colour?: nu
   const pixels = o.pixels ?? Buffer.alloc((Math.ceil((width * samples * depth) / 8) + 1) * height);
   const header = chunk('IHDR', ihdr);
   if (o.badCrc) header[header.length - 1] ^= 0xff;
-  return Buffer.concat([PNG_MAGIC, header, ...(o.noData ? [] : [chunk('IDAT', deflateSync(pixels))]), ...(o.noEnd ? [] : [chunk('IEND', Buffer.alloc(0))])]);
+  return Buffer.concat([PNG_MAGIC, header, ...(o.extra ?? []), ...(o.noData ? [] : [chunk('IDAT', deflateSync(pixels))]), ...(o.noEnd ? [] : [chunk('IEND', o.endData ?? Buffer.alloc(0))]), ...(o.after ? [o.after] : [])]);
 }
 const PNG = makePng(300, 100);
 const PNG_B64 = PNG.toString('base64');
@@ -78,7 +82,7 @@ interface Harness extends TestApp {
   logs: string[];
 }
 
-function harness(timeouts?: { signMs?: number; otherMs?: number }): Harness {
+function harness(timeouts?: { signMs?: number; otherMs?: number; readMs?: number; fileMs?: number }, store?: MappingStore): Harness {
   const parse = makeFakeParse();
   vi.stubGlobal('fetch', parse.fetch);
   const logs: string[] = [];
@@ -95,7 +99,7 @@ function harness(timeouts?: { signMs?: number; otherMs?: number }): Harness {
     adminPassword: 'test-password',
     timeouts,
   });
-  const t = makeApp({ opensignClient: client as unknown as MockOpenSignClient });
+  const t = makeApp({ opensignClient: client as unknown as MockOpenSignClient, ...(store ? { store: store as unknown as InMemoryMappingStore } : {}) });
   return { ...t, parse, logs };
 }
 
@@ -922,6 +926,10 @@ describe('the stored mapping remembers the ceremony (SQLite)', () => {
       const store = new SqliteMappingStore(path);
       expect((await store.getOpenSignWorkflowMapping(FIRM1, 'old-wf'))!.ceremony).toBe('hosted');
       expect((await store.upsertOpenSignWorkflowMapping(params('new-wf', 'scentic'), 'os3', 'os3', 'DRAFT')).ceremony).toBe('scentic');
+      // And the columns for a signature in doubt, on the old row as on the new.
+      expect((await store.getOpenSignWorkflowMapping(FIRM1, 'old-wf'))!.signInDoubtUntil).toBeNull();
+      await store.setOpenSignWorkflowSignInDoubt(FIRM1, 'old-wf', { until: '2026-11-20T10:00:00.000Z', sha256: 'ab'.repeat(32) });
+      expect(await store.getOpenSignWorkflowMapping(FIRM1, 'old-wf')).toMatchObject({ signInDoubtUntil: '2026-11-20T10:00:00.000Z', signInDoubtSha: 'ab'.repeat(32) });
       store.close();
       // Opened a second time: the column is not added twice.
       const again = new SqliteMappingStore(path);
@@ -958,6 +966,11 @@ describe.skipIf(!POSTGRES_URL)('the stored mapping remembers the ceremony (Postg
         scenticPhysicalFileId: 'p', documentName: 'c.pdf', documentBase64: '', signers: [], sendNow: false, ...(ceremony ? { ceremony } : {}),
       });
       expect((await store.getOpenSignWorkflowMapping(FIRM1, 'old-wf'))!.ceremony).toBe('hosted');
+      expect((await store.getOpenSignWorkflowMapping(FIRM1, 'old-wf'))!.signInDoubtUntil).toBeNull();
+      await store.setOpenSignWorkflowSignInDoubt(FIRM1, 'old-wf', { until: '2026-11-20T10:00:00.000Z', sha256: 'ab'.repeat(32) });
+      expect(await store.getOpenSignWorkflowMapping(FIRM1, 'old-wf')).toMatchObject({ signInDoubtUntil: '2026-11-20T10:00:00.000Z', signInDoubtSha: 'ab'.repeat(32) });
+      await store.setOpenSignWorkflowSignInDoubt(FIRM1, 'old-wf', null);
+      expect((await store.getOpenSignWorkflowMapping(FIRM1, 'old-wf'))!.signInDoubtSha).toBeNull();
       expect((await store.upsertOpenSignWorkflowMapping(params('pg-scentic', 'scentic'), 'os1', 'os1', 'DRAFT')).ceremony).toBe('scentic');
       expect((await store.upsertOpenSignWorkflowMapping(params('pg-hosted'), 'os2', 'os2', 'DRAFT')).ceremony).toBe('hosted');
       await store.updateOpenSignWorkflowStatus(FIRM1, 'pg-scentic', 'SENT');
@@ -1067,7 +1080,78 @@ describe('review round: retries, the lock across instances, time limits, the pic
       expect(Date.now() - started, fn).toBeLessThan(2000);
     }
     h.parse.hang = null;
-    expect((await ceremony(h, 'sign', signBody(ALICE, pdf('a'), ORIGINAL))).status).toBe(200);
+    // The lock is free: the next call is answered at once. (What it is answered after an
+    // unanswered signature is the subject of the "in doubt" tests below.)
+    const next = await ceremony(h, 'viewed', { email: ALICE, ipAddress: '' });
+    expect(next.status).toBe(200);
+  });
+
+  it('reads and writes are given up on too: the document read, the file, a record write', async () => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    h = harness({ readMs: 40, fileMs: 60 });
+    await createWorkflow(h);
+    const file = () => signedRequest(h.app, { method: 'GET', path: `/api/v1/firms/${FIRM1}/signature/workflows/${WF}/ceremony/file`, firmId: FIRM1 });
+    for (const [what, call] of [
+      ['getDocument', file],
+      ['getsignedurl', file],
+      ['file', file],
+      ['rest', () => expiry(h, inDays(5))],
+    ] as const) {
+      h.parse.hang = what;
+      const started = Date.now();
+      const res = await call();
+      expect(res.status, what).toBe(502);
+      expect(res.body.error, what).toMatchObject({ code: 'UPSTREAM_ERROR', retryable: true });
+      expect(Date.now() - started, what).toBeLessThan(2000);
+    }
+    h.parse.hang = null;
+    expect((await file()).status).toBe(200);
+  });
+
+  it('more of what a PNG can carry: animation and unknown chunks are refused, a description is allowed, nothing follows the end', async () => {
+    const u32 = (...n: number[]) => { const b = Buffer.alloc(4 * n.length); n.forEach((v, i) => b.writeUInt32BE(v, 4 * i)); return b; };
+    const fcTL = Buffer.concat([u32(0, 20000, 20000, 0, 0), Buffer.from([0, 1, 0, 1, 0, 0])]);
+    const refused: Array<[string, Buffer]> = [
+      ['an animated PNG whose frames declare 20000 x 20000', makePng(10, 10, { extra: [chunk('acTL', u32(1, 0)), chunk('fcTL', fcTL)] })],
+      ['a frame chunk alone', makePng(10, 10, { extra: [chunk('fcTL', fcTL)] })],
+      ['frame data', makePng(10, 10, { extra: [chunk('fdAT', Buffer.alloc(8))] })],
+      ['a critical chunk nobody knows', makePng(10, 10, { extra: [chunk('XYZW', Buffer.alloc(4))] })],
+      ["Apple's non-standard chunk", makePng(10, 10, { extra: [chunk('CgBI', Buffer.alloc(4))] })],
+      ['an ancillary chunk not on the list', makePng(10, 10, { extra: [chunk('eXIf', Buffer.alloc(16))] })],
+      ['a second header', makePng(10, 10, { extra: [chunk('IHDR', Buffer.alloc(13))] })],
+      ['bytes after the end', makePng(10, 10, { after: Buffer.from('trailing') })],
+      ['a whole second picture after the end', makePng(10, 10, { after: makePng(10, 10).subarray(8) })],
+      ['an end chunk with something in it', makePng(10, 10, { endData: Buffer.from('x') })],
+      ['text over 64 KB', makePng(10, 10, { extra: [chunk('tEXt', Buffer.alloc(MAX_PNG_TEXT_BYTES + 1, 0x41))] })],
+      ['text over 64 KB in pieces', makePng(10, 10, { extra: [chunk('iTXt', Buffer.alloc(40_000, 0x41)), chunk('zTXt', Buffer.alloc(20_000, 0x41)), chunk('iCCP', Buffer.alloc(6_000, 0x41))] })],
+    ];
+    const corrupt = makePng(10, 10, { extra: [chunk('sRGB', Buffer.from([0]))] });
+    corrupt[8 + 25 + 8] ^= 0xff; // one byte of the sRGB chunk: its checksum no longer matches
+    refused.push(['a chunk whose checksum is wrong', corrupt]);
+    const tooLong = makePng(10, 10);
+    tooLong.writeUInt32BE(0x7fffffff, 8 + 25); // the IDAT chunk says it is two gigabytes long
+    refused.push(['a chunk longer than the file', tooLong]);
+    for (const [what, bytes] of refused) expect(pngProblem(bytes), what).toBe('not a valid PNG');
+
+    // What a browser's canvas writes: a colour space, a pixel density, sometimes a little text.
+    const canvas = makePng(300, 100, { extra: [chunk('sRGB', Buffer.from([0])), chunk('gAMA', u32(45455)), chunk('pHYs', Buffer.concat([u32(3780, 3780), Buffer.from([1])])), chunk('tEXt', Buffer.from('Software\0canvas'))] });
+    expect(pngProblem(canvas)).toBeNull();
+    expect(pngProblem(makePng(16, 16, { colour: 3, depth: 8, extra: [chunk('PLTE', Buffer.alloc(6)), chunk('tRNS', Buffer.alloc(2))] }))).toBeNull();
+    expect(pngProblem(makePng(10, 10, { extra: [chunk('tEXt', Buffer.alloc(MAX_PNG_TEXT_BYTES, 0x41))] }))).toBeNull();
+
+    await createWorkflow(h);
+    const apng = await ceremony(h, 'sign', signBody(ALICE, pdf('a'), ORIGINAL, { signaturePngBase64: refused[0]![1].toString('base64') }));
+    expect(apng.status).toBe(400);
+    expect(apng.body.error.details[0]).toMatchObject({ field: 'signaturePngBase64', issue: 'not a valid PNG' });
+    expect(callsTo(h, 'signPdf')).toHaveLength(0);
+    expect((await ceremony(h, 'sign', signBody(ALICE, pdf('a'), ORIGINAL, { signaturePngBase64: canvas.toString('base64') }))).status).toBe(200);
+  });
+
+  it('the checksum is the one PNG uses', () => {
+    expect(crc32(Buffer.from('IEND', 'latin1'))).toBe(0xae426082);
+    expect(crc32(Buffer.from('123456789', 'latin1'))).toBe(0xcbf43926);
+    expect(crc32(Buffer.alloc(0))).toBe(0);
   });
 
   // ── R3 ──
@@ -1299,6 +1383,106 @@ describe.skipIf(!POSTGRES_URL)('the workflow lock across instances (PostgreSQL; 
       const held = await raw.query("SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory'");
       expect(held.rows[0].n).toBe(0);
     } finally { await raw.end(); }
+  });
+});
+
+// A signature handed to OpenSign and never answered, on each kind of store an instance can have.
+const DOUBT_STORES: Array<[string, () => Promise<{ store: MappingStore; close: () => Promise<void> }>]> = [
+  ['memory', async () => ({ store: new InMemoryMappingStore(), close: async () => undefined })],
+  ['SQLite', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gw-doubt-'));
+    const store = new SqliteMappingStore(join(dir, 'd.db'));
+    return { store, close: async () => { store.close(); rmSync(dir, { recursive: true, force: true }); } };
+  }],
+  ...(process.env.CONTRACT_POSTGRES_URL
+    ? [['PostgreSQL', async () => {
+        const { PostgresMappingStore } = await import('../storage/postgres-store.js');
+        const store = new PostgresMappingStore(process.env.CONTRACT_POSTGRES_URL!, 'disable');
+        await store.initSchema();
+        return { store: store as unknown as MappingStore, close: () => store.close() };
+      }] as [string, () => Promise<{ store: MappingStore; close: () => Promise<void> }>]]
+    : []),
+];
+describe.each(DOUBT_STORES)('a signature OpenSign never answered for (%s store)', (_name, open) => {
+  let h: Harness;
+  let opened: { store: MappingStore; close: () => Promise<void> };
+  let firm: string;
+  const sign = (email: string, stamped: Buffer, base: Buffer) => ceremony(h, 'sign', signBody(email, stamped, base), firm);
+  const mark = async () => (await opened.store.getOpenSignWorkflowMapping(firm, WF))!;
+
+  beforeEach(async () => {
+    opened = await open();
+    // A firm of its own each time: the PostgreSQL database is shared between runs.
+    firm = `firm-${Math.random().toString(36).slice(2, 10)}`;
+    h = harness({ signMs: 60 }, opened.store);
+    await createWorkflow(h, { ceremony: 'scentic' }, firm);
+    h.parse.hang = 'signPdf';
+    const unanswered = await sign(ALICE, pdf('alice'), ORIGINAL);
+    expect(unanswered.status).toBe(502);
+    expect(unanswered.body.error).toMatchObject({ code: 'UPSTREAM_ERROR', retryable: true });
+    h.parse.hang = null;
+  });
+  afterEach(async () => { vi.unstubAllGlobals(); vi.restoreAllMocks(); await opened.close(); });
+
+  it('is marked on the workflow for four minutes, with the PDF as it stood', async () => {
+    const m = await mark();
+    expect(m.signInDoubtSha).toBe(sha(ORIGINAL));
+    const left = new Date(m.signInDoubtUntil!).getTime() - Date.now();
+    expect(left).toBeGreaterThan(SIGN_IN_DOUBT_MS - 5000);
+    expect(left).toBeLessThanOrEqual(SIGN_IN_DOUBT_MS);
+  });
+
+  it('while nothing has changed, nobody signs on top of it: a retryable BUSY, for that signer and for any other', async () => {
+    for (const [email, stamped] of [[ALICE, pdf('alice')], [BOB, pdf('bob')]] as const) {
+      const res = await sign(email, stamped, ORIGINAL);
+      expect(res.status, email).toBe(409);
+      expect(res.body.error, email).toMatchObject({ code: 'BUSY', retryable: true });
+    }
+    // Only the unanswered submission ever reached OpenSign.
+    expect(callsTo(h, 'signPdf')).toHaveLength(1);
+    expect((await mark()).signInDoubtUntil).not.toBeNull();
+    // Looking and declining are not held back.
+    expect((await ceremony(h, 'viewed', { email: BOB, ipAddress: '' }, firm)).status).toBe(200);
+  });
+
+  it('once it has landed: that signer hears ALREADY_SIGNED, the next signer works from the new PDF, and the mark is gone', async () => {
+    // OpenSign finishes what it was asked, after the gateway stopped waiting.
+    const late = pdf('alice, late');
+    const landed = await h.parse.fetch('http://localhost:8080/app/functions/signPdf', {
+      method: 'POST',
+      headers: { 'X-Parse-Application-Id': 'opensign', 'X-Parse-Master-Key': 'test-master-key' },
+      body: JSON.stringify({ docId: 'os-doc-1', userId: 'contact-1', pdfFile: late.toString('base64'), signature: PNG_B64 }),
+    });
+    expect(landed.status).toBe(200);
+
+    const again = await sign(ALICE, pdf('alice'), ORIGINAL);
+    expect(again.status).toBe(409);
+    expect(again.body.error.code).toBe('ALREADY_SIGNED');
+    // Bob stamped the original, which is no longer current: told so, not told to wait.
+    const stale = await sign(BOB, pdf('bob on original'), ORIGINAL);
+    expect(stale.body.error).toMatchObject({ code: 'STALE_DOCUMENT', retryable: true });
+    expect((await mark()).signInDoubtUntil ?? null).toBeNull();
+    expect((await mark()).signInDoubtSha ?? null).toBeNull();
+    const done = await sign(BOB, pdf('alice+bob'), late);
+    expect(done.status).toBe(200);
+    expect(done.body.data.completed).toBe(true);
+  });
+
+  it('once the four minutes are up and nothing landed: signing goes ahead, and the mark is gone', async () => {
+    await opened.store.setOpenSignWorkflowSignInDoubt(firm, WF, { until: new Date(Date.now() - 1000).toISOString(), sha256: sha(ORIGINAL) });
+    const res = await sign(ALICE, pdf('alice'), ORIGINAL);
+    expect(res.status).toBe(200);
+    expect((await mark()).signInDoubtUntil ?? null).toBeNull();
+    // Nothing is in doubt after an ordinary signature either.
+    expect((await sign(BOB, pdf('alice+bob'), pdf('alice'))).status).toBe(200);
+  });
+
+  it('an OpenSign that refuses, or is down, leaves no mark: only an unanswered signature does', async () => {
+    await opened.store.setOpenSignWorkflowSignInDoubt(firm, WF, null);
+    h.parse.failNext('signPdf', 500, { error: 'boom' });
+    expect((await sign(ALICE, pdf('alice'), ORIGINAL)).status).toBe(502);
+    expect((await mark()).signInDoubtUntil ?? null).toBeNull();
+    expect((await sign(ALICE, pdf('alice'), ORIGINAL)).status).toBe(200);
   });
 });
 

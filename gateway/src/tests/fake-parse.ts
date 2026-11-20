@@ -51,7 +51,7 @@ export interface FakeParse {
   failNext: (fn: string, status: number, body: Record<string, unknown>) => void;
   /** How long signPdf takes: long enough for a second request to arrive meanwhile. */
   signDelayMs: number;
-  /** A cloud function that never answers, until the caller gives up on it. */
+  /** A cloud function — or 'file' (a stored file) or 'rest' (a record read or write) — that never answers, until the caller gives up on it. */
   hang: string | null;
 }
 
@@ -93,8 +93,12 @@ export function makeFakeParse(): FakeParse {
       for (const [k, v] of Object.entries((init?.headers ?? {}) as Record<string, string>)) headers[k.toLowerCase()] = v;
       const body = typeof init?.body === 'string' && init.body ? (JSON.parse(init.body) as Record<string, unknown>) : null;
 
+      const never = () => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('The operation timed out.', 'TimeoutError')));
+      });
       // A stored file, by the short-lived address getsignedurl gave for it.
       if (!url.startsWith(BASE)) {
+        if (self.hang === 'file') return never();
         const stored = url.replace(/\?sig=1$/, '');
         const bytes = files.get(stored);
         // A turn of the event loop, as a real fetch takes: two requests can interleave here.
@@ -124,6 +128,7 @@ export function makeFakeParse(): FakeParse {
         const contact = contacts.find((c) => c.objectId === path.split('/').pop());
         return contact ? json(200, contact) : json(404, { code: 101, error: 'Object not found.' });
       }
+      if (path.startsWith('/classes/') && self.hang === 'rest') return never();
       if (path.startsWith('/classes/contracts_Document/') && method === 'GET') {
         use(path.split('/').pop());
         return master && doc ? json(200, JSON.parse(JSON.stringify(doc))) : json(404, { code: 101, error: 'Object not found.' });
@@ -143,11 +148,7 @@ export function makeFakeParse(): FakeParse {
         const params = body ?? {};
         if (params.docId !== undefined) use(params.docId);
         else if ((params.body as { objectId?: unknown } | undefined)?.objectId !== undefined) use((params.body as { objectId: unknown }).objectId);
-        if (self.hang === fn) {
-          return new Promise<Response>((_resolve, reject) => {
-            init?.signal?.addEventListener('abort', () => reject(new DOMException('The operation timed out.', 'TimeoutError')));
-          });
-        }
+        if (self.hang === fn) return never();
         const failure = failures.get(fn);
         if (failure) {
           failures.delete(fn);

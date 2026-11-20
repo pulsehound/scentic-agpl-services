@@ -88,6 +88,12 @@ export interface MappingStore {
   getOpenSignWorkflowMapping(scenticFirmId: string, scenticSignatureWorkflowId: string): Promise<OpenSignWorkflowMapping | null>;
   upsertOpenSignWorkflowMapping(params: CreateOpenSignWorkflowParams, opensignDocumentId: string, opensignWorkflowId: string, opensignStatus: string): Promise<OpenSignWorkflowMapping>;
   updateOpenSignWorkflowStatus(scenticFirmId: string, scenticSignatureWorkflowId: string, opensignStatus: string): Promise<void>;
+  /**
+   * Mark, or clear (null), that a signature on this workflow may still be being written by
+   * OpenSign: until when, and the hash of the PDF as it stood. On the mapping row, so that every
+   * instance sees it.
+   */
+  setOpenSignWorkflowSignInDoubt(scenticFirmId: string, scenticSignatureWorkflowId: string, doubt: { until: string; sha256: string } | null): Promise<void>;
   listOpenSignWorkflowMappings(scenticFirmId: string): Promise<OpenSignWorkflowMapping[]>;
 
   // OpenSign Signer
@@ -422,6 +428,14 @@ export class InMemoryMappingStore implements MappingStore {
     if (mapping) {
       mapping.opensignStatus = opensignStatus;
       mapping.updatedAt = this.now();
+    }
+  }
+
+  async setOpenSignWorkflowSignInDoubt(scenticFirmId: string, scenticSignatureWorkflowId: string, doubt: { until: string; sha256: string } | null): Promise<void> {
+    const mapping = this.osWorkflows.get(this.matterKey(scenticFirmId, scenticSignatureWorkflowId));
+    if (mapping) {
+      mapping.signInDoubtUntil = doubt?.until ?? null;
+      mapping.signInDoubtSha = doubt?.sha256 ?? null;
     }
   }
 

@@ -55,6 +55,12 @@ export class SqliteMappingStore implements MappingStore, NonceStore, EventOutbox
     if (!workflowColumns.some((c) => c.name === 'ceremony')) {
       this.db.exec("ALTER TABLE opensign_workflow_mappings ADD COLUMN ceremony TEXT NOT NULL DEFAULT 'hosted'");
     }
+    // The same way, for a signature in doubt: two nullable columns, nothing to undo.
+    for (const column of ['sign_in_doubt_until', 'sign_in_doubt_sha']) {
+      if (!workflowColumns.some((c) => c.name === column)) {
+        this.db.exec(`ALTER TABLE opensign_workflow_mappings ADD COLUMN ${column} TEXT`);
+      }
+    }
   }
 
   close(): void {
@@ -290,6 +296,11 @@ export class SqliteMappingStore implements MappingStore, NonceStore, EventOutbox
       .run(opensignStatus, now(), scenticFirmId, scenticSignatureWorkflowId);
   }
 
+  async setOpenSignWorkflowSignInDoubt(scenticFirmId: string, scenticSignatureWorkflowId: string, doubt: { until: string; sha256: string } | null): Promise<void> {
+    this.db.prepare('UPDATE opensign_workflow_mappings SET sign_in_doubt_until = ?, sign_in_doubt_sha = ? WHERE scentic_firm_id = ? AND scentic_signature_workflow_id = ?')
+      .run(doubt?.until ?? null, doubt?.sha256 ?? null, scenticFirmId, scenticSignatureWorkflowId);
+  }
+
   async listOpenSignWorkflowMappings(scenticFirmId: string): Promise<OpenSignWorkflowMapping[]> {
     const rows = this.db.prepare('SELECT * FROM opensign_workflow_mappings WHERE scentic_firm_id = ? AND status = ?').all(scenticFirmId, 'ACTIVE') as any[];
     return rows.map(r => this.rowToOpenSignWorkflowMapping(r));
@@ -395,7 +406,7 @@ export class SqliteMappingStore implements MappingStore, NonceStore, EventOutbox
     return { id: r.id, scenticFirmId: r.scentic_firm_id, scenticUserId: r.scentic_user_id, opensignUserId: r.opensign_user_id, opensignEmail: r.opensign_email, opensignSessionToken: r.opensign_session_token, status: r.status, createdAt: r.created_at, updatedAt: r.updated_at };
   }
   private rowToOpenSignWorkflowMapping(r: any): OpenSignWorkflowMapping {
-    return { id: r.id, scenticFirmId: r.scentic_firm_id, scenticSignatureWorkflowId: r.scentic_signature_workflow_id, scenticMatterId: r.scentic_matter_id, scenticDocumentId: r.scentic_document_id, scenticDocumentVersionId: r.scentic_document_version_id, opensignDocumentId: r.opensign_document_id, opensignWorkflowId: r.opensign_workflow_id, opensignStatus: r.opensign_status, ceremony: r.ceremony === 'scentic' ? 'scentic' : 'hosted', status: r.status, createdAt: r.created_at, updatedAt: r.updated_at };
+    return { id: r.id, scenticFirmId: r.scentic_firm_id, scenticSignatureWorkflowId: r.scentic_signature_workflow_id, scenticMatterId: r.scentic_matter_id, scenticDocumentId: r.scentic_document_id, scenticDocumentVersionId: r.scentic_document_version_id, opensignDocumentId: r.opensign_document_id, opensignWorkflowId: r.opensign_workflow_id, opensignStatus: r.opensign_status, ceremony: r.ceremony === 'scentic' ? 'scentic' : 'hosted', signInDoubtUntil: r.sign_in_doubt_until ?? null, signInDoubtSha: r.sign_in_doubt_sha ?? null, status: r.status, createdAt: r.created_at, updatedAt: r.updated_at };
   }
   private rowToOpenSignSignerMapping(r: any): OpenSignSignerMapping {
     return { id: r.id, scenticFirmId: r.scentic_firm_id, scenticSignatureWorkflowId: r.scentic_signature_workflow_id, scenticSignerId: r.scentic_signer_id, opensignSignerId: r.opensign_signer_id, signerEmailHash: r.signer_email_hash, status: r.status, createdAt: r.created_at, updatedAt: r.updated_at };

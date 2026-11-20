@@ -30,11 +30,16 @@ export interface OpenSignClientConfig {
    * submission is made while holding the request's lock; an OpenSign that never answers must not
    * hold it for ever. signPdf seals and certifies on the last signature, hence its longer limit.
    */
-  timeouts?: { signMs?: number; otherMs?: number };
+  timeouts?: { signMs?: number; otherMs?: number; readMs?: number; fileMs?: number };
 }
 
 const SIGN_TIMEOUT_MS = 170_000;
 const OTHER_TIMEOUT_MS = 30_000;
+// Reading or writing a document's record, and asking for a file's address.
+const READ_TIMEOUT_MS = 30_000;
+// Fetching a document's PDF, which may be tens of megabytes.
+const FILE_TIMEOUT_MS = 120_000;
+const timedOut = (err: unknown) => (err as { name?: string })?.name === 'TimeoutError' || (err as { name?: string })?.name === 'AbortError';
 
 export class OpenSignClient {
   private config: OpenSignClientConfig;
@@ -61,12 +66,14 @@ export class OpenSignClient {
     return h;
   }
 
-  private async callFunction<T>(name: string, params: Record<string, unknown>, useMaster = false): Promise<OpenSignResult<T>> {
+  private async callFunction<T>(name: string, params: Record<string, unknown>, useMaster = false, timeoutMs?: number): Promise<OpenSignResult<T>> {
     try {
       const resp = await fetch(`${this.config.baseUrl}/functions/${name}`, {
         method: 'POST',
         headers: this.headers(useMaster),
         body: JSON.stringify(params),
+        // Only where a limit is given: an upload or a create may rightly take long.
+        ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
       });
       if (!resp.ok) {
         return { success: false, error: { code: 'OPENSIGN_API_ERROR', message: `OpenSign function ${name} returned ${resp.status}` } };
@@ -87,6 +94,8 @@ export class OpenSignClient {
         method,
         headers: this.headers(useMaster),
         body: body ? JSON.stringify(body) : undefined,
+        // A record read or written: small, and never worth waiting on for ever.
+        signal: AbortSignal.timeout(this.config.timeouts?.readMs ?? READ_TIMEOUT_MS),
       });
       if (!resp.ok) {
         return { success: false, error: { code: 'OPENSIGN_API_ERROR', message: `OpenSign REST ${method} ${path} returned ${resp.status}` } };
@@ -437,14 +446,14 @@ export class OpenSignClient {
    * asked for each time rather than the stored address being fetched.
    */
   async fetchDocumentFile(docId: string, storedUrl: string): Promise<OpenSignResult<Buffer>> {
-    const signed = await this.callFunction<string | { url?: string }>('getsignedurl', { docId, url: storedUrl }, true);
+    const signed = await this.callFunction<string | { url?: string }>('getsignedurl', { docId, url: storedUrl }, true, this.config.timeouts?.readMs ?? READ_TIMEOUT_MS);
     if (!signed.success) return { success: false, error: signed.error };
     const url = typeof signed.data === 'string' ? signed.data : signed.data?.url;
     if (!url) {
       return { success: false, error: { code: 'OPENSIGN_API_ERROR', message: 'OpenSign gave no address for the file' } };
     }
     try {
-      const resp = await fetch(url);
+      const resp = await fetch(url, { signal: AbortSignal.timeout(this.config.timeouts?.fileMs ?? FILE_TIMEOUT_MS) });
       if (!resp.ok) {
         return { success: false, error: { code: 'OPENSIGN_API_ERROR', message: `OpenSign file fetch returned ${resp.status}` } };
       }
@@ -455,7 +464,7 @@ export class OpenSignClient {
   }
 
   async getDocument(docId: string): Promise<OpenSignResult<OpenSignDocument>> {
-    return this.callFunction<OpenSignDocument>('getDocument', { docId }, true);
+    return this.callFunction<OpenSignDocument>('getDocument', { docId }, true, this.config.timeouts?.readMs ?? READ_TIMEOUT_MS);
   }
 
   async linkContactToDoc(params: {
@@ -642,8 +651,9 @@ export class OpenSignClient {
         return { success: false, error: { code: 'OPENSIGN_API_ERROR', message: `OpenSign function ${name} failed` } };
       }
       return { success: true, data: json.result };
-    } catch {
-      return { success: false, error: { code: 'OPENSIGN_UNREACHABLE', message: `OpenSign ${name} request failed` } };
+    } catch (err) {
+      // Given up on is not the same as refused: what was asked may still be done.
+      return { success: false, error: { code: 'OPENSIGN_UNREACHABLE', message: `OpenSign ${name} request failed`, ...(timedOut(err) ? { timedOut: true } : {}) } };
     }
   }
 

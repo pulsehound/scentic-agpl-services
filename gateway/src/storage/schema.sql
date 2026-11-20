@@ -108,6 +108,8 @@ CREATE TABLE IF NOT EXISTS opensign_workflow_mappings (
   opensign_workflow_id TEXT NOT NULL,
   opensign_status TEXT NOT NULL DEFAULT 'DRAFT',
   ceremony TEXT NOT NULL DEFAULT 'hosted',
+  sign_in_doubt_until TEXT,
+  sign_in_doubt_sha TEXT,
   status TEXT NOT NULL DEFAULT 'ACTIVE',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
