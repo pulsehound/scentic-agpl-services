@@ -32,6 +32,7 @@ import {
   checkAuditEvents,
   checkDocumentPosition,
   checkRelatedDocuments,
+  mergeRelatedDocuments,
   checkDeclineReason,
   checkIpAddress,
   checkPdfBase64,
@@ -547,20 +548,49 @@ describe('ceremony endpoints', () => {
     expect(put).toBeLessThan(h.parse.calls.findIndex((c) => c.path === '/functions/signPdf'));
     expect(h.parse.calls[put]!.headers['x-parse-master-key']).toBe('test-master-key');
 
-    // The next signer's call says nothing of them: the list stands.
-    // (Bob signs second and completes the document, so the replacement is shown on a fresh one.)
+    // The next signer's call says nothing of them: the list stands, and is not written again.
     const second = await ceremony(h, 'sign', signBody(BOB, pdf('a+b'), pdf('a')));
     expect(second.status).toBe(200);
     expect(h.parse.doc().ScenticRelatedDocuments).toHaveLength(3);
+    expect(h.parse.calls.filter((c) => c.method === 'PUT' && c.body && 'ScenticRelatedDocuments' in c.body)).toHaveLength(1);
 
     const WF2 = 'wf-related-2';
     await createWorkflow(h, { ceremony: 'scentic' }, FIRM1, WF2);
     const one = [{ position: 1, total: 1, title: 'Only document' }];
     expect((await ceremony(h, 'sign', signBody(ALICE, pdf('a'), ORIGINAL, { relatedDocuments: three, position: 1 }), FIRM1, WF2)).status).toBe(200);
     expect(h.parse.doc('os-doc-2').ScenticRelatedDocuments.map((d: { current?: boolean }) => d.current === true)).toEqual([true, false, false]);
-    // No `position`: nothing is marked. A new list replaces the old one whole.
+    // A later signer's shorter list takes nothing off: its entry replaces the one at its position,
+    // the others stay, and with no `position` the mark stays where it was.
     expect((await ceremony(h, 'sign', signBody(BOB, pdf('a+b'), pdf('a'), { relatedDocuments: one }), FIRM1, WF2)).status).toBe(200);
-    expect(h.parse.doc('os-doc-2').ScenticRelatedDocuments).toEqual(one);
+    expect(h.parse.doc('os-doc-2').ScenticRelatedDocuments).toEqual([
+      { position: 1, total: 1, title: 'Only document', sha256: 'ab'.repeat(32), current: true },
+      { position: 2, total: 3, title: hebrew },
+      { position: 3, total: 3, title: 'Power of attorney', sha256: 'cd'.repeat(32) },
+    ]);
+  });
+
+  it('sign: the same list sent by each signer is written once; an empty list removes nothing; a merge past fifty is refused', async () => {
+    await createWorkflow(h);
+    const puts = () => h.parse.calls.filter((c) => c.method === 'PUT' && c.body && 'ScenticRelatedDocuments' in c.body);
+    const list = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => ({ position: from + i, total: 60, title: `Document ${from + i}` }));
+    expect((await ceremony(h, 'sign', signBody(ALICE, pdf('a'), ORIGINAL, { relatedDocuments: list(1, 30), position: 2 }))).status).toBe(200);
+    expect(puts()).toHaveLength(1);
+    const stored = JSON.stringify(h.parse.doc().ScenticRelatedDocuments);
+
+    // Thirty more would make sixty: refused, nothing written, nothing submitted.
+    const before = callsTo(h, 'signPdf').length;
+    const over = await ceremony(h, 'sign', signBody(BOB, pdf('a+b'), pdf('a'), { relatedDocuments: list(31, 60), position: 2 }));
+    expect(over.status).toBe(400);
+    expect(over.body.error.details[0].field).toBe('relatedDocuments');
+    expect(callsTo(h, 'signPdf')).toHaveLength(before);
+    expect(JSON.stringify(h.parse.doc().ScenticRelatedDocuments)).toBe(stored);
+
+    // The same list again, in another order, and then an empty one: nothing to write either time.
+    const again = await ceremony(h, 'sign', signBody(BOB, pdf('a+b'), pdf('a'), { relatedDocuments: list(1, 30).reverse(), position: 2 }));
+    expect(again.status).toBe(200);
+    expect(puts()).toHaveLength(1);
+    expect(JSON.stringify(h.parse.doc().ScenticRelatedDocuments)).toBe(stored);
+    expect(mergeRelatedDocuments(JSON.parse(stored), [], null)).toEqual(JSON.parse(stored));
   });
 
   it('sign: forty documents are taken, fifty-one are not; one bad entry, or a bad position, refuses the submission and writes nothing', async () => {
@@ -1711,14 +1741,24 @@ describe.each(DOUBT_STORES)('a signature OpenSign never answered for (%s store)'
 
   // NEW-1. Whether a signature was taken is unknown after any failure that is not OpenSign saying
   // no: the mark is set for each of them, not only for a call that timed out.
+  const refusedAt = (code: string) => (p: FakeParse) => { p.drop = 'signPdf'; p.dropCode = code; };
   it.each([
-    ['a dropped connection', (p: FakeParse) => { p.drop = 'signPdf'; }],
-    ['a 500', (p: FakeParse) => p.failNext('signPdf', 500, { error: 'boom' })],
-    ['a 502', (p: FakeParse) => p.failNext('signPdf', 502, { error: 'bad gateway' })],
-    ['a 503', (p: FakeParse) => p.failNext('signPdf', 503, { error: 'unavailable' })],
-    ['a 504', (p: FakeParse) => p.failNext('signPdf', 504, { error: 'gateway timeout' })],
-    ['a 200 that does not say it signed', (p: FakeParse) => p.failNext('signPdf', 200, { result: { status: 'error' } })],
-  ] as Array<[string, (p: FakeParse) => void]>)('%s leaves the signature in doubt for thirty seconds, not four minutes: marked, and nobody signs on top of it meanwhile', async (_what, arrange) => {
+    // The request did not get in: thirty seconds.
+    ['a 502', SIGN_IN_DOUBT_SHORT_MS, (p: FakeParse) => p.failNext('signPdf', 502, { error: 'bad gateway' })],
+    ['a 503', SIGN_IN_DOUBT_SHORT_MS, (p: FakeParse) => p.failNext('signPdf', 503, { error: 'unavailable' })],
+    ['a refused connection', SIGN_IN_DOUBT_SHORT_MS, refusedAt('ECONNREFUSED')],
+    ['a host that does not resolve', SIGN_IN_DOUBT_SHORT_MS, refusedAt('ENOTFOUND')],
+    ['a name lookup that fails for now', SIGN_IN_DOUBT_SHORT_MS, refusedAt('EAI_AGAIN')],
+    ['a connection that is never made in time', SIGN_IN_DOUBT_SHORT_MS, refusedAt('UND_ERR_CONNECT_TIMEOUT')],
+    // OpenSign had the request and may still be working on it: four minutes.
+    ['a 504', SIGN_IN_DOUBT_MS, (p: FakeParse) => p.failNext('signPdf', 504, { error: 'gateway timeout' })],
+    ['a 500', SIGN_IN_DOUBT_MS, (p: FakeParse) => p.failNext('signPdf', 500, { error: 'boom' })],
+    ['a connection reset after the request was written', SIGN_IN_DOUBT_MS, refusedAt('ECONNRESET')],
+    ['a socket closed by the other side', SIGN_IN_DOUBT_MS, refusedAt('UND_ERR_SOCKET')],
+    ['a broken pipe', SIGN_IN_DOUBT_MS, refusedAt('EPIPE')],
+    ['a failure that names no cause', SIGN_IN_DOUBT_MS, refusedAt('')],
+    ['a 200 that does not say it signed', SIGN_IN_DOUBT_MS, (p: FakeParse) => p.failNext('signPdf', 200, { result: { status: 'error' } })],
+  ] as Array<[string, number, (p: FakeParse) => void]>)('%s leaves the signature in doubt for %i ms: marked, and nobody signs on top of it meanwhile', async (_what, windowMs, arrange) => {
     await opened.store.setOpenSignWorkflowSignInDoubt(firm, WF, null);
     const before = callsTo(h, 'signPdf').length;
     arrange(h.parse);
@@ -1727,11 +1767,10 @@ describe.each(DOUBT_STORES)('a signature OpenSign never answered for (%s store)'
     expect(failed.body.error).toMatchObject({ code: 'UPSTREAM_ERROR', retryable: true });
     const m = await mark();
     expect(m.signInDoubtSha).toBe(sha(ORIGINAL));
-    // The short window: most of these never reached OpenSign (a service waking from zero answers 503).
-    expect(SIGN_IN_DOUBT_SHORT_MS).toBe(30_000);
+    expect([SIGN_IN_DOUBT_SHORT_MS, SIGN_IN_DOUBT_MS]).toEqual([30_000, 240_000]);
     const left = new Date(m.signInDoubtUntil!).getTime() - Date.now();
-    expect(left).toBeGreaterThan(SIGN_IN_DOUBT_SHORT_MS - 5000);
-    expect(left).toBeLessThanOrEqual(SIGN_IN_DOUBT_SHORT_MS);
+    expect(left).toBeGreaterThan(windowMs - 5000);
+    expect(left).toBeLessThanOrEqual(windowMs);
     for (const email of [ALICE, BOB]) {
       const res = await sign(email, pdf(email), ORIGINAL);
       expect(res.status, email).toBe(409);
@@ -1780,8 +1819,17 @@ describe.each(DOUBT_STORES)('a signature OpenSign never answered for (%s store)'
     } finally { vi.useRealTimers(); }
   });
 
-  it('a timeout still holds for four minutes: thirty seconds later nobody signs on top of it', async () => {
-    // beforeEach left a timed-out signature in doubt.
+  it.each([
+    ['a timeout', null],
+    ['a 504', (p: FakeParse) => p.failNext('signPdf', 504, { error: 'gateway timeout' })],
+    ['a connection reset after the request was written', refusedAt('ECONNRESET')],
+  ] as Array<[string, null | ((p: FakeParse) => void)]>)('%s holds for four minutes: thirty seconds later nobody signs on top of it', async (_what, arrange) => {
+    // beforeEach left a timed-out signature in doubt; the others are made here.
+    if (arrange) {
+      await opened.store.setOpenSignWorkflowSignInDoubt(firm, WF, null);
+      arrange(h.parse);
+      expect((await sign(ALICE, pdf('alice'), ORIGINAL)).status).toBe(502);
+    }
     const until = new Date((await mark()).signInDoubtUntil!).getTime();
     expect(until - Date.now()).toBeGreaterThan(SIGN_IN_DOUBT_MS - 5000);
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -1863,6 +1911,28 @@ describe('ceremony checks (pure)', () => {
     // Direction overrides cannot be smuggled into a title.
     const rlo = String.fromCodePoint(0x202e);
     expect(checkRelatedDocuments([{ position: 1, total: 1, title: `${rlo}fdp.exe` }])).toEqual({ ok: true, value: [{ position: 1, total: 1, title: 'fdp.exe' }] });
+  });
+
+  it('related documents are merged by position: sent entries replace, stored ones stay, nothing is removed', () => {
+    const a = { position: 1, total: 3, title: 'A', sha256: 'aa'.repeat(32) };
+    const b = { position: 2, total: 3, title: 'B', current: true as const };
+    const c = { position: 3, total: 3, title: 'C' };
+    // A shorter list later: all three remain, in order of position.
+    expect(mergeRelatedDocuments([a, b, c], [{ position: 3, total: 3, title: 'C, retitled' }], null)).toEqual([a, b, { position: 3, total: 3, title: 'C, retitled' }]);
+    // An entry sent without a hash keeps the stored hash; one sent with a hash replaces it.
+    expect(mergeRelatedDocuments([a], [{ position: 1, total: 3, title: 'A' }], null)).toEqual([a]);
+    expect(mergeRelatedDocuments([a], [{ ...a, sha256: 'bb'.repeat(32) }], null)).toEqual([{ ...a, sha256: 'bb'.repeat(32) }]);
+    // The mark moves only when this submission says which document it is, and there is such an entry.
+    expect(mergeRelatedDocuments([a, b, c], [c], 3)).toEqual([a, { position: 2, total: 3, title: 'B' }, { ...c, current: true }]);
+    expect(mergeRelatedDocuments([a, b, c], [c], 9)).toEqual([a, b, c]);
+    expect(mergeRelatedDocuments([a, b, c], [{ ...c, current: true as const }], null)).toEqual([a, b, c]);
+    // Out of order in, in order out; what was stored and is not an entry is dropped.
+    expect(mergeRelatedDocuments([null, 'x', { position: 0, total: 1, title: 'bad' }, { position: 2, total: 3 }, c], [b, a], null)).toEqual([a, { position: 2, total: 3, title: 'B' }, c]);
+    expect(mergeRelatedDocuments('nonsense', [a], 1)).toEqual([{ ...a, current: true }]);
+    // Fifty is the most a document lists.
+    const many = (from: number, n: number) => Array.from({ length: n }, (_, i) => ({ position: from + i, total: 99, title: `D${from + i}` }));
+    expect(mergeRelatedDocuments(many(1, 30), many(21, 30), null)).toHaveLength(50);
+    expect(mergeRelatedDocuments(many(1, 30), many(22, 30), null)).toBeNull();
   });
 
   it('audit events: nothing given is nothing written', () => {

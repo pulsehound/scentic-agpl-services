@@ -32,9 +32,11 @@ import { closedReason, declinedByEmail, isChangeError, signerRows, withSignature
 import {
   DEFAULT_MAX_PDF_BYTES,
   KeyedMutex,
+  MAX_RELATED_DOCUMENTS,
   checkAuditEvents,
   checkDocumentPosition,
   checkRelatedDocuments,
+  mergeRelatedDocuments,
   checkDeclineReason,
   checkEmail,
   checkFirmName,
@@ -75,10 +77,13 @@ import {
 /** How long after an unanswered signPdf a workflow's signatures are held back: four minutes. */
 export const SIGN_IN_DOUBT_MS = 4 * 60_000;
 /**
- * The same, where the call did not time out but failed without a refusal: a dropped connection, a
- * 5xx, a 200 that did not say it had signed. Most of these never reached OpenSign at all (a
- * service scaled to zero answers its first request 503), so the wait is short: long enough for a
- * write that did start to show in the document, not long enough to keep a signer waiting.
+ * The same, where the request provably did not reach OpenSign or was turned away at its door: no
+ * connection could be made (refused, no such host, no route), or the answer was a 502 or a 503 —
+ * what a service scaled to zero, or the proxy in front of it, says before anything runs. The wait
+ * is short: a signer is not kept four minutes for a write that never started. Every other
+ * failure without a refusal — a timeout, a 504, a 500, a connection that broke after the request
+ * was written, a 200 that did not say it had signed — keeps the long wait: OpenSign had the
+ * request and may still be working on it.
  */
 export const SIGN_IN_DOUBT_SHORT_MS = 30_000;
 
@@ -1210,11 +1215,19 @@ export class OpenSignService {
       // With it, the name this signer confirmed — on the document, beside the other signers' names,
       // and never on the contact or the account, which belong to every firm that writes to this
       // address. The certificate and the signature print it (deploy/opensign-server-patches.mjs).
+      //
+      // The documents of the request are merged into what the document already lists, by position,
+      // and written only when that changes anything: each signer's submission carries the list,
+      // and a later one that is shorter must not take a document off the certificate.
+      const mergedRelated = related.value ? mergeRelatedDocuments(doc.data.ScenticRelatedDocuments, related.value, position.value) : undefined;
+      if (mergedRelated === null) {
+        return { success: false, error: invalidInput('Invalid request', [{ field: 'relatedDocuments', issue: `at most ${MAX_RELATED_DOCUMENTS} documents with those already listed` }]) };
+      }
+      const relatedChanged = mergedRelated !== undefined && JSON.stringify(mergedRelated) !== JSON.stringify(doc.data.ScenticRelatedDocuments ?? null);
       const fields: Record<string, unknown> = {
         ...(events.value ? { ScenticAudit: events.value } : {}),
         ...(name.value ? { ScenticSignerNames: withSignerName(doc.data.ScenticSignerNames, email.value, name.value) } : {}),
-        // The whole list each time, like the events: what is sent replaces what was stored.
-        ...(related.value ? { ScenticRelatedDocuments: related.value } : {}),
+        ...(relatedChanged ? { ScenticRelatedDocuments: mergedRelated } : {}),
       };
       if (Object.keys(fields).length > 0) {
         const saved = await this.client.updateDocument(doc.data.objectId, fields);
@@ -1243,14 +1256,17 @@ export class OpenSignService {
         // go while OpenSign may still be writing: say so where every instance will see it. Only a
         // refusal is certain: a 4xx answer.
         //
-        // For how long depends on what is known. A call that timed out was received and was still
-        // being worked on: four minutes, as long as OpenSign could plausibly take. The others most
-        // likely never arrived: thirty seconds. Either way the wait ends as soon as the document
-        // shows what happened — the signer signed (answered above, before this is looked at) or
-        // the PDF changed (the mark is cleared).
+        // For how long depends on what is known. Thirty seconds where the request provably did
+        // not get in: the connection was never made, or the answer was a 502 or 503. Four minutes,
+        // as long as OpenSign could plausibly take, for everything else — a timeout, a 504 (the
+        // proxy gave up; OpenSign had the request), a 500, a connection that broke once the
+        // request was on it, a 200 that did not say it had signed. Either way the wait ends as
+        // soon as the document shows what happened — the signer signed (answered above, before
+        // this is looked at) or the PDF changed (the mark is cleared).
         const status = submitted.error?.httpStatus;
         const refused = typeof status === 'number' && status >= 400 && status < 500;
-        const doubtMs = submitted.error?.timedOut ? SIGN_IN_DOUBT_MS : SIGN_IN_DOUBT_SHORT_MS;
+        const keptOut = submitted.error?.notReached === true || status === 502 || status === 503;
+        const doubtMs = keptOut ? SIGN_IN_DOUBT_SHORT_MS : SIGN_IN_DOUBT_MS;
         if (!refused) {
           await this.store.setOpenSignWorkflowSignInDoubt(scenticFirmId, scenticSignatureWorkflowId, {
             until: new Date(Date.now() + doubtMs).toISOString(),

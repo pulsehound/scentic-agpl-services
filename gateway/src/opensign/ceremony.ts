@@ -442,6 +442,45 @@ export function checkRelatedDocuments(value: unknown, current: number | null = n
 }
 
 /**
+ * The document's list with a submission's entries merged in, by position: an entry sent replaces
+ * the stored one at its position, an entry not sent stays, and nothing is ever removed — each
+ * signer's submission carries the list as Scentic knew it then, and a later, shorter one must not
+ * take a document off a certificate. In order of position. `current` (this submission's
+ * `position`), when given, moves the "(this document)" mark to that entry; otherwise the mark
+ * stays where it was. Anything stored that is not an entry is dropped. Null when the merged list
+ * would run past fifty.
+ */
+export function mergeRelatedDocuments(existing: unknown, incoming: RelatedDocument[], current: number | null): RelatedDocument[] | null {
+  const byPosition = new Map<number, RelatedDocument>();
+  for (const e of Array.isArray(existing) ? existing : []) {
+    if (!e || typeof e !== 'object' || Array.isArray(e)) continue;
+    const d = e as Record<string, unknown>;
+    if (!wholeNumber(d.position) || !wholeNumber(d.total) || typeof d.title !== 'string' || d.title === '') continue;
+    byPosition.set(d.position, {
+      position: d.position,
+      total: d.total,
+      title: d.title,
+      ...(typeof d.sha256 === 'string' && /^[0-9a-f]{64}$/.test(d.sha256) ? { sha256: d.sha256 } : {}),
+      ...(d.current === true ? { current: true as const } : {}),
+    });
+  }
+  for (const d of incoming) {
+    const kept = byPosition.get(d.position);
+    // The mark is decided below; an entry sent without a hash keeps the one already stored.
+    const { current: _mark, ...entry } = d;
+    byPosition.set(d.position, {
+      ...entry,
+      ...(!entry.sha256 && kept?.sha256 ? { sha256: kept.sha256 } : {}),
+      ...(kept?.current ? { current: true as const } : {}),
+    });
+  }
+  if (byPosition.size > MAX_RELATED_DOCUMENTS) return null;
+  const merged = [...byPosition.values()].sort((a, b) => a.position - b.position);
+  if (current === null || !byPosition.has(current)) return merged;
+  return merged.map(({ current: _mark, ...d }) => (d.position === current ? { ...d, current: true as const } : d));
+}
+
+/**
  * One at a time, per key, inside this process.
  *
  * A submission reads the document's current PDF, compares it with the one the caller stamped, and

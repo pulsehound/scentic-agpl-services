@@ -55,6 +55,8 @@ export interface FakeParse {
   hang: string | null;
   /** A cloud function whose next call loses its connection: the fetch fails, with no answer at all. */
   drop: string | null;
+  /** How that connection fails: ECONNRESET (broken once in use) unless set, e.g. ECONNREFUSED. */
+  dropCode: string;
 }
 
 const BASE = 'http://localhost:8080/app';
@@ -89,6 +91,7 @@ export function makeFakeParse(): FakeParse {
     signDelayMs: 0,
     hang: null,
     drop: null,
+    dropCode: 'ECONNRESET',
     fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = (init?.method ?? 'GET').toUpperCase();
@@ -154,8 +157,10 @@ export function makeFakeParse(): FakeParse {
         if (self.hang === fn) return never();
         if (self.drop === fn) {
           self.drop = null;
-          // What fetch throws when the socket closes under it.
-          throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }) });
+          const code = self.dropCode;
+          self.dropCode = 'ECONNRESET';
+          // What fetch throws when the connection fails: the reason is on `cause`.
+          throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error(code), { code }) });
         }
         const failure = failures.get(fn);
         if (failure) {

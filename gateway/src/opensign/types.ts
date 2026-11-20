@@ -158,8 +158,10 @@ export interface OpenSignResult<T> {
   /**
    * `httpStatus`: the status OpenSign answered with, when it answered and refused or failed.
    * `upstreamCode`: Parse's own error number from that answer. `timedOut`: no answer in time.
+   * `notReached`: the request never left — no connection could be made (refused, no such host,
+   * no route), so nothing was sent for OpenSign to act on.
    */
-  error?: { code: string; message: string; upstreamCode?: number; httpStatus?: number; timedOut?: boolean };
+  error?: { code: string; message: string; upstreamCode?: number; httpStatus?: number; timedOut?: boolean; notReached?: boolean };
 }
 
 export interface OpenSignHealthStatus {

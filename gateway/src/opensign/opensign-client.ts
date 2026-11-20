@@ -40,6 +40,14 @@ const READ_TIMEOUT_MS = 30_000;
 // Fetching a document's PDF, which may be tens of megabytes.
 const FILE_TIMEOUT_MS = 120_000;
 const timedOut = (err: unknown) => (err as { name?: string })?.name === 'TimeoutError' || (err as { name?: string })?.name === 'AbortError';
+// Failures of making the connection at all: nothing was written to it, so nothing was received.
+// A reset, a closed socket or anything unnamed is not here: the request may have been sent whole.
+const CONNECT_FAILURES = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'UND_ERR_CONNECT_TIMEOUT']);
+const neverConnected = (err: unknown) => {
+  const e = err as { code?: unknown; cause?: { code?: unknown } };
+  const code = e?.cause?.code ?? e?.code;
+  return typeof code === 'string' && CONNECT_FAILURES.has(code);
+};
 
 export class OpenSignClient {
   private config: OpenSignClientConfig;
@@ -673,7 +681,7 @@ export class OpenSignClient {
       return { success: true, data: json.result };
     } catch (err) {
       // Given up on is not the same as refused: what was asked may still be done.
-      return { success: false, error: { code: 'OPENSIGN_UNREACHABLE', message: `OpenSign ${name} request failed`, ...(timedOut(err) ? { timedOut: true } : {}) } };
+      return { success: false, error: { code: 'OPENSIGN_UNREACHABLE', message: `OpenSign ${name} request failed`, ...(timedOut(err) ? { timedOut: true } : {}), ...(neverConnected(err) ? { notReached: true } : {}) } };
     }
   }
 
