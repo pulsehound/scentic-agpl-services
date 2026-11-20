@@ -1744,13 +1744,14 @@ describe.each(DOUBT_STORES)('a signature OpenSign never answered for (%s store)'
   const refusedAt = (code: string) => (p: FakeParse) => { p.drop = 'signPdf'; p.dropCode = code; };
   it.each([
     // The request did not get in: thirty seconds.
-    ['a 502', SIGN_IN_DOUBT_SHORT_MS, (p: FakeParse) => p.failNext('signPdf', 502, { error: 'bad gateway' })],
-    ['a 503', SIGN_IN_DOUBT_SHORT_MS, (p: FakeParse) => p.failNext('signPdf', 503, { error: 'unavailable' })],
     ['a refused connection', SIGN_IN_DOUBT_SHORT_MS, refusedAt('ECONNREFUSED')],
     ['a host that does not resolve', SIGN_IN_DOUBT_SHORT_MS, refusedAt('ENOTFOUND')],
     ['a name lookup that fails for now', SIGN_IN_DOUBT_SHORT_MS, refusedAt('EAI_AGAIN')],
     ['a connection that is never made in time', SIGN_IN_DOUBT_SHORT_MS, refusedAt('UND_ERR_CONNECT_TIMEOUT')],
-    // OpenSign had the request and may still be working on it: four minutes.
+    // OpenSign had the request and may still be working on it: four minutes. A 502 or 503 too (L-3):
+    // a front end answers so also after it handed the request on.
+    ['a 502', SIGN_IN_DOUBT_MS, (p: FakeParse) => p.failNext('signPdf', 502, { error: 'bad gateway' })],
+    ['a 503', SIGN_IN_DOUBT_MS, (p: FakeParse) => p.failNext('signPdf', 503, { error: 'unavailable' })],
     ['a 504', SIGN_IN_DOUBT_MS, (p: FakeParse) => p.failNext('signPdf', 504, { error: 'gateway timeout' })],
     ['a 500', SIGN_IN_DOUBT_MS, (p: FakeParse) => p.failNext('signPdf', 500, { error: 'boom' })],
     ['a connection reset after the request was written', SIGN_IN_DOUBT_MS, refusedAt('ECONNRESET')],
@@ -1781,7 +1782,7 @@ describe.each(DOUBT_STORES)('a signature OpenSign never answered for (%s store)'
 
   it('the short window too ends as soon as the document shows what happened, or when its thirty seconds are up', async () => {
     await opened.store.setOpenSignWorkflowSignInDoubt(firm, WF, null);
-    h.parse.failNext('signPdf', 503, { error: 'unavailable' });
+    refusedAt('ECONNREFUSED')(h.parse);
     expect((await sign(ALICE, pdf('alice'), ORIGINAL)).status).toBe(502);
     expect((await sign(BOB, pdf('bob'), ORIGINAL)).body.error.code).toBe('BUSY');
 
@@ -1805,11 +1806,11 @@ describe.each(DOUBT_STORES)('a signature OpenSign never answered for (%s store)'
     expect((await mark()).signInDoubtUntil ?? null).toBeNull();
   });
 
-  it('thirty seconds after a 503 that never arrived, with nothing changed, the same signer signs', async () => {
+  it('thirty seconds after a connection that was never made, with nothing changed, the same signer signs', async () => {
     await opened.store.setOpenSignWorkflowSignInDoubt(firm, WF, null);
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
-      h.parse.failNext('signPdf', 503, { error: 'unavailable' });
+      refusedAt('ECONNREFUSED')(h.parse);
       expect((await sign(ALICE, pdf('alice'), ORIGINAL)).status).toBe(502);
       vi.setSystemTime(Date.now() + SIGN_IN_DOUBT_SHORT_MS - 2000);
       expect((await sign(ALICE, pdf('alice'), ORIGINAL)).body.error.code).toBe('BUSY');
@@ -1822,6 +1823,7 @@ describe.each(DOUBT_STORES)('a signature OpenSign never answered for (%s store)'
   it.each([
     ['a timeout', null],
     ['a 504', (p: FakeParse) => p.failNext('signPdf', 504, { error: 'gateway timeout' })],
+    ['a 503 (L-3)', (p: FakeParse) => p.failNext('signPdf', 503, { error: 'unavailable' })],
     ['a connection reset after the request was written', refusedAt('ECONNRESET')],
   ] as Array<[string, null | ((p: FakeParse) => void)]>)('%s holds for four minutes: thirty seconds later nobody signs on top of it', async (_what, arrange) => {
     // beforeEach left a timed-out signature in doubt; the others are made here.

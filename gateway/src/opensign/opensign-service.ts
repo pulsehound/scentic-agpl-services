@@ -77,13 +77,14 @@ import {
 /** How long after an unanswered signPdf a workflow's signatures are held back: four minutes. */
 export const SIGN_IN_DOUBT_MS = 4 * 60_000;
 /**
- * The same, where the request provably did not reach OpenSign or was turned away at its door: no
- * connection could be made (refused, no such host, no route), or the answer was a 502 or a 503 —
- * what a service scaled to zero, or the proxy in front of it, says before anything runs. The wait
- * is short: a signer is not kept four minutes for a write that never started. Every other
- * failure without a refusal — a timeout, a 504, a 500, a connection that broke after the request
- * was written, a 200 that did not say it had signed — keeps the long wait: OpenSign had the
- * request and may still be working on it.
+ * The same, where the request provably did not reach OpenSign: no connection could be made
+ * (refused, no such host, no route, no connection in time). The wait is short: a signer is not
+ * kept four minutes for a write that never started. Every other failure without a refusal keeps
+ * the long wait — a timeout, a 500, a 502, a 503, a 504, a connection that broke after the
+ * request was written, a 200 that did not say it had signed. A 502 or 503 is among them (review
+ * of round 76, L-3): the front end in front of OpenSign answers so also when an instance stopped
+ * or a connection was reset after the request had been handed to it, so it does not prove that
+ * nothing was written.
  */
 export const SIGN_IN_DOUBT_SHORT_MS = 30_000;
 
@@ -1257,15 +1258,15 @@ export class OpenSignService {
         // refusal is certain: a 4xx answer.
         //
         // For how long depends on what is known. Thirty seconds where the request provably did
-        // not get in: the connection was never made, or the answer was a 502 or 503. Four minutes,
-        // as long as OpenSign could plausibly take, for everything else — a timeout, a 504 (the
-        // proxy gave up; OpenSign had the request), a 500, a connection that broke once the
-        // request was on it, a 200 that did not say it had signed. Either way the wait ends as
+        // not get in: the connection was never made. Four minutes, as long as OpenSign could
+        // plausibly take, for everything else — a timeout, a 502 or 503 (a front end says so also
+        // after handing the request on), a 504, a 500, a connection that broke once the request
+        // was on it, a 200 that did not say it had signed. Either way the wait ends as
         // soon as the document shows what happened — the signer signed (answered above, before
         // this is looked at) or the PDF changed (the mark is cleared).
         const status = submitted.error?.httpStatus;
         const refused = typeof status === 'number' && status >= 400 && status < 500;
-        const keptOut = submitted.error?.notReached === true || status === 502 || status === 503;
+        const keptOut = submitted.error?.notReached === true;
         const doubtMs = keptOut ? SIGN_IN_DOUBT_SHORT_MS : SIGN_IN_DOUBT_MS;
         if (!refused) {
           await this.store.setOpenSignWorkflowSignInDoubt(scenticFirmId, scenticSignatureWorkflowId, {
