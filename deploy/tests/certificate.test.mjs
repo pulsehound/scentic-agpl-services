@@ -15,9 +15,9 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { PDFDocument, PDFPage } from 'pdf-lib';
+import { PDFDocument, PDFFont, PDFPage } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
-import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { OPS, getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { applyServerPatches } from '../opensign-server-patches.mjs';
@@ -30,6 +30,7 @@ import {
   printable,
   relatedDocumentRows,
   scenticOrganization,
+  scenticReadingOrder,
   utcStamp,
   visualOrder,
   wrapped,
@@ -50,7 +51,7 @@ export function formatDateTime(date, dateFormat, timeZone, is12Hour) {
 `;
 
 const HEBREW_NAME = 'יעקב כהן'; // "Yaakov Cohen", in the order it is typed
-const HEBREW_AS_DRAWN = 'ןהכ בקעי'; // the same letters in reading order, left to right
+const HEBREW_AS_DRAWN = 'ןהכ בקעי'; // the same letters as they are seen, from the left
 
 const HEBREW_TITLE = 'הסכם שכר טרחה'; // "Fee agreement"
 const HEBREW_TITLE_AS_DRAWN = Array.from(HEBREW_TITLE).reverse().join(''); // letters and spaces only
@@ -87,6 +88,24 @@ async function drawnBy(generate, doc) {
   } finally {
     spy.mockRestore();
   }
+}
+
+/**
+ * Every run of text written on the pages, glyph after glyph in the order written: on a page laid
+ * out left to right, the order they are seen from the left. pdf.js's operator list, not its text
+ * extraction (which reorders right-to-left runs, as a reader's viewer does).
+ */
+async function writtenRuns(bytes) {
+  const pdf = await getDocument({ data: new Uint8Array(bytes), useSystemFonts: false, disableFontFace: true, verbosity: 0 }).promise;
+  const runs = [];
+  for (let n = 1; n <= pdf.numPages; n++) {
+    const ops = await (await pdf.getPage(n)).getOperatorList();
+    ops.fnArray.forEach((fn, i) => {
+      if (fn === OPS.showText) runs.push(ops.argsArray[i][0].filter(g => g && typeof g === 'object').map(g => g.unicode).join(''));
+    });
+  }
+  await pdf.destroy();
+  return runs;
 }
 
 async function textOf(bytes) {
@@ -241,9 +260,43 @@ describe.skipIf(!hasVendor)(`the certificate, from the patched upstream generato
     }
   });
 
-  it('a Hebrew name is drawn, in reading order, in the event history', () => {
-    expect(made.three.all).toContain(HEBREW_AS_DRAWN);
-    expect(made.many.all).toContain(HEBREW_AS_DRAWN);
+  it('a Hebrew name in the event history is read back as it was typed', () => {
+    for (const name of ['three', 'many']) {
+      expect(made[name].all, name).toContain(HEBREW_NAME);
+      expect(made[name].all, name).not.toContain(HEBREW_AS_DRAWN);
+    }
+  });
+
+  it('F-19: every Hebrew string is written as it is seen, from the left, and read back in the order it was typed', async () => {
+    const SENDER = 'דנה לוי'; // "Dana Levi"
+    const FIRM_HE = 'משרד כהן לוי'; // "Cohen Levi office"
+    const TAMAR = 'תמר בדיקה'; // a signer's confirmed name
+    const doc = fixtureDoc([{ at: '2026-11-19T08:00:00Z', event: 'Signed', actor: HEBREW_NAME, email: 'yaakov@example.co.il' }], {
+      Name: HEBREW_TITLE,
+      ScenticFirmName: FIRM_HE,
+      SenderName: SENDER,
+      SenderMail: 'dana@example.co.il',
+      ScenticSignerNames: [{ email: 'alice@example.com', name: TAMAR }],
+      ScenticRelatedDocuments: [
+        { position: 1, total: 2, title: HEBREW_TITLE, current: true, sha256: 'cd'.repeat(32) },
+        { position: 2, total: 2, title: 'Schedule A', sha256: 'ef'.repeat(32) },
+      ],
+    });
+    const bytes = await generate(doc);
+    const runs = await writtenRuns(bytes);
+    // The stored contact's name (upstream's own drawing) and every string Scentic draws.
+    for (const typed of [HEBREW_NAME, HEBREW_TITLE, FIRM_HE, SENDER, TAMAR]) {
+      const seen = visualOrder(typed);
+      expect(seen).not.toBe(typed);
+      expect(runs.some(run => run.includes(seen)), `${typed} written as seen`).toBe(true);
+      expect(runs.some(run => run.includes(typed)), `${typed} never written as typed`).toBe(false);
+    }
+    // The related document's line: Latin as it is, the Hebrew run as seen.
+    expect(runs).toContain(`1 of 2 \u2014 ${HEBREW_TITLE_AS_DRAWN} (this document)`);
+    // pdf.js (Firefox's viewer, and the text layer that copy uses) gives each back as typed.
+    const out = await textOf(bytes);
+    for (const typed of [HEBREW_NAME, HEBREW_TITLE, FIRM_HE, SENDER, TAMAR]) expect(out.all, typed).toContain(typed);
+    expect(out.all.replace(/\s+/g, ' ')).toContain(`1 of 2 \u2014 ${HEBREW_TITLE} (this document)`);
   });
 
   it('the browser string is printed whole, wrapped within its column; the row grows and the next row starts below it', async () => {
@@ -332,9 +385,9 @@ describe.skipIf(!hasVendor)(`the certificate, from the patched upstream generato
       expect(organization(fallback)).toBe(PLATFORM);
     }
 
-    // A Hebrew firm is drawn in reading order; a name too long for the line is cut inside the border.
+    // A Hebrew firm is read back as it was typed; a name too long for the line is cut inside the border.
     const hebrew = await textOf(await generate(fixtureDoc(undefined, { ExtUserPtr: platform, ScenticFirmName: HEBREW_NAME })));
-    expect(organization(hebrew)).toBe(HEBREW_AS_DRAWN);
+    expect(organization(hebrew)).toBe(HEBREW_NAME);
     const long = await textOf(await generate(fixtureDoc(undefined, { ExtUserPtr: platform, ScenticFirmName: 'Cohen, Levi, Mizrahi & Partners '.repeat(9) })));
     expect(organization(long)).toMatch(/^Cohen, Levi, Mizrahi & Partners Cohen.*\.\.\.$/);
     expect(outside(long)).toEqual([]);
@@ -360,9 +413,9 @@ describe.skipIf(!hasVendor)(`the certificate, from the patched upstream generato
     expect(name).toMatch(/^Dana Levi of Cohen and Levi Dana.*\.\.\.$/);
     expect(email).toMatch(/^a{64}@b+\.\.\.$/);
     expect(outside(long)).toEqual([]);
-    // A Hebrew sender is drawn in reading order, like the signers.
+    // A Hebrew sender is read back as it was typed, like the signers.
     const hebrew = await textOf(await generate(fixtureDoc(undefined, { ExtUserPtr: platform, SenderName: HEBREW_NAME, SenderMail: 'yaakov@cohenlevi.example' })));
-    expect(originator(hebrew)).toEqual([HEBREW_AS_DRAWN, 'yaakov@cohenlevi.example']);
+    expect(originator(hebrew)).toEqual([HEBREW_NAME, 'yaakov@cohenlevi.example']);
   });
 
   it('documents in this request: absent, empty or not a list, the certificate is exactly the one it was', async () => {
@@ -388,25 +441,28 @@ describe.skipIf(!hasVendor)(`the certificate, from the patched upstream generato
     expect(outside(out)).toEqual([]);
   });
 
-  it('three documents, one with a Hebrew title: in the order given, the Hebrew in reading order, only the current one marked', async () => {
+  it('three documents, one with a Hebrew title: in the order given, the Hebrew written as seen, only the current one marked', async () => {
     const list = [
       { position: 1, total: 3, title: 'Engagement letter', sha256: '11'.repeat(32) },
       { position: 2, total: 3, title: HEBREW_TITLE, current: true },
       { position: 3, total: 3, title: 'Power of attorney', sha256: '33'.repeat(32) },
     ];
     const out = await drawnBy(generate, fixtureDoc(undefined, { ScenticRelatedDocuments: list, OriginIp: '198.51.100.24' }));
-    // What was drawn, in order: the Hebrew letters from the left in reading order.
+    // What was handed to drawText, in order: every line as it was typed.
     const from = out.drawn.indexOf('Documents in this request');
     expect(out.drawn.slice(from, out.drawn.indexOf('Document originator') + 1)).toEqual([
       'Documents in this request',
       '1 of 3 \u2014 Engagement letter',
       `SHA-256 : ${'11'.repeat(32)}`,
-      `2 of 3 \u2014 ${HEBREW_TITLE_AS_DRAWN} (this document)`,
+      `2 of 3 \u2014 ${HEBREW_TITLE} (this document)`,
       '3 of 3 \u2014 Power of attorney',
       `SHA-256 : ${'33'.repeat(32)}`,
       'Document originator',
     ]);
-    expect(out.drawn.some(text => text.includes(HEBREW_TITLE))).toBe(false); // never in the order it was typed
+    // What was written on the page: the Hebrew letters as they are seen, from the left.
+    const runs = await writtenRuns(await generate(fixtureDoc(undefined, { ScenticRelatedDocuments: list, OriginIp: '198.51.100.24' })));
+    expect(runs).toContain(`2 of 3 \u2014 ${HEBREW_TITLE_AS_DRAWN} (this document)`);
+    expect(runs.some(run => run.includes(HEBREW_TITLE))).toBe(false);
     // What a reader's viewer gives back for the same lines: the title as it was typed.
     const flat = out.all.replace(/\s+/g, ' ');
     expect(flat).toContain(
@@ -427,7 +483,7 @@ describe.skipIf(!hasVendor)(`the certificate, from the patched upstream generato
     // Drawn: every entry and then its hash, in the order given, a continued page's heading between some.
     const section = out.drawn.slice(out.drawn.indexOf('Documents in this request') + 1, out.drawn.indexOf('Document originator')).filter(text => text !== 'Documents in this request (continued)');
     expect(section).toEqual(list.flatMap(d => [
-      `${d.position} of 40 \u2014 ${d.title === HEBREW_TITLE ? HEBREW_TITLE_AS_DRAWN : d.title}${d.current ? ' (this document)' : ''}`,
+      `${d.position} of 40 \u2014 ${d.title}${d.current ? ' (this document)' : ''}`,
       `SHA-256 : ${d.sha256}`,
     ]));
     expect(list.filter(d => d.title === HEBREW_TITLE)).toHaveLength(8);
@@ -495,14 +551,14 @@ describe.skipIf(!hasVendor)(`the certificate, from the patched upstream generato
     expect(outside(many)).toEqual([]);
   });
 
-  it('each signer is named as they confirmed for this document, not as the shared contact has them; Hebrew in reading order', async () => {
+  it('each signer is named as they confirmed for this document, not as the shared contact has them; Hebrew read back as typed', async () => {
     // The document of a second firm: OpenSign's one contact for the address still carries the name
     // the first firm gave it.
     const doc = fixtureDoc([{ at: '2026-11-19T08:20:00Z', event: 'Signed', actor: '', email: 'alice@example.com' }]);
     doc.Signers[0].Name = 'Alice A';
     const stored = await textOf(await generate(doc));
     expect(stored.all).toContain('Alice A');
-    expect(stored.all).toContain(HEBREW_NAME); // as before: the contact's name, in the order it was typed
+    expect(stored.all).toContain(HEBREW_NAME); // the contact's name
 
     doc.ScenticSignerNames = [
       { email: 'Alice@Example.com', name: 'Robert B' },
@@ -511,8 +567,8 @@ describe.skipIf(!hasVendor)(`the certificate, from the patched upstream generato
     const confirmed = await textOf(await generate(doc));
     expect(confirmed.all).toContain('Robert B');
     expect(confirmed.all).not.toContain('Alice A');
-    expect(confirmed.all).toContain(HEBREW_AS_DRAWN);
-    expect(confirmed.all).not.toContain(HEBREW_NAME);
+    expect(confirmed.all).toContain(HEBREW_NAME);
+    expect(confirmed.all).not.toContain(HEBREW_AS_DRAWN);
     // In the signer's block, and in the event history where the record gave only an address.
     expect(confirmed.all.match(/Robert B/g).length).toBe(2);
     // A name confirmed by one signer names nobody else, and what is not a name entry is passed over.
@@ -588,7 +644,7 @@ describe.skipIf(!hasVendor)('the event history helpers, with the certificate fon
     expect(utcStamp(undefined)).toBe('');
   });
 
-  it('right-to-left runs are put in reading order; Latin and digits are left alone', () => {
+  it('right-to-left runs are put in the order they are seen; Latin and digits are left alone', () => {
     expect(visualOrder(HEBREW_NAME)).toBe(HEBREW_AS_DRAWN);
     expect(visualOrder('Signed by ' + HEBREW_NAME + ' (CEO)')).toBe('Signed by ' + HEBREW_AS_DRAWN + ' (CEO)');
     expect(visualOrder('plain 123')).toBe('plain 123');
@@ -634,19 +690,42 @@ describe.skipIf(!hasVendor)('the event history helpers, with the certificate fon
     expect(wrapped(font, 'wide', 7, 0.1)).toEqual(['w', 'i', 'd', 'e']);
   });
 
-  it('a right-to-left title wraps from its first words down, each line in reading order', () => {
+  it('a right-to-left title wraps from its first words down, each line as typed', () => {
     const title = Array.from({ length: 12 }, () => HEBREW_TITLE).join(' ');
     const lines = wrapped(font, title, 12, 200);
     expect(lines.length).toBeGreaterThan(1);
-    // Read each line right to left and the lines top to bottom: the title as it was typed.
-    expect(lines.map(line => Array.from(line).reverse().join('')).join(' ')).toBe(title);
+    // The lines top to bottom: the title as it was typed (the font writes each as it is seen).
+    expect(lines.join(' ')).toBe(title);
+    for (const line of lines) expect(font.widthOfTextAtSize(line, 12)).toBeLessThanOrEqual(200);
+  });
+
+  it('F-19: the certificate font writes right-to-left text as it is seen, whatever the shaper would do; other text as before', async () => {
+    const pdf = await PDFDocument.create();
+    pdf.registerFontkit(fontkit);
+    const own = await pdf.embedFont(readFileSync(join(VENDOR_SERVER, 'font', 'times.ttf')), { subset: true });
+    // Upstream's encoder, one character at a time: no shaper can reorder a single character.
+    const one = ch => PDFFont.prototype.encodeText.call(own, ch).toString().slice(1, -1);
+    const byChar = text => Array.from(text).map(one).join('');
+    const upstream = text => PDFFont.prototype.encodeText.call(own, text).toString().slice(1, -1);
+    // What went wrong (F-19): pdf-lib's shaper reverses a string that begins with a Hebrew letter
+    // and leaves alone one that begins with a Latin one, so the same name came out either way.
+    expect(upstream(visualOrder(HEBREW_NAME))).toBe(byChar(HEBREW_NAME));
+    expect(upstream('Signed by ' + visualOrder(HEBREW_NAME))).toBe(byChar('Signed by ' + HEBREW_AS_DRAWN));
+    expect(scenticReadingOrder(own)).toBe(own);
+    expect(scenticReadingOrder(own).encodeText).toBe(own.encodeText); // once only
+    const hex = text => own.encodeText(text).toString().slice(1, -1);
+    for (const typed of [HEBREW_NAME, 'Signed by ' + HEBREW_NAME + ' (CEO)', HEBREW_TITLE, `2 of 3 \u2014 ${HEBREW_TITLE} (this document)`, 'ש']) {
+      expect(hex(typed), typed).toBe(byChar(visualOrder(typed)));
+    }
+    for (const latin of ['Certificate of Completion', 'office fifty', 'alice@example.com', '']) expect(hex(latin), latin).toBe(upstream(latin));
+    expect(scenticReadingOrder(null)).toBe(null);
   });
 
   it('a browser string keeps 512 characters, other text 300, in the order typed until it is drawn', () => {
     expect(clean(font, 'x'.repeat(900))).toHaveLength(300);
     expect(eventRows(font, [{ at: '2026-11-19T08:00:00Z', event: 'e', actor: 'a', userAgent: 'u'.repeat(900) }])[0].browser).toHaveLength(512);
     expect(clean(font, HEBREW_NAME)).toBe(HEBREW_NAME);
-    expect(printable(font, HEBREW_NAME)).toBe(HEBREW_AS_DRAWN);
+    expect(printable(font, HEBREW_NAME)).toBe(HEBREW_NAME);
   });
 
   it('the documents of a request: at most fifty, in the order given, the current one marked, a hash only when it is one', () => {
@@ -667,7 +746,7 @@ describe.skipIf(!hasVendor)('the event history helpers, with the certificate fon
     expect(scenticOrganization({ FirmName: FIRM }, PLATFORM, font, 400)).toBe(FIRM);
     expect(scenticOrganization({ ScenticFirmName: ' ' }, PLATFORM, font, 400)).toBe(PLATFORM);
     expect(scenticOrganization(undefined, PLATFORM, font, 400)).toBe(PLATFORM);
-    expect(scenticOrganization({ ScenticFirmName: HEBREW_NAME }, PLATFORM, font, 400)).toBe(HEBREW_AS_DRAWN);
+    expect(scenticOrganization({ ScenticFirmName: HEBREW_NAME }, PLATFORM, font, 400)).toBe(HEBREW_NAME);
     const cut = scenticOrganization({ ScenticFirmName: 'Long name '.repeat(30) }, PLATFORM, font, 400);
     expect(cut.endsWith('...')).toBe(true);
     expect(font.widthOfTextAtSize(cut, 13)).toBeLessThanOrEqual(400);

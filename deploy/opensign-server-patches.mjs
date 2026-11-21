@@ -462,8 +462,17 @@ export function applyServerPatches({ root = '/usr/src/app', filesDir = '/tmp/ope
     [
       "import { formatDateTime } from '../../../Utils.js';\n",
       "import { formatDateTime } from '../../../Utils.js';\n" +
-        "import { drawScenticEventHistory, drawScenticRelatedDocuments, scenticLine, scenticOrganization, scenticSignerName } from './scenticEventHistory.js';\n",
+        "import { drawScenticEventHistory, drawScenticRelatedDocuments, scenticLine, scenticOrganization, scenticReadingOrder, scenticSignerName } from './scenticEventHistory.js';\n",
       'certificate event history import',
+    ],
+    // Right-to-left text (a Hebrew name, title or firm) drawn so that it reads right to left and is
+    // copied, searched and extracted in the order it was typed (F-19): the certificate's one font
+    // writes such text glyph by glyph in visual order, whatever pdf-lib's shaper would have done
+    // with it (scenticReadingOrder). Every string drawn with it stays in the order it was typed.
+    [
+      '  const timesRomanFont = await pdfDoc.embedFont(fontBytes, { subset: true });\n',
+      '  const timesRomanFont = scenticReadingOrder(await pdfDoc.embedFont(fontBytes, { subset: true }));\n',
+      'certificate font in reading order',
     ],
     [
       '    yPosition8 = yPosition8 - 174;\n  }\n\n  const pdfBytes = await pdfDoc.save();\n  return pdfBytes;\n',
@@ -535,8 +544,7 @@ export function applyServerPatches({ root = '/usr/src/app', filesDir = '/tmp/ope
 
   // The originator's name and address. Upstream draws both as they are stored, whatever their
   // length; the address is now the sender's own (the document's SenderMail, written by the
-  // gateway) and the name the firm's own wording. Each is made drawable, put in reading order and
-  // kept inside the border.
+  // gateway) and the name the firm's own wording. Each is made drawable and kept inside the border.
   edit(`${FN}/pdf/GenerateCertificate.js`, [
     [
       "  const ownerName = docDetails?.SenderName || docDetails.ExtUserPtr?.Name || 'n/a';\n" +

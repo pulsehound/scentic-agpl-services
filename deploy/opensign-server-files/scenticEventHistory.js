@@ -24,7 +24,7 @@
 //
 // It must never be the reason a certificate is not made: whatever is in the record, it is reduced
 // to text the certificate's font can draw, and anything that is not an event is passed over.
-import { rgb } from 'pdf-lib';
+import { PDFHexString, rgb } from 'pdf-lib';
 
 const MAX_EVENTS = 500;
 const MAX_TEXT = 300;
@@ -51,11 +51,11 @@ const isRtl = code =>
 const isNeutral = ch => /^[\s.,;:!?'"()\-–—/\\]$/.test(ch);
 
 /**
- * Right-to-left runs put in the order they are read, for a renderer that only lays glyphs out left
- * to right (pdf-lib has no bidirectional layout). Each run of Hebrew or Arabic letters, with the
- * spaces and punctuation between them, is reversed in place; Latin text and digits stay as they
- * are. This is not the Unicode bidirectional algorithm: a line mixing both directions keeps the
- * order of its runs, and Arabic letters are drawn unjoined.
+ * Right-to-left runs put in the order they are seen, left to right, for a page that lays glyphs out
+ * only left to right. Each run of Hebrew or Arabic letters, with the spaces and punctuation between
+ * them, is reversed in place; Latin text and digits stay as they are. This is not the Unicode
+ * bidirectional algorithm: a line mixing both directions keeps the order of its runs (the
+ * certificate is a left-to-right page), and Arabic letters are drawn unjoined.
  */
 export function visualOrder(text) {
   const chars = Array.from(text);
@@ -76,6 +76,44 @@ export function visualOrder(text) {
     i = end + 1;
   }
   return out.join('');
+}
+
+const hasRtl = text => Array.from(text).some(ch => isRtl(ch.codePointAt(0)));
+const IN_READING_ORDER = Symbol.for('scentic.certificate.readingOrder');
+
+/**
+ * Make `font` draw right-to-left text the way a reader of it reads it, and so that copying it,
+ * searching it and extracting it give it back in the order it was typed (F-19).
+ *
+ * Every string handed to pdf-lib's drawText with this font is in the order it was typed. The font's
+ * encodeText, which drawText calls once a line, is replaced for this font only: a string with a
+ * right-to-left letter in it is put in visual order (`visualOrder`) and each character is encoded
+ * on its own, so the glyphs are written to the page in the order they are seen, left to right.
+ * Readers (pdf.js, PDFium, MuPDF, Xpdf) find a right-to-left run written that way and turn it back
+ * into the typed order, as they do for any PDF made by a word processor.
+ *
+ * Why not leave it to pdf-lib: its shaper (fontkit) reverses a whole string when the string's first
+ * letter is Hebrew or Arabic, and leaves it alone otherwise. Strings put in visual order first were
+ * reversed back (a confirmed Hebrew name, a Hebrew firm name, the originator's Hebrew name and the
+ * event history's Hebrew names were drawn backwards, and read back backwards); strings left as typed
+ * were right only when they began with a Hebrew letter. Encoding each character alone gives the
+ * shaper nothing to reorder. Text with no right-to-left letter is encoded as before, whole.
+ *
+ * Why not /ActualText (a marked span carrying the typed text): pdf.js ignores it, and PDFium and
+ * MuPDF read it and then reverse it again, so it helps Acrobat alone and harms two others.
+ */
+export function scenticReadingOrder(font) {
+  if (!font || typeof font.encodeText !== 'function' || font[IN_READING_ORDER]) return font;
+  const encode = font.encodeText.bind(font);
+  font.encodeText = text => {
+    const value = String(text ?? '');
+    if (!hasRtl(value)) return encode(value);
+    let hex = '';
+    for (const ch of visualOrder(value)) hex += encode(ch).toString().slice(1, -1);
+    return PDFHexString.of(hex);
+  };
+  font[IN_READING_ORDER] = true;
+  return font;
 }
 
 const glyphSets = new WeakMap();
@@ -106,16 +144,20 @@ export function clean(font, value, max = MAX_TEXT) {
   return out.replace(/ +/g, ' ').trim();
 }
 
-/** `clean` text with its right-to-left runs put in reading order: ready to draw on one line. */
+/**
+ * `clean` text, ready to draw on one line with a font made by `scenticReadingOrder`, which puts its
+ * right-to-left runs in visual order as it draws them. Kept in the order it was typed.
+ */
 export function printable(font, value, max = MAX_TEXT) {
-  return visualOrder(clean(font, value, max));
+  return clean(font, value, max);
 }
 
 /**
  * `clean` text as lines no wider than `width` at `size`, nothing left out. A line breaks at a
  * space; a single word wider than the column (a browser string has some) is broken where it stops
- * fitting. The text is wrapped in the order it was typed and each line is then put in reading
- * order, so a right-to-left title still reads from its first line down.
+ * fitting. The text is wrapped in the order it was typed, so a right-to-left title still reads
+ * from its first line down; each line stays in that order (the font puts it in visual order as it
+ * draws it).
  */
 export function wrapped(font, text, size, width) {
   const fits = value => font.widthOfTextAtSize(value, size) <= width;
@@ -142,7 +184,7 @@ export function wrapped(font, text, size, width) {
     }
   }
   if (line) lines.push(line);
-  return lines.map(visualOrder);
+  return lines;
 }
 
 /**
@@ -162,7 +204,7 @@ export function confirmedName(names, email) {
 }
 
 /**
- * The name to print for a signer: the one they confirmed, made drawable and put in reading order;
+ * The name to print for a signer: the one they confirmed, made drawable;
  * the contact's stored name only when they confirmed none, as it was printed before.
  */
 export function scenticSignerName(docDetails, email, fallback, font) {
@@ -186,7 +228,7 @@ export function fitted(font, text, size, width) {
 
 /**
  * The firm a document was sent for, for the certificate's "Organization" line: the name the
- * gateway wrote on the document when it was created, drawable, in reading order and no wider than
+ * gateway wrote on the document when it was created, drawable and no wider than
  * `width`. `fallback` (what OpenSign printed: the company of the account that owns the document,
  * which is the platform's one account for every firm) only when the document names no firm.
  */
@@ -201,7 +243,7 @@ export function scenticOrganization(docDetails, fallback, font, width) {
 
 /**
  * One line of the certificate's own (the originator's name, the originator's address): drawable,
- * in reading order, and cut with "..." if it would run past `width` at `size`.
+ * and cut with "..." if it would run past `width` at `size`.
  */
 export function scenticLine(font, value, size, width) {
   return fitted(font, printable(font, value), size, width);

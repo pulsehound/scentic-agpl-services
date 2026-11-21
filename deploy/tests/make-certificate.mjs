@@ -30,6 +30,10 @@ const ANDROID = 'Mozilla/5.0 (Linux; Android 15; SM-S918BB Build/UP1A.231005.007
 const DESKTOP = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.2592.87';
 const PLATFORM = 'Scentic Platform Ltd';
 const FIRM = 'Cohen & Levi Law Offices';
+// The second signer confirmed their name in Hebrew (F-19): read back in the order it was typed, never
+// reversed.
+const BOB_HE = 'רוני כהן';
+const BOB_HE_REVERSED = Array.from(BOB_HE).reverse().join('');
 const ORIGIN_IP = '198.51.100.24';
 const HEBREW_TITLE = 'הסכם שכר טרחה';
 
@@ -66,7 +70,7 @@ const doc = {
   ],
   ScenticSignerNames: [
     { email: 'alice@example.com', name: 'Alice Example' },
-    { email: 'bob@example.com', name: 'Robert Example' },
+    { email: 'bob@example.com', name: BOB_HE },
   ],
   ScenticRelatedDocuments: related,
   ScenticAudit: [
@@ -90,7 +94,8 @@ const expected = [
   `2 of 3 — Power of attorney (this document) SHA-256 : ${'22'.repeat(32)}`,
   `SHA-256 : ${'33'.repeat(32)}`,
   'Name : Alice Example',
-  'Name : Robert Example',
+  `Name : ${BOB_HE}`,
+  `!${BOB_HE_REVERSED}`,
   '!shared contact',
   'Event history',
   ANDROID,
