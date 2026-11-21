@@ -513,6 +513,18 @@ export function applyServerPatches({ root = '/usr/src/app', filesDir = '/tmp/ope
         '            ipAddress: x.ipAddress,\n',
       'certificate signer name',
     ],
+    // "Security level" moves from the name's row to the email's, the same column (F-19). On the
+    // name's row it made the line mostly Latin, and Chrome's viewer (PDFium) then copied a
+    // two-word Hebrew name with its words swapped; alone on its row the name is copied as typed.
+    [
+      "    if (IsEnableOTP) {\n      currentPage.drawText('Security level :', {\n        x: half + 120,\n        y: yPosition2,\n" +
+        "        size: timeText,\n        font: timesRomanFont,\n        color: textKeyColor,\n      });\n" +
+        "      currentPage.drawText('Email, OTP Auth', {\n        x: half + 190,\n        y: yPosition2,\n",
+      "    if (IsEnableOTP) {\n      currentPage.drawText('Security level :', {\n        x: half + 120,\n        y: yPosition3,\n" +
+        "        size: timeText,\n        font: timesRomanFont,\n        color: textKeyColor,\n      });\n" +
+        "      currentPage.drawText('Email, OTP Auth', {\n        x: half + 190,\n        y: yPosition3,\n",
+      'certificate security level on the email row',
+    ],
   ]);
   // Only the people who sign it now. When a signer is replaced or passes the request on, OpenSign
   // keeps the view the earlier person left in AuditTrail, and drops them from Signers: upstream then

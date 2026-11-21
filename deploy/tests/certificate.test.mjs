@@ -297,6 +297,16 @@ describe.skipIf(!hasVendor)(`the certificate, from the patched upstream generato
     const out = await textOf(bytes);
     for (const typed of [HEBREW_NAME, HEBREW_TITLE, FIRM_HE, SENDER, TAMAR]) expect(out.all, typed).toContain(typed);
     expect(out.all.replace(/\s+/g, ' ')).toContain(`1 of 2 \u2014 ${HEBREW_TITLE} (this document)`);
+    // "Security level" sits on each signer's email row, not beside the name (a mostly-Latin name row
+    // made Chrome's PDFium copy a two-word Hebrew name with its words swapped).
+    const security = out.placed.filter(i => i.str.startsWith('Security level'));
+    const names = out.placed.filter(i => i.str.startsWith('Name'));
+    const emails = out.placed.filter(i => i.str.startsWith('Email :'));
+    expect(security).toHaveLength(2);
+    for (const s of security) {
+      expect(emails.some(e => e.page === s.page && Math.abs(e.y - s.y) < 0.5), 'on an email row').toBe(true);
+      expect(names.some(n => n.page === s.page && Math.abs(n.y - s.y) < 0.5), 'not on a name row').toBe(false);
+    }
   });
 
   it('the browser string is printed whole, wrapped within its column; the row grows and the next row starts below it', async () => {
