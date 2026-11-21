@@ -418,6 +418,21 @@ describe.skipIf(!hasVendor)(`the certificate, from the patched upstream generato
     expect(originator(hebrew)).toEqual([HEBREW_NAME, 'yaakov@cohenlevi.example']);
   });
 
+  it('F-19: long Arabic text (drawn unjoined, wider than joined) is measured as drawn: nothing outside the border', async () => {
+    const ARABIC = 'شركة المحاماة العربية الدولية'; // "The international Arab law firm"
+    const long = Array.from({ length: 6 }, () => ARABIC).join(' ');
+    const out = await textOf(await generate(fixtureDoc([{ at: '2026-11-19T08:00:00Z', event: 'Signed', actor: long, email: 'alice@example.com' }], {
+      ScenticFirmName: long,
+      SenderName: long,
+      SenderMail: 'firm@example.com',
+      // The signer's name is upstream's line, drawn whole whatever its length (Latin or not): not cut here.
+      ScenticSignerNames: [{ email: 'alice@example.com', name: ARABIC }],
+      ScenticRelatedDocuments: [{ position: 1, total: 1, title: long, current: true, sha256: 'cd'.repeat(32) }],
+    })));
+    expect(out.all).toContain('Certificate of Completion');
+    expect(outside(out)).toEqual([]);
+  });
+
   it('documents in this request: absent, empty or not a list, the certificate is exactly the one it was', async () => {
     for (const value of [[], null, 'three', 7, { length: 2 }, [null, 'x', 3, [], {}, { title: '' }, { position: 0 }]]) {
       const out = await textOf(await generate(fixtureDoc(undefined, { ScenticRelatedDocuments: value })));
@@ -719,6 +734,16 @@ describe.skipIf(!hasVendor)('the event history helpers, with the certificate fon
     }
     for (const latin of ['Certificate of Completion', 'office fifty', 'alice@example.com', '']) expect(hex(latin), latin).toBe(upstream(latin));
     expect(scenticReadingOrder(null)).toBe(null);
+    // Measured as drawn: character by character when there is a right-to-left letter (Arabic drawn
+    // unjoined is wider than the joined string upstream measured); as before otherwise.
+    const ARABIC = 'شركة المحاماة العربية الدولية';
+    const upstreamWidth = (text, size) => PDFFont.prototype.widthOfTextAtSize.call(own, text, size);
+    const byCharWidth = text => Array.from(text).reduce((w, ch) => w + upstreamWidth(ch, 13), 0);
+    expect(hex(ARABIC)).toBe(byChar(visualOrder(ARABIC)));
+    expect(own.widthOfTextAtSize(ARABIC, 13)).toBeCloseTo(byCharWidth(ARABIC), 6);
+    expect(byCharWidth(ARABIC)).toBeGreaterThan(upstreamWidth(ARABIC, 13)); // why it matters
+    expect(own.widthOfTextAtSize(HEBREW_NAME, 13)).toBeCloseTo(upstreamWidth(HEBREW_NAME, 13), 6);
+    expect(own.widthOfTextAtSize('Certificate of Completion', 13)).toBe(upstreamWidth('Certificate of Completion', 13));
   });
 
   it('a browser string keeps 512 characters, other text 300, in the order typed until it is drawn', () => {

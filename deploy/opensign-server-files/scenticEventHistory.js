@@ -101,9 +101,14 @@ const IN_READING_ORDER = Symbol.for('scentic.certificate.readingOrder');
  *
  * Why not /ActualText (a marked span carrying the typed text): pdf.js ignores it, and PDFium and
  * MuPDF read it and then reverse it again, so it helps Acrobat alone and harms two others.
+ *
+ * The font's widthOfTextAtSize is replaced to match: a string with a right-to-left letter is
+ * measured character by character, as it is drawn, so every width check (the cut to a column, the
+ * wrapping, the border) measures what is on the page. For Hebrew the two agree; for Arabic the
+ * whole-string measure was of joined letters, narrower than the unjoined ones drawn.
  */
 export function scenticReadingOrder(font) {
-  if (!font || typeof font.encodeText !== 'function' || font[IN_READING_ORDER]) return font;
+  if (!font || typeof font.encodeText !== 'function' || typeof font.widthOfTextAtSize !== 'function' || font[IN_READING_ORDER]) return font;
   const encode = font.encodeText.bind(font);
   font.encodeText = text => {
     const value = String(text ?? '');
@@ -111,6 +116,14 @@ export function scenticReadingOrder(font) {
     let hex = '';
     for (const ch of visualOrder(value)) hex += encode(ch).toString().slice(1, -1);
     return PDFHexString.of(hex);
+  };
+  const measure = font.widthOfTextAtSize.bind(font);
+  font.widthOfTextAtSize = (text, size) => {
+    const value = String(text ?? '');
+    if (!hasRtl(value)) return measure(value, size);
+    let width = 0;
+    for (const ch of Array.from(value)) width += measure(ch, size);
+    return width;
   };
   font[IN_READING_ORDER] = true;
   return font;
